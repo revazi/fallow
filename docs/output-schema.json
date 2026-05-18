@@ -525,23 +525,23 @@
         "unused_dependencies": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/UnusedDependency"
+            "$ref": "#/definitions/UnusedDependencyFinding"
           },
-          "description": "Dependencies listed in package.json but never imported."
+          "description": "Dependencies listed in package.json but never imported. Wrapped in\n[`UnusedDependencyFinding`] so each entry carries a typed `actions`\narray natively. The fix action swaps from `remove-dependency` to\n`move-dependency` when `used_in_workspaces` is non-empty."
         },
         "unused_dev_dependencies": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/UnusedDependency"
+            "$ref": "#/definitions/UnusedDevDependencyFinding"
           },
-          "description": "Dev dependencies listed in package.json but never imported."
+          "description": "Dev dependencies listed in package.json but never imported. Wrapped\nin [`UnusedDevDependencyFinding`]: same bare struct as\n`unused_dependencies` with a `devDependencies`-targeted fix\ndescription."
         },
         "unused_optional_dependencies": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/UnusedDependency"
+            "$ref": "#/definitions/UnusedOptionalDependencyFinding"
           },
-          "description": "Optional dependencies listed in package.json but never imported."
+          "description": "Optional dependencies listed in package.json but never imported.\nWrapped in [`UnusedOptionalDependencyFinding`] with an\n`optionalDependencies`-targeted fix description."
         },
         "unused_enum_members": {
           "type": "array",
@@ -567,9 +567,9 @@
         "unlisted_dependencies": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/UnlistedDependency"
+            "$ref": "#/definitions/UnlistedDependencyFinding"
           },
-          "description": "Dependencies used in code but not listed in package.json."
+          "description": "Dependencies used in code but not listed in package.json. Wrapped in\n[`UnlistedDependencyFinding`]."
         },
         "duplicate_exports": {
           "type": "array",
@@ -581,16 +581,16 @@
         "type_only_dependencies": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/TypeOnlyDependency"
+            "$ref": "#/definitions/TypeOnlyDependencyFinding"
           },
-          "description": "Production dependencies only used via type-only imports (could be devDependencies).\nOnly populated in production mode."
+          "description": "Production dependencies only used via type-only imports (could be\ndevDependencies). Only populated in production mode. Wrapped in\n[`TypeOnlyDependencyFinding`]."
         },
         "test_only_dependencies": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/TestOnlyDependency"
+            "$ref": "#/definitions/TestOnlyDependencyFinding"
           },
-          "description": "Production dependencies only imported by test files (could be devDependencies)."
+          "description": "Production dependencies only imported by test files (could be\ndevDependencies). Wrapped in [`TestOnlyDependencyFinding`]."
         },
         "circular_dependencies": {
           "type": "array",
@@ -822,23 +822,23 @@
         "unused_dependencies": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/UnusedDependency"
+            "$ref": "#/definitions/UnusedDependencyFinding"
           },
-          "description": "Dependencies listed in package.json but never imported."
+          "description": "Dependencies listed in package.json but never imported. Wrapped in\n[`UnusedDependencyFinding`] so each entry carries a typed `actions`\narray natively. The fix action swaps from `remove-dependency` to\n`move-dependency` when `used_in_workspaces` is non-empty."
         },
         "unused_dev_dependencies": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/UnusedDependency"
+            "$ref": "#/definitions/UnusedDevDependencyFinding"
           },
-          "description": "Dev dependencies listed in package.json but never imported."
+          "description": "Dev dependencies listed in package.json but never imported. Wrapped\nin [`UnusedDevDependencyFinding`]: same bare struct as\n`unused_dependencies` with a `devDependencies`-targeted fix\ndescription."
         },
         "unused_optional_dependencies": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/UnusedDependency"
+            "$ref": "#/definitions/UnusedOptionalDependencyFinding"
           },
-          "description": "Optional dependencies listed in package.json but never imported."
+          "description": "Optional dependencies listed in package.json but never imported.\nWrapped in [`UnusedOptionalDependencyFinding`] with an\n`optionalDependencies`-targeted fix description."
         },
         "unused_enum_members": {
           "type": "array",
@@ -864,9 +864,9 @@
         "unlisted_dependencies": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/UnlistedDependency"
+            "$ref": "#/definitions/UnlistedDependencyFinding"
           },
-          "description": "Dependencies used in code but not listed in package.json."
+          "description": "Dependencies used in code but not listed in package.json. Wrapped in\n[`UnlistedDependencyFinding`]."
         },
         "duplicate_exports": {
           "type": "array",
@@ -878,16 +878,16 @@
         "type_only_dependencies": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/TypeOnlyDependency"
+            "$ref": "#/definitions/TypeOnlyDependencyFinding"
           },
-          "description": "Production dependencies only used via type-only imports (could be devDependencies).\nOnly populated in production mode."
+          "description": "Production dependencies only used via type-only imports (could be\ndevDependencies). Only populated in production mode. Wrapped in\n[`TypeOnlyDependencyFinding`]."
         },
         "test_only_dependencies": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/TestOnlyDependency"
+            "$ref": "#/definitions/TestOnlyDependencyFinding"
           },
-          "description": "Production dependencies only imported by test files (could be devDependencies)."
+          "description": "Production dependencies only imported by test files (could be\ndevDependencies). Wrapped in [`TestOnlyDependencyFinding`]."
         },
         "circular_dependencies": {
           "type": "array",
@@ -3743,24 +3743,13 @@
             "type": "string"
           },
           "description": "Workspace roots that import this package even though the declaring workspace does not."
-        },
-        "actions": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/IssueAction"
-          },
-          "description": "Suggested actions to resolve this issue."
-        },
-        "introduced": {
-          "$ref": "#/definitions/AuditIntroduced"
         }
       },
       "required": [
         "package_name",
         "location",
         "path",
-        "line",
-        "actions"
+        "line"
       ],
       "description": "A dependency that is listed in package.json but never imported."
     },
@@ -3848,22 +3837,11 @@
             "$ref": "#/definitions/ImportSite"
           },
           "description": "Import sites where this unlisted dependency is used (file path, line, column)."
-        },
-        "actions": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/IssueAction"
-          },
-          "description": "Suggested actions to resolve this issue."
-        },
-        "introduced": {
-          "$ref": "#/definitions/AuditIntroduced"
         }
       },
       "required": [
         "package_name",
-        "imported_from",
-        "actions"
+        "imported_from"
       ],
       "description": "A dependency used in code but not listed in package.json."
     },
@@ -3959,23 +3937,12 @@
         "line": {
           "type": "integer",
           "description": "1-based line number of the dependency entry in package.json."
-        },
-        "actions": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/IssueAction"
-          },
-          "description": "Suggested actions to resolve this issue."
-        },
-        "introduced": {
-          "$ref": "#/definitions/AuditIntroduced"
         }
       },
       "required": [
         "package_name",
         "path",
-        "line",
-        "actions"
+        "line"
       ],
       "description": "A production dependency that is only used via type-only imports.\nIn production builds, type imports are erased, so this dependency\nis not needed at runtime and could be moved to devDependencies."
     },
@@ -3993,23 +3960,12 @@
         "line": {
           "type": "integer",
           "description": "1-based line number of the dependency entry in package.json."
-        },
-        "actions": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/IssueAction"
-          },
-          "description": "Suggested actions to resolve this issue."
-        },
-        "introduced": {
-          "$ref": "#/definitions/AuditIntroduced"
         }
       },
       "required": [
         "package_name",
         "path",
-        "line",
-        "actions"
+        "line"
       ],
       "description": "A production dependency that is only imported by test files.\nSince it is never used in production code, it could be moved to devDependencies."
     },
@@ -5270,23 +5226,23 @@
         "unused_dependencies": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/UnusedDependency"
+            "$ref": "#/definitions/UnusedDependencyFinding"
           },
-          "description": "Dependencies listed in package.json but never imported."
+          "description": "Dependencies listed in package.json but never imported. Wrapped in\n[`UnusedDependencyFinding`] so each entry carries a typed `actions`\narray natively. The fix action swaps from `remove-dependency` to\n`move-dependency` when `used_in_workspaces` is non-empty."
         },
         "unused_dev_dependencies": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/UnusedDependency"
+            "$ref": "#/definitions/UnusedDevDependencyFinding"
           },
-          "description": "Dev dependencies listed in package.json but never imported."
+          "description": "Dev dependencies listed in package.json but never imported. Wrapped\nin [`UnusedDevDependencyFinding`]: same bare struct as\n`unused_dependencies` with a `devDependencies`-targeted fix\ndescription."
         },
         "unused_optional_dependencies": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/UnusedDependency"
+            "$ref": "#/definitions/UnusedOptionalDependencyFinding"
           },
-          "description": "Optional dependencies listed in package.json but never imported."
+          "description": "Optional dependencies listed in package.json but never imported.\nWrapped in [`UnusedOptionalDependencyFinding`] with an\n`optionalDependencies`-targeted fix description."
         },
         "unused_enum_members": {
           "type": "array",
@@ -5312,9 +5268,9 @@
         "unlisted_dependencies": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/UnlistedDependency"
+            "$ref": "#/definitions/UnlistedDependencyFinding"
           },
-          "description": "Dependencies used in code but not listed in package.json."
+          "description": "Dependencies used in code but not listed in package.json. Wrapped in\n[`UnlistedDependencyFinding`]."
         },
         "duplicate_exports": {
           "type": "array",
@@ -5326,16 +5282,16 @@
         "type_only_dependencies": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/TypeOnlyDependency"
+            "$ref": "#/definitions/TypeOnlyDependencyFinding"
           },
-          "description": "Production dependencies only used via type-only imports (could be devDependencies).\nOnly populated in production mode."
+          "description": "Production dependencies only used via type-only imports (could be\ndevDependencies). Only populated in production mode. Wrapped in\n[`TypeOnlyDependencyFinding`]."
         },
         "test_only_dependencies": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/TestOnlyDependency"
+            "$ref": "#/definitions/TestOnlyDependencyFinding"
           },
-          "description": "Production dependencies only imported by test files (could be devDependencies)."
+          "description": "Production dependencies only imported by test files (could be\ndevDependencies). Wrapped in [`TestOnlyDependencyFinding`]."
         },
         "circular_dependencies": {
           "type": "array",
@@ -7650,6 +7606,292 @@
         "actions"
       ],
       "description": "Wire-shape envelope for an [`UnusedMember`] finding consumed under the\n`unused_class_members` key. Same Rust struct as\n[`UnusedEnumMemberFinding`]; the fix action and suppress comment carry\nthe class-member kebab-case identifier instead."
+    },
+    "UnusedDependencyFinding": {
+      "type": "object",
+      "properties": {
+        "package_name": {
+          "type": "string",
+          "description": "Package name, including internal workspace package names."
+        },
+        "location": {
+          "description": "Whether this is in `dependencies`, `devDependencies`, or `optionalDependencies`.",
+          "$ref": "#/definitions/DependencyLocation"
+        },
+        "path": {
+          "type": "string",
+          "description": "Path to the package.json where this dependency is listed.\nFor root deps this is `<root>/package.json`, for workspace deps it is `<ws>/package.json`."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based line number of the dependency entry in package.json."
+        },
+        "used_in_workspaces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Workspace roots that import this package even though the declaring workspace does not."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IssueAction"
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
+        },
+        "introduced": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AuditIntroduced"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
+        }
+      },
+      "required": [
+        "package_name",
+        "location",
+        "path",
+        "line",
+        "actions"
+      ],
+      "description": "Wire-shape envelope for an [`UnusedDependency`] finding consumed under\nthe `unused_dependencies` key (production deps). Flattens the bare\nfinding; the typed `actions` array carries either a `remove-dependency`\nor `move-dependency` primary depending on\n`inner.used_in_workspaces`."
+    },
+    "UnusedDevDependencyFinding": {
+      "type": "object",
+      "properties": {
+        "package_name": {
+          "type": "string",
+          "description": "Package name, including internal workspace package names."
+        },
+        "location": {
+          "description": "Whether this is in `dependencies`, `devDependencies`, or `optionalDependencies`.",
+          "$ref": "#/definitions/DependencyLocation"
+        },
+        "path": {
+          "type": "string",
+          "description": "Path to the package.json where this dependency is listed.\nFor root deps this is `<root>/package.json`, for workspace deps it is `<ws>/package.json`."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based line number of the dependency entry in package.json."
+        },
+        "used_in_workspaces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Workspace roots that import this package even though the declaring workspace does not."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IssueAction"
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
+        },
+        "introduced": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AuditIntroduced"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
+        }
+      },
+      "required": [
+        "package_name",
+        "location",
+        "path",
+        "line",
+        "actions"
+      ],
+      "description": "Wire-shape envelope for an [`UnusedDependency`] finding consumed under\nthe `unused_dev_dependencies` key. Same bare struct as\n[`UnusedDependencyFinding`]; the fix description points at\n`devDependencies` and the suppress comment uses\n`unused-dev-dependency`."
+    },
+    "UnusedOptionalDependencyFinding": {
+      "type": "object",
+      "properties": {
+        "package_name": {
+          "type": "string",
+          "description": "Package name, including internal workspace package names."
+        },
+        "location": {
+          "description": "Whether this is in `dependencies`, `devDependencies`, or `optionalDependencies`.",
+          "$ref": "#/definitions/DependencyLocation"
+        },
+        "path": {
+          "type": "string",
+          "description": "Path to the package.json where this dependency is listed.\nFor root deps this is `<root>/package.json`, for workspace deps it is `<ws>/package.json`."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based line number of the dependency entry in package.json."
+        },
+        "used_in_workspaces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Workspace roots that import this package even though the declaring workspace does not."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IssueAction"
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
+        },
+        "introduced": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AuditIntroduced"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
+        }
+      },
+      "required": [
+        "package_name",
+        "location",
+        "path",
+        "line",
+        "actions"
+      ],
+      "description": "Wire-shape envelope for an [`UnusedDependency`] finding consumed under\nthe `unused_optional_dependencies` key. Same bare struct as\n[`UnusedDependencyFinding`]; the fix description points at\n`optionalDependencies`. Reuses the `unused-dependency` suppress\n`IssueKind` because there is no dedicated variant for optional deps."
+    },
+    "UnlistedDependencyFinding": {
+      "type": "object",
+      "properties": {
+        "package_name": {
+          "type": "string",
+          "description": "Package name, including internal workspace package names, that is\nimported but not listed in package.json."
+        },
+        "imported_from": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ImportSite"
+          },
+          "description": "Import sites where this unlisted dependency is used (file path, line, column)."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IssueAction"
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
+        },
+        "introduced": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AuditIntroduced"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
+        }
+      },
+      "required": [
+        "package_name",
+        "imported_from",
+        "actions"
+      ],
+      "description": "Wire-shape envelope for an [`UnlistedDependency`] finding. Carries an\n`install-dependency` primary (non-auto-fixable) plus the standard\n`ignoreDependencies` config suppress."
+    },
+    "TypeOnlyDependencyFinding": {
+      "type": "object",
+      "properties": {
+        "package_name": {
+          "type": "string",
+          "description": "Production dependency that is only used via type-only imports."
+        },
+        "path": {
+          "type": "string",
+          "description": "Path to the package.json where the dependency is listed."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based line number of the dependency entry in package.json."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IssueAction"
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
+        },
+        "introduced": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AuditIntroduced"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
+        }
+      },
+      "required": [
+        "package_name",
+        "path",
+        "line",
+        "actions"
+      ],
+      "description": "Wire-shape envelope for a [`TypeOnlyDependency`] finding. Carries a\n`move-to-dev` primary plus the standard `ignoreDependencies` config\nsuppress."
+    },
+    "TestOnlyDependencyFinding": {
+      "type": "object",
+      "properties": {
+        "package_name": {
+          "type": "string",
+          "description": "Production dependency that is only imported by test files — consider\nmoving to devDependencies."
+        },
+        "path": {
+          "type": "string",
+          "description": "Path to the package.json where the dependency is listed."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based line number of the dependency entry in package.json."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IssueAction"
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
+        },
+        "introduced": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AuditIntroduced"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
+        }
+      },
+      "required": [
+        "package_name",
+        "path",
+        "line",
+        "actions"
+      ],
+      "description": "Wire-shape envelope for a [`TestOnlyDependency`] finding. Carries a\n`move-to-dev` primary (different prose than [`TypeOnlyDependencyFinding`])\nplus the standard `ignoreDependencies` config suppress."
     },
     "BoundariesListLogicalGroup": {
       "type": "object",
