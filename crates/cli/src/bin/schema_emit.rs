@@ -1169,6 +1169,89 @@ mod drift_tests {
         }
     }
 
+    /// Every variant of [`FallowOutput`] must have its inner type registered
+    /// in [`derived_definitions`]. Without registration, schemars inlines the
+    /// variant's schema in the root `FallowOutput` `oneOf` rather than
+    /// emitting a `$ref`; the document-root union then drifts from the
+    /// `definitions/` map and the drift gate may or may not catch it
+    /// depending on whether the variant's inner type is transitively
+    /// referenced from another registered type.
+    ///
+    /// The `VARIANTS` list is hand-maintained because Rust does not provide
+    /// reflection over enum variants. The nested `_variant_count_is_locked`
+    /// match produces a `non-exhaustive patterns` compile error if a
+    /// contributor adds a variant to [`FallowOutput`] without updating this
+    /// test, so the list cannot silently drift.
+    ///
+    /// Regression for issue #417: mechanizes the `#[allow(dead_code)]`
+    /// social contract on the enum into a `cargo test`-time assertion.
+    #[test]
+    fn every_fallow_output_variant_is_registered_in_derived_definitions() {
+        // (variant tag for the diagnostic, inner type name as schemars
+        // emits it). Keep in sync with `enum FallowOutput` in
+        // `crates/cli/src/output_envelope.rs`. The exhaustive match below
+        // enforces this at compile time.
+        const VARIANTS: &[(&str, &str)] = &[
+            ("Audit", "AuditOutput"),
+            ("Explain", "ExplainOutput"),
+            ("ReviewEnvelope", "ReviewEnvelopeOutput"),
+            ("ReviewReconcile", "ReviewReconcileOutput"),
+            ("CoverageSetup", "CoverageSetupOutput"),
+            ("CoverageAnalyze", "CoverageAnalyzeOutput"),
+            ("ListBoundaries", "ListBoundariesOutput"),
+            ("Health", "HealthOutput"),
+            ("Dupes", "DupesOutput"),
+            ("CheckGrouped", "CheckGroupedOutput"),
+            ("Check", "CheckOutput"),
+            ("Combined", "CombinedOutput"),
+        ];
+
+        // Compile-time exhaustiveness check. Adding a new variant to
+        // `FallowOutput` without extending `VARIANTS` above fails this
+        // match with `non-exhaustive patterns`. The function is never
+        // called; it exists solely to lock the variant count.
+        #[expect(
+            dead_code,
+            reason = "compile-time exhaustiveness guard for the VARIANTS list above; never called at runtime"
+        )]
+        fn variant_count_is_locked(value: &FallowOutput) -> &'static str {
+            // The leading `variant_` (not `_variant_`) is intentional:
+            // rustc auto-silences `dead_code` on identifiers starting
+            // with `_`, which would make `#[expect(dead_code)]`
+            // unfulfilled and trigger `unfulfilled_lint_expectations`.
+            match value {
+                FallowOutput::Audit(_) => "Audit",
+                FallowOutput::Explain(_) => "Explain",
+                FallowOutput::ReviewEnvelope(_) => "ReviewEnvelope",
+                FallowOutput::ReviewReconcile(_) => "ReviewReconcile",
+                FallowOutput::CoverageSetup(_) => "CoverageSetup",
+                FallowOutput::CoverageAnalyze(_) => "CoverageAnalyze",
+                FallowOutput::ListBoundaries(_) => "ListBoundaries",
+                FallowOutput::Health(_) => "Health",
+                FallowOutput::Dupes(_) => "Dupes",
+                FallowOutput::CheckGrouped(_) => "CheckGrouped",
+                FallowOutput::Check(_) => "Check",
+                FallowOutput::Combined(_) => "Combined",
+            }
+        }
+
+        let derived = derived_definitions();
+        let mut missing: Vec<String> = Vec::new();
+        for (variant, inner) in VARIANTS {
+            if !derived.contains_key(*inner) {
+                missing.push(format!(
+                    "variant `FallowOutput::{variant}({inner})` produces an inline schema in the root `oneOf` because `{inner}` is not registered in `derived_definitions()`. Add `let _ = generator.subschema_for::<{inner}>();` (or include it via `register_per_command_envelope_definitions` / `register_list_boundaries_definitions`)."
+                ));
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "{} `FallowOutput` variant(s) missing registration:\n\n{}",
+            missing.len(),
+            missing.join("\n\n"),
+        );
+    }
+
     /// Each finding type listed in `finding_definition_names()` must exist in
     /// the registered set, otherwise the augmentation pass silently skips it.
     #[test]
