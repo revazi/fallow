@@ -407,8 +407,77 @@ Keep committed baselines outside `.fallow/`; that directory is for cache and loc
 
 ## CI integration
 
+Use the GitHub Action when you want fallow to handle installation, caching, PR scoping, annotations, review comments, SARIF, and job-summary formatting.
+
 ```yaml
-# GitHub Action
+name: Fallow
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write # needed for comment/review-comments
+
+jobs:
+  fallow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # best diff precision for --changed-since and hotspots
+      - uses: fallow-rs/fallow@v2
+        with:
+          command: audit
+          comment: true
+          review-comments: true
+```
+
+`command: audit` is the PR gate. In pull requests, the Action auto-scopes to the PR base SHA when `changed-since` is not set, derives a unified diff for line-level filtering, and emits a verdict: **pass**, **warn**, or **fail**. With the default `fail-on-issues: true`, audit fails the job only on verdict `fail`; warn-tier findings stay visible without blocking merge.
+
+Useful GitHub Action modes:
+
+```yaml
+# Rich PR feedback without GitHub Advanced Security
+- uses: fallow-rs/fallow@v2
+  with:
+    command: audit
+    annotations: true        # default: inline workflow annotations
+    comment: true            # sticky PR summary
+    review-comments: true    # inline review comments with suggestions
+    diff-filter: added       # added | diff_context | file | nofilter
+    max-comments: 50
+
+# GitHub Code Scanning upload
+permissions:
+  contents: read
+  security-events: write
+steps:
+  - uses: actions/checkout@v4
+    with:
+      fetch-depth: 0
+  - uses: fallow-rs/fallow@v2
+    with:
+      command: audit
+      sarif: true
+
+# Health score, trend, hotspots, and refactor targets
+- uses: fallow-rs/fallow@v2
+  with:
+    command: health
+    score: true
+    trend: true
+    save-snapshot: true
+    hotspots: true
+    targets: true
+
+# Monorepo scoping
+- uses: fallow-rs/fallow@v2
+  with:
+    command: audit
+    changed-workspaces: origin/main
+
+# Coverage-backed CRAP scoring in audit
 - uses: fallow-rs/fallow@v2
   with:
     command: audit
@@ -416,17 +485,49 @@ Keep committed baselines outside `.fallow/`; that directory is for cache and loc
     coverage: artifacts/coverage-final.json
     coverage-root: /home/runner/work/myapp
 
+# Runtime evidence, licensed Fallow Runtime layer
+- uses: fallow-rs/fallow@v2
+  with:
+    command: health
+    score: true
+    runtime-coverage: artifacts/v8-coverage
+    min-invocations-hot: 100
+```
+
+Action outputs include:
+
+- `issues` -- command-specific issue count; for audit, this is gate-aware
+- `verdict` -- audit verdict (`pass`, `warn`, `fail`)
+- `gate` -- audit gate (`new-only` or `all`)
+- `results` / `sarif` -- generated artifact paths
+- `changed-files-unavailable` -- `true` if PR file enumeration degraded and analysis ran less scoped than expected
+- `dedup-lookup-failed` / `post-skipped-reason` -- comment/review posting degradation signals
+
+SARIF upload requires GitHub Code Scanning, which is available on public repositories and on private repositories with GitHub Advanced Security enabled. If it is unavailable, the Action skips upload with a warning and leaves the job summary, annotations, comments, and JSON output intact.
+
+GitHub inline review comments target the current PR file state (`side: RIGHT`). Findings on deleted lines are not modeled yet; fallow's diagnostics are current-state oriented in normal use.
+
+For GitLab, use the bundled template. It installs fallow, sets `GIT_DEPTH: "0"`, caches `.fallow/`, produces Code Quality reports by default, and can post summary comments and inline MR discussions.
+
+```yaml
 # GitLab CI -- remote include
 include:
   - remote: 'https://raw.githubusercontent.com/fallow-rs/fallow/vX.Y.Z/ci/gitlab-ci.yml'
+
 fallow:
   extends: .fallow
   variables:
     FALLOW_COMMAND: "audit"
+    FALLOW_COMMENT: "true"
+    FALLOW_REVIEW: "true"
     FALLOW_MAX_CRAP: "30"
     FALLOW_COVERAGE: "artifacts/coverage-final.json"
     FALLOW_COVERAGE_ROOT: "/home/runner/work/myapp"
 ```
+
+`FALLOW_COMMENT` and `FALLOW_REVIEW` require `GITLAB_TOKEN` with API scope. In MR pipelines, the template auto-sets `FALLOW_CHANGED_SINCE` from the MR diff base SHA when possible and derives `FALLOW_DIFF_FILE` for line-level filtering. For monorepos, set `FALLOW_CHANGED_WORKSPACES: "origin/main"` to scope analysis to touched workspaces.
+
+`FALLOW_REVIEW` uses the typed `review-gitlab` envelope v2, not scraped human output. That gives the template stable v2 fingerprints, same-line comment merging, UTF-8-safe body truncation, stale-thread reconciliation via `fallow ci reconcile-review`, and GitLab diff positions for inline discussions. The review script fetches MR `diff_refs` automatically; set `FALLOW_GITLAB_BASE_SHA`, `FALLOW_GITLAB_START_SHA`, or `FALLOW_GITLAB_HEAD_SHA` only when your runner needs explicit overrides.
 
 ```yaml
 # GitLab CI -- vendored include when runners cannot reach GitHub raw
@@ -439,22 +540,34 @@ fallow:
   extends: .fallow
 ```
 
-```yaml
-# Any CI
-script:
-  - npx fallow --ci
+For any other CI system, call the CLI directly:
+
+```bash
+# PR gate with changed-file attribution
+npx fallow audit --changed-since origin/main --format json --quiet
+
+# SARIF for code scanning systems
+npx fallow --ci
+
+# Line-level PR filtering from a unified diff
+git diff --unified=0 origin/main...HEAD > fallow-pr.diff
+npx fallow audit --changed-since origin/main --diff-file fallow-pr.diff
+
+# Health score gate
+npx fallow health --score --min-score 80 --quiet
 ```
 
-`--ci` enables SARIF output, quiet mode, and non-zero exit on issues. Also supports:
+Common CI flags:
 
 - `--group-by owner|directory|package|section` -- group output by CODEOWNERS ownership, directory, workspace package, or GitLab CODEOWNERS `[Section]` headers for team-level triage
 - `--summary` -- show only category counts (no individual issues)
 - `--changed-since main` -- analyze only files touched in a PR
+- `--diff-file <path>` / `--diff-stdin` -- filter findings to added diff hunks, while project-level package findings bypass line filtering
 - `--changed-workspaces origin/main` -- scope monorepo analysis to workspaces containing any changed file (CI primitive; fails hard on git errors so CI never silently widens back to the full repo)
-- `--baseline` / `--save-baseline` -- fail only on **new** issues
+- `--baseline` / `--save-baseline` -- fail only on **new** issues for individual analyses; audit uses the per-analysis baselines shown above
 - `--fail-on-regression` / `--tolerance 2%` -- fail only if issues **grew** beyond tolerance
 - `--format sarif` -- upload to GitHub Code Scanning
-- `--format codeclimate` / `--format gitlab-codequality` -- GitLab Code Quality inline MR annotations
+- `--format codeclimate` -- GitLab Code Quality inline MR annotations
 - `--format pr-comment-github` / `--format pr-comment-gitlab` -- typed sticky PR/MR comment markdown
 - `--format review-github` / `--format review-gitlab` -- typed inline review envelopes for CI scripts
 - `--format annotations` -- GitHub Actions inline PR annotations (no Action required)
@@ -462,10 +575,6 @@ script:
 - `--format badge` -- shields.io-compatible SVG health badge (`fallow health --format badge > badge.svg`)
 
 Both the GitHub Action and GitLab CI template auto-detect your package manager (npm/pnpm/yarn) from lock files, so install/uninstall commands in review comments match your project.
-
-SARIF upload requires GitHub Code Scanning, which is available on public repositories and on private repositories with GitHub Advanced Security enabled. If it is unavailable, the action skips upload with a warning and leaves the job summary and primary output intact.
-
-GitHub inline review comments target the current PR file state (`side: RIGHT`). Findings on deleted lines are not modeled yet; fallow's diagnostics are current-state oriented in normal use.
 
 Adopt incrementally -- surface issues without blocking CI, then promote when ready:
 
@@ -480,14 +589,16 @@ The GitLab CI template can post rich comments directly on merge requests -- summ
 | Variable | Default | Description |
 |---|---|---|
 | `FALLOW_COMMENT` | `"false"` | Post a summary comment on the MR with collapsible sections per analysis |
-| `FALLOW_REVIEW` | `"false"` | Post inline MR discussions at the relevant lines, with `suggestion` blocks for unused exports and unused imports |
+| `FALLOW_REVIEW` | `"false"` | Post inline MR discussions from the typed `review-gitlab` envelope v2, with stable fingerprints, suggestions, dedupe, and stale-thread reconciliation |
 | `FALLOW_MAX_COMMENTS` | `"50"` | Maximum number of inline review comments |
+| `FALLOW_DIFF_FILTER` | `"added"` | Filter line-level findings to added diff hunks by default; use `diff_context`, `file`, or `nofilter` to widen review scope |
+| `FALLOW_GITLAB_BASE_SHA` / `FALLOW_GITLAB_START_SHA` / `FALLOW_GITLAB_HEAD_SHA` | `""` | Optional overrides for the GitLab MR `diff_refs` used to build inline discussion positions |
 | `FALLOW_SCRIPTS_REF` | `""` | Pinned tag or commit for remote MR-integration scripts; leave empty to prefer vendored local `ci/` + `action/` scripts |
 | `FALLOW_VERSION` | `""` | Fallow version to install. Empty reads the project's `package.json` `fallow` dependency, then falls back to `latest`; set explicitly to override the local pin |
 
-In MR pipelines, `--changed-since` is set automatically to scope analysis to changed files. Fallow edits sticky comments in place and fingerprints inline review comments so repeated runs can skip duplicates.
+In MR pipelines, `--changed-since` is set automatically to scope analysis to changed files, and the review script derives a unified diff so inline discussions stay on touched lines by default. Fallow edits sticky comments in place and fingerprints inline review comments so repeated runs can skip duplicates.
 
-The comment merging pipeline groups unused exports per file and deduplicates clone reports, keeping MR threads readable.
+The v2 review envelope keeps MR threads readable by grouping findings that land on the same path and line into one comment, preserving a machine-readable `marker_regex`, and carrying GitLab `position` data (`old_path`, `new_path`, `new_line`, and diff refs) for reliable inline discussions, including renamed files.
 
 For remote includes, pin the template to a release tag and keep `FALLOW_SCRIPTS_REF` on the same tag or commit. If your GitLab runners cannot reach `raw.githubusercontent.com`, run `npx fallow ci-template gitlab --vendor` locally, commit the generated `ci/` and `action/` files, and use GitLab's local include syntax. The vendored template prefers local scripts and skips the remote fetch path entirely.
 
