@@ -2324,7 +2324,7 @@ mod tests {
             .expect_err("second lock should report contention");
 
         assert!(err.contains("another fallow coverage setup is already running"));
-        assert!(err.contains(".fallow/setup.lock"));
+        assert!(err.replace('\\', "/").contains(".fallow/setup.lock"));
     }
 
     #[cfg(unix)]
