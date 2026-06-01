@@ -406,6 +406,8 @@ pub(crate) fn parse_css_to_module(
         iconify_prefixes: Vec::new(),
         auto_import_candidates: Vec::new(),
         directives: Vec::new(),
+        security_sinks: Vec::new(),
+        security_sinks_skipped: 0,
     }
 }
 

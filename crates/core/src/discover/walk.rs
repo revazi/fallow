@@ -806,6 +806,7 @@ mod tests {
                 codeowners: None,
                 public_packages: vec![],
                 flags: FlagsConfig::default(),
+                security: fallow_config::SecurityConfig::default(),
                 fix: fallow_config::FixConfig::default(),
                 resolve: ResolveConfig::default(),
                 sealed: false,

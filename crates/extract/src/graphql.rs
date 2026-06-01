@@ -101,6 +101,8 @@ pub(crate) fn parse_graphql_to_module(
         iconify_prefixes: Vec::new(),
         auto_import_candidates: Vec::new(),
         directives: Vec::new(),
+        security_sinks: Vec::new(),
+        security_sinks_skipped: 0,
     }
 }
 

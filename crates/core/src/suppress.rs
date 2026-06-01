@@ -46,6 +46,7 @@ pub fn kind_to_kebab(kind: IssueKind) -> &'static str {
         IssueKind::UnusedDependencyOverride => "unused-dependency-override",
         IssueKind::MisconfiguredDependencyOverride => "misconfigured-dependency-override",
         IssueKind::SecurityClientServerLeak => "security-client-server-leak",
+        IssueKind::SecuritySink => "security-sink",
     }
 }
 
@@ -84,6 +85,7 @@ fn severity_for_kind(rules: &RulesConfig, kind: IssueKind) -> Severity {
         IssueKind::UnusedDependencyOverride => rules.unused_dependency_overrides,
         IssueKind::MisconfiguredDependencyOverride => rules.misconfigured_dependency_overrides,
         IssueKind::SecurityClientServerLeak => rules.security_client_server_leak,
+        IssueKind::SecuritySink => rules.security_sink,
         IssueKind::Complexity | IssueKind::CodeDuplication => Severity::Error,
     }
 }
@@ -494,6 +496,7 @@ mod tests {
             IssueKind::MisconfiguredDependencyOverride,
             IssueKind::ReExportCycle,
             IssueKind::SecurityClientServerLeak,
+            IssueKind::SecuritySink,
         ] {
             assert_eq!(
                 IssueKind::from_discriminant(kind.to_discriminant()),
@@ -501,7 +504,7 @@ mod tests {
             );
         }
         assert_eq!(IssueKind::from_discriminant(0), None);
-        assert_eq!(IssueKind::from_discriminant(28), None);
+        assert_eq!(IssueKind::from_discriminant(29), None);
     }
 
     #[test]

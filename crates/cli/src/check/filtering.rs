@@ -1831,6 +1831,8 @@ mod tests {
         let mut results = AnalysisResults::default();
         results.security_findings.push(SecurityFinding {
             kind: SecurityFindingKind::ClientServerLeak,
+            category: None,
+            cwe: None,
             path: PathBuf::from("/project/src/client.tsx"),
             line: 2,
             col: 0,

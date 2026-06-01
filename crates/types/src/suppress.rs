@@ -79,6 +79,10 @@ pub enum IssueKind {
     /// A `"use client"` file that transitively imports a module reading a
     /// non-public `process.env` secret (security candidate).
     SecurityClientServerLeak,
+    /// A syntactic tainted-sink candidate matched against the data-driven
+    /// security matcher catalogue (`security_matchers.toml`). ONE suppression
+    /// token covers all catalogue categories.
+    SecuritySink,
 }
 
 impl IssueKind {
@@ -121,6 +125,7 @@ impl IssueKind {
                 Some(Self::MisconfiguredDependencyOverride)
             }
             "security-client-server-leak" => Some(Self::SecurityClientServerLeak),
+            "security-sink" => Some(Self::SecuritySink),
             _ => None,
         }
     }
@@ -156,6 +161,7 @@ impl IssueKind {
             Self::EmptyCatalogGroup => 25,
             Self::ReExportCycle => 26,
             Self::SecurityClientServerLeak => 27,
+            Self::SecuritySink => 28,
         }
     }
 
@@ -190,6 +196,7 @@ impl IssueKind {
             25 => Some(Self::EmptyCatalogGroup),
             26 => Some(Self::ReExportCycle),
             27 => Some(Self::SecurityClientServerLeak),
+            28 => Some(Self::SecuritySink),
             _ => None,
         }
     }
@@ -289,6 +296,7 @@ pub const KNOWN_ISSUE_KIND_NAMES: &[&str] = &[
     "misconfigured-dependency-override",
     "misconfigured-dependency-overrides",
     "security-client-server-leak",
+    "security-sink",
 ];
 
 /// Levenshtein edit distance between two ASCII-leaning strings.
@@ -471,6 +479,14 @@ mod tests {
             IssueKind::parse("misconfigured-dependency-overrides"),
             Some(IssueKind::MisconfiguredDependencyOverride)
         );
+        assert_eq!(
+            IssueKind::parse("security-client-server-leak"),
+            Some(IssueKind::SecurityClientServerLeak)
+        );
+        assert_eq!(
+            IssueKind::parse("security-sink"),
+            Some(IssueKind::SecuritySink)
+        );
     }
 
     #[test]
@@ -490,7 +506,11 @@ mod tests {
     #[test]
     fn discriminant_out_of_range() {
         assert_eq!(IssueKind::from_discriminant(0), None);
-        assert_eq!(IssueKind::from_discriminant(28), None);
+        assert_eq!(
+            IssueKind::from_discriminant(28),
+            Some(IssueKind::SecuritySink)
+        );
+        assert_eq!(IssueKind::from_discriminant(29), None);
         assert_eq!(IssueKind::from_discriminant(u8::MAX), None);
     }
 
@@ -524,6 +544,7 @@ mod tests {
             IssueKind::UnusedDependencyOverride,
             IssueKind::MisconfiguredDependencyOverride,
             IssueKind::SecurityClientServerLeak,
+            IssueKind::SecuritySink,
         ] {
             assert_eq!(
                 IssueKind::from_discriminant(kind.to_discriminant()),
@@ -531,7 +552,7 @@ mod tests {
             );
         }
         assert_eq!(IssueKind::from_discriminant(0), None);
-        assert_eq!(IssueKind::from_discriminant(28), None);
+        assert_eq!(IssueKind::from_discriminant(29), None);
     }
 
     #[test]
@@ -564,6 +585,7 @@ mod tests {
             IssueKind::UnusedDependencyOverride,
             IssueKind::MisconfiguredDependencyOverride,
             IssueKind::SecurityClientServerLeak,
+            IssueKind::SecuritySink,
         ];
         let discriminants: Vec<u8> = all_kinds.iter().map(|k| k.to_discriminant()).collect();
         let mut sorted = discriminants.clone();

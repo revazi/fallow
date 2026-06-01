@@ -1953,6 +1953,8 @@ mod tests {
             }),
             security_findings: vec![fallow_core::results::SecurityFinding {
                 kind: fallow_core::results::SecurityFindingKind::ClientServerLeak,
+                category: None,
+                cwe: None,
                 path: "/client.tsx".into(),
                 line: 1,
                 col: 0,
@@ -1961,6 +1963,7 @@ mod tests {
                 actions: vec![],
             }],
             security_unresolved_edge_files: 2,
+            security_unresolved_callee_sites: 0,
         }
     }
 

@@ -1,0 +1,310 @@
+//! Integration tests for the data-driven security matcher catalogue categories
+//! beyond `dangerous-html` (which is covered in `security_dangerous_html.rs`).
+//!
+//! Every shipped catalogue category that can fire at runtime is exercised here
+//! with a positive case (a non-literal sink fires exactly one candidate of the
+//! right category + CWE) and a negative case (a literal/safe argument fires
+//! nothing), mirroring the `dangerous-html` fixture shape. Each category also
+//! confirms the default-off behavior: with the `security_sink` rule at its
+//! default `off`, no tainted-sink finding is produced.
+//!
+//! Findings are CANDIDATES for downstream agent verification, NOT verified
+//! vulnerabilities.
+
+use fallow_config::Severity;
+use fallow_core::results::{AnalysisResults, SecurityFindingKind};
+
+use super::common::{create_config, create_config_with_rules, fixture_path};
+
+fn analyze_with_security_sink(fixture: &str) -> AnalysisResults {
+    let root = fixture_path(fixture);
+    let config = create_config_with_rules(root, |rules| {
+        rules.security_sink = Severity::Warn;
+    });
+    fallow_core::analyze(&config).expect("analysis should succeed")
+}
+
+fn analyze_default_off(fixture: &str) -> AnalysisResults {
+    let root = fixture_path(fixture);
+    let config = create_config(root);
+    assert_eq!(config.rules.security_sink, Severity::Off);
+    fallow_core::analyze(&config).expect("analysis should succeed")
+}
+
+/// Find a tainted-sink candidate anchored on a path suffix and assert it carries
+/// the expected category + CWE plus a suppress action.
+fn assert_candidate(results: &AnalysisResults, suffix: &str, category: &str, cwe: u32) {
+    let finding = results
+        .security_findings
+        .iter()
+        .find(|f| {
+            f.path
+                .to_string_lossy()
+                .replace('\\', "/")
+                .ends_with(suffix)
+        })
+        .unwrap_or_else(|| panic!("{suffix} should produce a {category} candidate"));
+    assert!(
+        matches!(finding.kind, SecurityFindingKind::TaintedSink),
+        "{suffix} should be a tainted-sink candidate"
+    );
+    assert_eq!(
+        finding.category.as_deref(),
+        Some(category),
+        "category for {suffix}"
+    );
+    assert_eq!(finding.cwe, Some(cwe), "cwe for {suffix}");
+    assert!(
+        !finding.actions.is_empty(),
+        "candidate {suffix} must carry a suppress action"
+    );
+}
+
+fn anchored_on(results: &AnalysisResults, suffix: &str) -> bool {
+    results.security_findings.iter().any(|f| {
+        f.path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .ends_with(suffix)
+    })
+}
+
+fn no_tainted_sinks(results: &AnalysisResults) -> bool {
+    results
+        .security_findings
+        .iter()
+        .all(|f| !matches!(f.kind, SecurityFindingKind::TaintedSink))
+}
+
+// ── command-injection (CWE-78), provenance-gated to node:child_process ───────
+
+#[test]
+fn command_injection_non_literal_fires() {
+    let results = analyze_with_security_sink("security-command-injection");
+    assert_candidate(&results, "src/sink.ts", "command-injection", 78);
+}
+
+#[test]
+fn command_injection_literal_does_not_fire() {
+    let results = analyze_with_security_sink("security-command-injection");
+    assert!(
+        !anchored_on(&results, "src/safe.ts"),
+        "a literal command must not be flagged"
+    );
+}
+
+#[test]
+fn command_injection_without_provenance_does_not_fire() {
+    // A same-named local `exec` that does NOT come from node:child_process must
+    // not fire: the matcher is binding-traced (false-negative preferred).
+    let results = analyze_with_security_sink("security-command-injection");
+    assert!(
+        !anchored_on(&results, "src/no-provenance.ts"),
+        "a same-named local exec without node:child_process provenance must not fire"
+    );
+}
+
+#[test]
+fn command_injection_default_off_emits_nothing() {
+    assert!(no_tainted_sinks(&analyze_default_off(
+        "security-command-injection"
+    )));
+}
+
+// ── code-injection (CWE-94): eval (ungated) + vm (node:vm) ───────────────────
+
+#[test]
+fn code_injection_eval_non_literal_fires() {
+    let results = analyze_with_security_sink("security-code-injection");
+    assert_candidate(&results, "src/sink.ts", "code-injection", 94);
+}
+
+#[test]
+fn code_injection_vm_non_literal_fires() {
+    let results = analyze_with_security_sink("security-code-injection");
+    assert_candidate(&results, "src/vm.ts", "code-injection", 94);
+}
+
+#[test]
+fn code_injection_literal_does_not_fire() {
+    let results = analyze_with_security_sink("security-code-injection");
+    assert!(
+        !anchored_on(&results, "src/safe.ts"),
+        "a literal eval argument must not be flagged"
+    );
+}
+
+#[test]
+fn code_injection_default_off_emits_nothing() {
+    assert!(no_tainted_sinks(&analyze_default_off(
+        "security-code-injection"
+    )));
+}
+
+// ── sql-injection (CWE-89), ungated (broad tier) ─────────────────────────────
+
+#[test]
+fn sql_injection_concat_fires() {
+    // A string-concatenation argument into db.query() is the unsafe shape.
+    let results = analyze_with_security_sink("security-sql-injection");
+    assert_candidate(&results, "src/sink.ts", "sql-injection", 89);
+}
+
+#[test]
+fn sql_injection_raw_fires() {
+    // Drizzle's sql.raw(<non-literal>) bypasses parameterization.
+    let results = analyze_with_security_sink("security-sql-injection");
+    assert_candidate(&results, "src/raw.ts", "sql-injection", 89);
+}
+
+#[test]
+fn sql_injection_literal_does_not_fire() {
+    let results = analyze_with_security_sink("security-sql-injection");
+    assert!(
+        !anchored_on(&results, "src/safe.ts"),
+        "a literal SQL string must not be flagged"
+    );
+}
+
+#[test]
+fn sql_injection_parameterized_template_and_object_do_not_fire() {
+    // A bare parameterized `sql`${x}`` tagged template binds safely (no bare-sql
+    // matcher row), and the object-form `.execute({ sql, args })` is the
+    // parameterized shape excluded by arg_kinds. Neither must fire.
+    let results = analyze_with_security_sink("security-sql-injection");
+    assert!(
+        !anchored_on(&results, "src/parameterized.ts"),
+        "a parameterized sql template / object-form execute must not be flagged"
+    );
+}
+
+#[test]
+fn sql_injection_default_off_emits_nothing() {
+    assert!(no_tainted_sinks(&analyze_default_off(
+        "security-sql-injection"
+    )));
+}
+
+// ── ssrf (CWE-918), ungated (broad tier) ─────────────────────────────────────
+
+#[test]
+fn ssrf_non_literal_fires() {
+    let results = analyze_with_security_sink("security-ssrf");
+    assert_candidate(&results, "src/sink.ts", "ssrf", 918);
+}
+
+#[test]
+fn ssrf_literal_does_not_fire() {
+    let results = analyze_with_security_sink("security-ssrf");
+    assert!(
+        !anchored_on(&results, "src/safe.ts"),
+        "a literal fetch URL must not be flagged"
+    );
+}
+
+#[test]
+fn ssrf_default_off_emits_nothing() {
+    assert!(no_tainted_sinks(&analyze_default_off("security-ssrf")));
+}
+
+// ── path-traversal (CWE-22), provenance-gated to node:path ───────────────────
+
+#[test]
+fn path_traversal_non_literal_fires() {
+    let results = analyze_with_security_sink("security-path-traversal");
+    assert_candidate(&results, "src/sink.ts", "path-traversal", 22);
+}
+
+#[test]
+fn path_traversal_literal_does_not_fire() {
+    let results = analyze_with_security_sink("security-path-traversal");
+    assert!(
+        !anchored_on(&results, "src/safe.ts"),
+        "a fully-literal path.join must not be flagged"
+    );
+}
+
+#[test]
+fn path_traversal_default_off_emits_nothing() {
+    assert!(no_tainted_sinks(&analyze_default_off(
+        "security-path-traversal"
+    )));
+}
+
+// ── open-redirect (CWE-601), ungated (broad tier) ────────────────────────────
+
+#[test]
+fn open_redirect_non_literal_fires() {
+    let results = analyze_with_security_sink("security-open-redirect");
+    assert_candidate(&results, "src/sink.ts", "open-redirect", 601);
+}
+
+#[test]
+fn open_redirect_literal_does_not_fire() {
+    let results = analyze_with_security_sink("security-open-redirect");
+    assert!(
+        !anchored_on(&results, "src/safe.ts"),
+        "a literal redirect target must not be flagged"
+    );
+}
+
+#[test]
+fn open_redirect_default_off_emits_nothing() {
+    assert!(no_tainted_sinks(&analyze_default_off(
+        "security-open-redirect"
+    )));
+}
+
+// ── weak-crypto (CWE-327), provenance-gated to node:crypto ───────────────────
+
+#[test]
+fn weak_crypto_non_literal_fires() {
+    let results = analyze_with_security_sink("security-weak-crypto");
+    assert_candidate(&results, "src/sink.ts", "weak-crypto", 327);
+}
+
+#[test]
+fn weak_crypto_literal_does_not_fire() {
+    let results = analyze_with_security_sink("security-weak-crypto");
+    assert!(
+        !anchored_on(&results, "src/safe.ts"),
+        "a literal crypto algorithm must not be flagged"
+    );
+}
+
+#[test]
+fn weak_crypto_default_off_emits_nothing() {
+    assert!(no_tainted_sinks(&analyze_default_off(
+        "security-weak-crypto"
+    )));
+}
+
+// ── unsafe-deserialization (CWE-502): js-yaml + node-serialize ───────────────
+
+#[test]
+fn unsafe_deserialization_yaml_non_literal_fires() {
+    let results = analyze_with_security_sink("security-unsafe-deserialization");
+    assert_candidate(&results, "src/sink.ts", "unsafe-deserialization", 502);
+}
+
+#[test]
+fn unsafe_deserialization_node_serialize_non_literal_fires() {
+    let results = analyze_with_security_sink("security-unsafe-deserialization");
+    assert_candidate(&results, "src/serialize.ts", "unsafe-deserialization", 502);
+}
+
+#[test]
+fn unsafe_deserialization_literal_does_not_fire() {
+    let results = analyze_with_security_sink("security-unsafe-deserialization");
+    assert!(
+        !anchored_on(&results, "src/safe.ts"),
+        "a literal yaml.load input must not be flagged"
+    );
+}
+
+#[test]
+fn unsafe_deserialization_default_off_emits_nothing() {
+    assert!(no_tainted_sinks(&analyze_default_off(
+        "security-unsafe-deserialization"
+    )));
+}

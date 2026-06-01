@@ -129,6 +129,12 @@ pub struct RulesConfig {
     /// `fallow security`; never under bare `fallow` or the `audit` gate.
     #[serde(default = "Severity::default_off")]
     pub security_client_server_leak: Severity,
+    /// Opt-in (default off): a syntactic tainted-sink candidate matched against
+    /// the data-driven catalogue (`security_matchers.toml`). ONE knob gates ALL
+    /// catalogue categories. Surfaced only by `fallow security`; never under
+    /// bare `fallow` or the `audit` gate.
+    #[serde(default = "Severity::default_off")]
+    pub security_sink: Severity,
 }
 
 impl Default for RulesConfig {
@@ -160,6 +166,7 @@ impl Default for RulesConfig {
             unused_dependency_overrides: Severity::Warn,
             misconfigured_dependency_overrides: Severity::Error,
             security_client_server_leak: Severity::Off,
+            security_sink: Severity::Off,
         }
     }
 }
@@ -244,6 +251,9 @@ impl RulesConfig {
         }
         if let Some(s) = partial.security_client_server_leak {
             self.security_client_server_leak = s;
+        }
+        if let Some(s) = partial.security_sink {
+            self.security_sink = s;
         }
     }
 }
@@ -406,6 +416,8 @@ pub struct PartialRulesConfig {
     pub misconfigured_dependency_overrides: Option<Severity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub security_client_server_leak: Option<Severity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security_sink: Option<Severity>,
 }
 
 /// Every rule name accepted by `RulesConfig` deserialization, in kebab-case.
@@ -445,6 +457,7 @@ pub const KNOWN_RULE_NAMES: &[&str] = &[
     "unused-dependency-overrides",
     "misconfigured-dependency-overrides",
     "security-client-server-leak",
+    "security-sink",
     "unused-file",
     "unused-export",
     "unused-type",
@@ -762,6 +775,7 @@ mod tests {
             unused_dependency_overrides: Some(Severity::Off),
             misconfigured_dependency_overrides: Some(Severity::Off),
             security_client_server_leak: Some(Severity::Off),
+            security_sink: Some(Severity::Off),
         };
         rules.apply_partial(&partial);
         assert_eq!(rules.unused_files, Severity::Off);
@@ -773,6 +787,7 @@ mod tests {
         assert_eq!(rules.coverage_gaps, Severity::Off);
         assert_eq!(rules.feature_flags, Severity::Off);
         assert_eq!(rules.stale_suppressions, Severity::Off);
+        assert_eq!(rules.security_sink, Severity::Off);
     }
 
     #[test]
@@ -803,7 +818,7 @@ mod tests {
 
     #[test]
     fn known_rule_names_count_matches_struct() {
-        assert_eq!(KNOWN_RULE_NAMES.len(), 53);
+        assert_eq!(KNOWN_RULE_NAMES.len(), 54);
     }
 
     #[test]

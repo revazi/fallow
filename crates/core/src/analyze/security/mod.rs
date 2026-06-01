@@ -24,6 +24,12 @@ use crate::discover::FileId;
 use crate::graph::ModuleGraph;
 use crate::suppress::SuppressionContext;
 
+mod catalogue;
+mod tainted_sink;
+
+pub use catalogue::catalogue_title;
+pub use tainted_sink::{CategoryFilter, find_tainted_sinks};
+
 /// The inline suppression kind token for the client-server-leak rule.
 const SUPPRESS_KIND: &str = "security-client-server-leak";
 
@@ -304,6 +310,8 @@ fn build_leak_finding(
 
     SecurityFinding {
         kind: SecurityFindingKind::ClientServerLeak,
+        category: None,
+        cwe: None,
         path: anchor.path.clone(),
         line: anchor.line,
         col: anchor.col,
@@ -333,6 +341,8 @@ fn build_direct_finding(
     );
     SecurityFinding {
         kind: SecurityFindingKind::ClientServerLeak,
+        category: None,
+        cwe: None,
         path: path.clone(),
         line: 1,
         col: 0,

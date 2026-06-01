@@ -1,7 +1,9 @@
 //! `fallow security` command: opt-in local security-candidate surface.
 //!
-//! Ships one graph-structural rule, `client-server-leak`. Findings are
-//! CANDIDATES for downstream agent verification, NOT verified vulnerabilities.
+//! Ships the graph-structural `client-server-leak` rule plus the data-driven
+//! `tainted-sink` catalogue (one `TaintedSink` kind covering every CWE category
+//! in `security_matchers.toml`). Findings are CANDIDATES for downstream agent
+//! verification, NOT verified vulnerabilities.
 //! This command is the ONLY surface for security findings: they never appear
 //! under bare `fallow` or the `audit` gate. There is no `confidence` or
 //! `signal_strength` field; the structural trace is the only honest signal.
@@ -40,6 +42,11 @@ pub struct SecurityOutput {
     /// follow. A leak hidden behind such an edge would not be reported, so a
     /// zero finding count with a non-zero value here is NOT a clean bill.
     pub unresolved_edge_files: usize,
+    /// In-band blind spot: number of sink-shaped nodes the catalogue detector
+    /// could not flatten to a static callee path (dynamic dispatch, computed
+    /// members, aliased bindings). A zero finding count with a non-zero value
+    /// here is NOT a clean bill.
+    pub unresolved_callee_sites: usize,
 }
 
 /// Options for `fallow security`, mirroring the global CLI flags it honors.
@@ -107,10 +114,15 @@ pub fn run(opts: &SecurityOptions<'_>) -> ExitCode {
     };
 
     // Respect an explicit user severity; force the rule on (warn) when it is the
-    // default off, so the detector runs for this dedicated command.
+    // default off, so the detector runs for this dedicated command. Both the
+    // client-server-leak and the catalogue-driven tainted-sink rules are flipped.
     let effective_severity = config.rules.security_client_server_leak;
     if effective_severity == Severity::Off {
         config.rules.security_client_server_leak = Severity::Warn;
+    }
+    let effective_sink_severity = config.rules.security_sink;
+    if effective_sink_severity == Severity::Off {
+        config.rules.security_sink = Severity::Warn;
     }
 
     let mut results = match fallow_core::analyze(&config) {
@@ -146,18 +158,22 @@ pub fn run(opts: &SecurityOptions<'_>) -> ExitCode {
     }
 
     let unresolved_edge_files = results.security_unresolved_edge_files;
+    let unresolved_callee_sites = results.security_unresolved_callee_sites;
     let findings: Vec<SecurityFinding> = std::mem::take(&mut results.security_findings)
         .into_iter()
         .map(|f| relativize_finding(f, &config.root))
         .collect();
 
-    let fail =
-        (opts.fail_on_issues || effective_severity == Severity::Error) && !findings.is_empty();
+    let fail = (opts.fail_on_issues
+        || effective_severity == Severity::Error
+        || effective_sink_severity == Severity::Error)
+        && !findings.is_empty();
 
     let output = SecurityOutput {
         schema_version: SecuritySchemaVersion::V1,
         security_findings: findings,
         unresolved_edge_files,
+        unresolved_callee_sites,
     };
 
     if let Some(path) = opts.sarif_file
@@ -241,6 +257,10 @@ fn render_human_summary(output: &SecurityOutput) -> String {
             plural(n)
         );
     }
+    if output.unresolved_callee_sites > 0 {
+        let n = output.unresolved_callee_sites;
+        let _ = writeln!(out, "Unresolved sink callees: {n} site{}.", plural(n));
+    }
     out
 }
 
@@ -262,9 +282,7 @@ pub fn render_human(output: &SecurityOutput) -> String {
         out.push_str("No security candidates found.\n");
     } else {
         for finding in &output.security_findings {
-            let kind = match finding.kind {
-                SecurityFindingKind::ClientServerLeak => "client-server-leak",
-            };
+            let kind = security_finding_label(finding);
             // [I] (info/advisory) is the design-system prefix for off-by-default
             // findings surfaced for review; it deliberately is NOT a severity glyph.
             out.push_str(&format!(
@@ -285,11 +303,14 @@ pub fn render_human(output: &SecurityOutput) -> String {
                     ));
                 }
             }
-            out.push_str(
-                "    Next: check whether the import is type-only, server-only, or behind a \
-                 build-time guard; if the value never ships to the client bundle, this candidate \
-                 is a false positive.\n\n",
-            );
+            if matches!(finding.kind, SecurityFindingKind::ClientServerLeak) {
+                out.push_str(
+                    "    Next: check whether the import is type-only, server-only, or behind a \
+                     build-time guard; if the value never ships to the client bundle, this \
+                     candidate is a false positive.\n",
+                );
+            }
+            out.push('\n');
         }
     }
 
@@ -298,6 +319,17 @@ pub fn render_human(output: &SecurityOutput) -> String {
         out.push_str(&format!(
             "{} {n} client file{} reached a dynamic import the reachability scan could not \
              follow; a leak behind those edges would not be reported, so an empty result is \
+             not a clean bill.\n",
+            "[I]".blue().bold(),
+            plural(n),
+        ));
+    }
+
+    if output.unresolved_callee_sites > 0 {
+        let n = output.unresolved_callee_sites;
+        out.push_str(&format!(
+            "{} {n} sink site{} had a callee the catalogue scan could not resolve to a static \
+             path (dynamic dispatch, computed members, aliased bindings); an empty result is \
              not a clean bill.\n",
             "[I]".blue().bold(),
             plural(n),
@@ -313,23 +345,108 @@ pub fn render_human(output: &SecurityOutput) -> String {
     out
 }
 
+/// Render the human-facing label for a finding. `ClientServerLeak` keeps its
+/// bespoke kebab kind; `TaintedSink` uses the catalogue title plus the CWE
+/// number carried on the finding.
+fn security_finding_label(finding: &SecurityFinding) -> String {
+    match finding.kind {
+        SecurityFindingKind::ClientServerLeak => "client-server-leak".to_string(),
+        SecurityFindingKind::TaintedSink => {
+            let title = finding
+                .category
+                .as_deref()
+                .and_then(fallow_core::analyze::security_catalogue_title)
+                .or(finding.category.as_deref())
+                .unwrap_or("tainted-sink");
+            match finding.cwe {
+                Some(cwe) => format!("{title} (CWE-{cwe})"),
+                None => title.to_string(),
+            }
+        }
+    }
+}
+
 const fn hop_role_label(role: TraceHopRole) -> &'static str {
     match role {
         TraceHopRole::ClientBoundary => "client boundary",
         TraceHopRole::Intermediate => "intermediate",
         TraceHopRole::SecretSource => "secret source",
+        TraceHopRole::Sink => "sink site",
+    }
+}
+
+/// The SARIF ruleId for a finding. `client-server-leak` keeps its bespoke id;
+/// each `TaintedSink` category gets `security/<category>` so the GitHub Security
+/// tab groups and labels candidates per CWE class instead of collapsing every
+/// finding under the client-server-leak rule.
+fn sarif_rule_id(finding: &SecurityFinding) -> String {
+    match finding.kind {
+        SecurityFindingKind::ClientServerLeak => "security/client-server-leak".to_owned(),
+        SecurityFindingKind::TaintedSink => {
+            format!(
+                "security/{}",
+                finding.category.as_deref().unwrap_or("tainted-sink")
+            )
+        }
+    }
+}
+
+/// Build the SARIF rule definition for a ruleId, deriving per-category metadata
+/// (catalogue title + CWE tag) for `TaintedSink` findings so the CWE survives
+/// into GHAS via the `external/cwe/cwe-NNN` tag convention.
+fn sarif_rule_def(rule_id: &str, finding: &SecurityFinding) -> serde_json::Value {
+    match finding.kind {
+        SecurityFindingKind::ClientServerLeak => serde_json::json!({
+            "id": rule_id,
+            "shortDescription": { "text": "Client-server secret leak candidate (unverified)" },
+            "fullDescription": { "text":
+                "Unverified candidate, requires verification: a \"use client\" file \
+                 transitively imports a module that reads a non-public process.env \
+                 secret. fallow does not prove the secret reaches client-bundled code." },
+            "helpUri": "https://github.com/fallow-rs/fallow",
+            "defaultConfiguration": { "level": "note" }
+        }),
+        SecurityFindingKind::TaintedSink => {
+            let title = finding
+                .category
+                .as_deref()
+                .and_then(fallow_core::analyze::security_catalogue_title)
+                .or(finding.category.as_deref())
+                .unwrap_or("tainted-sink");
+            let mut rule = serde_json::json!({
+                "id": rule_id,
+                "shortDescription": { "text": format!("{title} candidate (unverified)") },
+                "fullDescription": { "text": format!(
+                    "Unverified candidate, requires verification: {title}. fallow flags a \
+                     syntactic sink reached by a non-literal argument; it does not prove the \
+                     value is attacker-controlled or reaches the sink unsanitized."
+                ) },
+                "helpUri": "https://github.com/fallow-rs/fallow",
+                "defaultConfiguration": { "level": "note" }
+            });
+            if let Some(cwe) = finding.cwe {
+                rule["properties"] = serde_json::json!({
+                    "tags": [format!("external/cwe/cwe-{cwe}")]
+                });
+            }
+            rule
+        }
     }
 }
 
 /// SARIF output. Emits `level: "note"` (never error/warning) so the candidate
-/// framing survives into the GitHub Security tab, and carries no CWE tag. Trace
-/// hops become `relatedLocations` of the single result.
+/// framing survives into the GitHub Security tab. Each finding's ruleId is
+/// per-category (`security/<category>` for tainted-sink, `security/client-server-leak`
+/// for the graph rule); the `rules` array carries one definition per distinct
+/// ruleId present, with the CWE tag for tainted-sink categories. Trace hops
+/// become `relatedLocations` of the result.
 #[must_use]
 fn render_sarif(output: &SecurityOutput) -> String {
     let results: Vec<serde_json::Value> = output
         .security_findings
         .iter()
         .map(|finding| {
+            let rule_id = sarif_rule_id(finding);
             let related: Vec<serde_json::Value> = finding
                 .trace
                 .iter()
@@ -338,12 +455,12 @@ fn render_sarif(output: &SecurityOutput) -> String {
             // Stable dedup key for GHAS: rule + anchor path + line. Without
             // partialFingerprints, every run re-opens previously triaged alerts.
             let fp = format!(
-                "security/client-server-leak:{}:{}",
+                "{rule_id}:{}:{}",
                 finding.path.to_string_lossy().replace('\\', "/"),
                 finding.line,
             );
             serde_json::json!({
-                "ruleId": "security/client-server-leak",
+                "ruleId": rule_id,
                 "level": "note",
                 "message": { "text": finding.evidence },
                 "locations": [sarif_location(&finding.path, finding.line, finding.col)],
@@ -353,6 +470,18 @@ fn render_sarif(output: &SecurityOutput) -> String {
         })
         .collect();
 
+    // One rule definition per distinct ruleId present in the findings.
+    let mut seen: Vec<String> = Vec::new();
+    let mut rules: Vec<serde_json::Value> = Vec::new();
+    for finding in &output.security_findings {
+        let rule_id = sarif_rule_id(finding);
+        if seen.iter().any(|s| s == &rule_id) {
+            continue;
+        }
+        seen.push(rule_id.clone());
+        rules.push(sarif_rule_def(&rule_id, finding));
+    }
+
     let sarif = serde_json::json!({
         "version": "2.1.0",
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
@@ -361,16 +490,7 @@ fn render_sarif(output: &SecurityOutput) -> String {
                 "name": "fallow",
                 "version": env!("CARGO_PKG_VERSION"),
                 "informationUri": "https://github.com/fallow-rs/fallow",
-                "rules": [{
-                    "id": "security/client-server-leak",
-                    "shortDescription": { "text": "Client-server secret leak candidate (unverified)" },
-                    "fullDescription": { "text":
-                        "Unverified candidate, requires verification: a \"use client\" file \
-                         transitively imports a module that reads a non-public process.env \
-                         secret. fallow does not prove the secret reaches client-bundled code." },
-                    "helpUri": "https://github.com/fallow-rs/fallow",
-                    "defaultConfiguration": { "level": "note" }
-                }]
+                "rules": rules,
             }},
             "results": results,
         }],
@@ -432,6 +552,8 @@ mod tests {
                 },
             ],
             actions: vec![],
+            category: None,
+            cwe: None,
         }
     }
 
@@ -440,6 +562,7 @@ mod tests {
             schema_version: SecuritySchemaVersion::V1,
             security_findings: findings,
             unresolved_edge_files,
+            unresolved_callee_sites: 0,
         }
     }
 
@@ -497,6 +620,7 @@ mod tests {
         );
         assert_eq!(hop_role_label(TraceHopRole::Intermediate), "intermediate");
         assert_eq!(hop_role_label(TraceHopRole::SecretSource), "secret source");
+        assert_eq!(hop_role_label(TraceHopRole::Sink), "sink site");
     }
 
     #[test]
@@ -589,6 +713,29 @@ mod tests {
         assert_eq!(result["relatedLocations"].as_array().unwrap().len(), 3);
         // Stable dedup fingerprint present for GHAS.
         assert!(result["partialFingerprints"]["fallowSecurity/v1"].is_string());
+    }
+
+    #[test]
+    fn sarif_tainted_sink_uses_per_category_rule_id_and_cwe_tag() {
+        let root = Path::new("/proj/root");
+        let mut finding = sample_finding(root);
+        finding.kind = SecurityFindingKind::TaintedSink;
+        finding.category = Some("dangerous-html".to_owned());
+        finding.cwe = Some(79);
+        let rendered = render_sarif(&output_with(vec![relativize_finding(finding, root)], 0));
+        let sarif: serde_json::Value = serde_json::from_str(&rendered).expect("valid SARIF JSON");
+        let run = &sarif["runs"][0];
+        // The finding is grouped under its own per-category rule, not collapsed
+        // into client-server-leak, and stays at candidate (note) level.
+        let result = &run["results"][0];
+        assert_eq!(result["level"], "note");
+        assert_eq!(result["ruleId"], "security/dangerous-html");
+        // Exactly one rule definition, carrying the CWE as a GHAS tag.
+        let rules = run["tool"]["driver"]["rules"].as_array().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0]["id"], "security/dangerous-html");
+        let tags = rules[0]["properties"]["tags"].as_array().unwrap();
+        assert!(tags.iter().any(|t| t == "external/cwe/cwe-79"));
     }
 
     #[test]

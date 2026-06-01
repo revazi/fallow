@@ -73,6 +73,109 @@ pub struct ModuleInfo {
     /// Consumed by the security `client-server-leak` detector to identify
     /// React Server Component client boundaries.
     pub directives: Vec<String>,
+    /// Captured non-literal security sink sites (category-blind). Consumed by
+    /// the catalogue-driven `tainted_sink` detector. Captured only by JS/TS
+    /// extraction; empty for CSS/MDX/etc. See `security_matchers.toml`.
+    pub security_sinks: Vec<SinkSite>,
+    /// Count of sink-shaped nodes whose callee could not be flattened to a
+    /// static path (dynamic dispatch, computed members, aliased bindings).
+    /// Surfaced in-band so an empty catalogue result with a non-zero count is
+    /// not a clean bill.
+    pub security_sinks_skipped: u32,
+}
+
+/// The syntactic shape of a captured security sink site. Category-blind: the
+/// extractor records the shape and the dotted/bare callee path; the analyze
+/// layer matches it against the data-driven catalogue. See
+/// `crates/core/data/security_matchers.toml`.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    bitcode::Encode,
+    bitcode::Decode,
+)]
+pub enum SinkShape {
+    /// A call to a bare identifier (e.g. `eval(x)`).
+    Call,
+    /// A call to a dotted member path (e.g. `child_process.exec(x)`).
+    MemberCall,
+    /// An assignment to a member target (e.g. `el.innerHTML = x`).
+    MemberAssign,
+    /// A tagged template expression (e.g. ``sql`...${x}...` ``).
+    TaggedTemplate,
+    /// A JSX attribute value (e.g. `dangerouslySetInnerHTML={x}`).
+    JsxAttr,
+}
+
+/// The shape of the non-literal argument captured at a sink site. Category-blind
+/// like [`SinkShape`], but finer-grained: it lets the catalogue matcher require
+/// or exclude specific argument shapes. The discriminator is what distinguishes
+/// an unsafe SQL string concatenation or template-into-`.execute()` from a
+/// safely-parameterized `` sql`${x}` `` tagged template or an object-literal
+/// `.execute({ sql, args })` argument.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    bitcode::Encode,
+    bitcode::Decode,
+)]
+pub enum SinkArgKind {
+    /// A template literal with at least one `${...}` substitution (e.g.
+    /// `` `SELECT ${x}` ``). On a `tagged-template` shape this is the tag's
+    /// quasi; on a `call`/`member-call` shape it is the positional argument.
+    TemplateWithSubst,
+    /// A binary `+` string concatenation (e.g. `"SELECT " + x`).
+    Concat,
+    /// An object literal (e.g. `.execute({ sql, args })`, the parameterized form).
+    Object,
+    /// A call expression argument (e.g. `query(buildSql())`).
+    Call,
+    /// Any other non-literal expression (bare identifier, member access, etc.).
+    Other,
+}
+
+/// A captured non-literal sink site. The visitor records EVERY call /
+/// member-assign / member-call / tagged-template / jsx-attr whose relevant
+/// argument is non-literal; it knows nothing about CWE categories. A
+/// fully-literal argument is never captured (conservative trigger).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bitcode::Encode, bitcode::Decode)]
+pub struct SinkSite {
+    /// The syntactic shape of the sink site.
+    pub sink_shape: SinkShape,
+    /// The flattened dotted/bare callee or member path.
+    pub callee_path: String,
+    /// The positional index of the non-literal argument.
+    pub arg_index: u32,
+    /// Whether the relevant argument is non-literal (always true when captured).
+    pub arg_is_non_literal: bool,
+    /// The finer-grained shape of the captured non-literal argument. Lets the
+    /// catalogue require unsafe shapes (concat / template-with-substitution) and
+    /// exclude safe ones (object literal, the parameterized form). See
+    /// [`SinkArgKind`].
+    pub arg_kind: SinkArgKind,
+    /// Byte offset of the sink span start. Stored as `u32` (not `Span`) so the
+    /// struct is bitcode-encodable and can be persisted directly in the cache.
+    pub span_start: u32,
+    /// Byte offset of the sink span end.
+    pub span_end: u32,
+}
+
+impl SinkSite {
+    /// Reconstruct the source span from the stored byte offsets.
+    #[must_use]
+    pub fn span(&self) -> Span {
+        Span::new(self.span_start, self.span_end)
+    }
 }
 
 /// One alias entry tying an exported object's dotted property path to a namespace import.
@@ -445,7 +548,9 @@ const _: () = assert!(std::mem::size_of::<ImportedName>() == 24);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<MemberAccess>() == 48);
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(std::mem::size_of::<ModuleInfo>() == 568);
+const _: () = assert!(std::mem::size_of::<SinkSite>() == 40);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<ModuleInfo>() == 600);
 
 /// A re-export declaration.
 #[derive(Debug, Clone)]
@@ -512,6 +617,57 @@ mod tests {
     #[test]
     fn line_offsets_empty_string() {
         assert_eq!(compute_line_offsets(""), vec![0]);
+    }
+
+    #[test]
+    fn sink_shape_bitcode_roundtrip() {
+        for shape in [
+            SinkShape::Call,
+            SinkShape::MemberCall,
+            SinkShape::MemberAssign,
+            SinkShape::TaggedTemplate,
+            SinkShape::JsxAttr,
+        ] {
+            let encoded = bitcode::encode(&shape);
+            let decoded: SinkShape = bitcode::decode(&encoded).expect("decode sink shape");
+            assert_eq!(shape, decoded);
+        }
+    }
+
+    #[test]
+    fn sink_arg_kind_bitcode_roundtrip() {
+        for kind in [
+            SinkArgKind::TemplateWithSubst,
+            SinkArgKind::Concat,
+            SinkArgKind::Object,
+            SinkArgKind::Call,
+            SinkArgKind::Other,
+        ] {
+            let encoded = bitcode::encode(&kind);
+            let decoded: SinkArgKind = bitcode::decode(&encoded).expect("decode sink arg kind");
+            assert_eq!(kind, decoded);
+        }
+    }
+
+    #[test]
+    fn sink_site_bitcode_roundtrip() {
+        let site = SinkSite {
+            sink_shape: SinkShape::MemberAssign,
+            callee_path: "el.innerHTML".to_string(),
+            arg_index: 0,
+            arg_is_non_literal: true,
+            arg_kind: SinkArgKind::Other,
+            span_start: 10,
+            span_end: 20,
+        };
+        let encoded = bitcode::encode(&site);
+        let decoded: SinkSite = bitcode::decode(&encoded).expect("decode sink site");
+        assert_eq!(decoded.sink_shape, site.sink_shape);
+        assert_eq!(decoded.callee_path, site.callee_path);
+        assert_eq!(decoded.arg_index, site.arg_index);
+        assert_eq!(decoded.arg_is_non_literal, site.arg_is_non_literal);
+        assert_eq!(decoded.arg_kind, site.arg_kind);
+        assert_eq!(decoded.span(), site.span());
     }
 
     #[test]

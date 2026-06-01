@@ -975,6 +975,8 @@ mod tests {
             iconify_prefixes: Vec::new(),
             auto_import_candidates: Vec::new(),
             directives: Vec::new(),
+            security_sinks: Vec::new(),
+            security_sinks_skipped: 0,
             complexity: vec![fallow_types::extract::FunctionComplexity {
                 name: format!("fn_{id}"),
                 line: id + 1,

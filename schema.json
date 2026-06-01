@@ -168,7 +168,8 @@
         "unresolved-catalog-references": "error",
         "unused-dependency-overrides": "warn",
         "misconfigured-dependency-overrides": "error",
-        "security-client-server-leak": "off"
+        "security-client-server-leak": "off",
+        "security-sink": "off"
       }
     },
     "boundaries": {
@@ -183,6 +184,10 @@
       "default": {
         "configObjectHeuristics": false
       }
+    },
+    "security": {
+      "$ref": "#/$defs/SecurityConfig",
+      "default": {}
     },
     "fix": {
       "$ref": "#/$defs/FixConfig",
@@ -982,6 +987,11 @@
           "description": "Opt-in (default off): a `\"use client\"` file that transitively imports a\nmodule reading a non-public `process.env` secret. Surfaced only by\n`fallow security`; never under bare `fallow` or the `audit` gate.",
           "$ref": "#/$defs/Severity",
           "default": "off"
+        },
+        "security-sink": {
+          "description": "Opt-in (default off): a syntactic tainted-sink candidate matched against\nthe data-driven catalogue (`security_matchers.toml`). ONE knob gates ALL\ncatalogue categories. Surfaced only by `fallow security`; never under\nbare `fallow` or the `audit` gate.",
+          "$ref": "#/$defs/Severity",
+          "default": "off"
         }
       }
     },
@@ -1176,6 +1186,51 @@
       "required": [
         "function"
       ]
+    },
+    "SecurityConfig": {
+      "description": "Scopes the data-driven security matcher catalogue used by `fallow security`.\nAn absent block (or both `include`/`exclude` unset) admits every category.",
+      "type": "object",
+      "properties": {
+        "categories": {
+          "description": "Include/exclude filter over catalogue category ids (e.g. `dangerous-html`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecurityCategories"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SecurityCategories": {
+      "description": "Include/exclude lists scoping the active security matcher categories. When\n`include` is set, only those categories are active; `exclude` removes\ncategories from the admitted set. Both unset admits every category.",
+      "type": "object",
+      "properties": {
+        "include": {
+          "description": "Catalogue category ids to admit. When set, all others are excluded.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclude": {
+          "description": "Catalogue category ids to remove from the admitted set.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
     },
     "FixConfig": {
       "type": "object",
@@ -1520,6 +1575,16 @@
           ]
         },
         "security-client-server-leak": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Severity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "security-sink": {
           "anyOf": [
             {
               "$ref": "#/$defs/Severity"

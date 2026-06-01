@@ -9789,12 +9789,17 @@
         "unresolved_edge_files": {
           "type": "integer",
           "description": "In-band blind spot: number of `\"use client\"` files whose transitive\nimport cone contains a dynamic `import()` the reachability BFS could not\nfollow. A leak hidden behind such an edge would not be reported, so a\nzero finding count with a non-zero value here is NOT a clean bill."
+        },
+        "unresolved_callee_sites": {
+          "type": "integer",
+          "description": "In-band blind spot: number of sink-shaped nodes the catalogue detector\ncould not flatten to a static callee path (dynamic dispatch, computed\nmembers, aliased bindings). A zero finding count with a non-zero value\nhere is NOT a clean bill."
         }
       },
       "required": [
         "schema_version",
         "security_findings",
-        "unresolved_edge_files"
+        "unresolved_edge_files",
+        "unresolved_callee_sites"
       ],
       "description": "The `fallow security --format json` envelope. `security_findings` is the\nunique required field used for untagged narrowing in `FallowOutput`."
     },
@@ -9814,6 +9819,20 @@
         "kind": {
           "description": "The rule that produced this candidate.",
           "$ref": "#/definitions/SecurityFindingKind"
+        },
+        "category": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The catalogue category id (e.g. `\"dangerous-html\"`). `None` for\n`ClientServerLeak`; `Some` for `TaintedSink`."
+        },
+        "cwe": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "The CWE number declared by the matched catalogue entry. `None` for\n`ClientServerLeak`; never fabricated beyond the catalogue's value."
         },
         "path": {
           "type": "string",
@@ -9862,7 +9881,12 @@
         {
           "type": "string",
           "const": "client-server-leak",
-          "description": "A `\"use client\"` file transitively imports a module that reads a\nnon-public `process.env` secret."
+          "description": "A `\"use client\"` file transitively imports a module that reads a\nnon-public `process.env` secret (graph-structural; bespoke, not catalogue)."
+        },
+        {
+          "type": "string",
+          "const": "tainted-sink",
+          "description": "A syntactic sink site matched against the data-driven catalogue\n(`security_matchers.toml`). Serializes `\"tainted-sink\"`; the CWE class is\ncarried in `category` + `cwe`. ONE variant covers all catalogue categories."
         }
       ],
       "description": "The kind of security candidate. Findings are CANDIDATES for downstream agent\nverification, NOT verified vulnerabilities."
@@ -9911,6 +9935,11 @@
           "type": "string",
           "const": "secret-source",
           "description": "The module that reads the secret."
+        },
+        {
+          "type": "string",
+          "const": "sink",
+          "description": "The syntactic sink site of a catalogue-driven `tainted-sink` candidate\n(the single hop the `tainted_sink` detector emits). Distinct from\n`SecretSource`, which is specific to the `client-server-leak` rule."
         }
       ],
       "description": "The role a hop plays in a security finding's structural import trace."

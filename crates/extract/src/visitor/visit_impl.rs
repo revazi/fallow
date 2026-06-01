@@ -14,7 +14,8 @@ use crate::{
     MemberAccess, ReExportInfo, RequireCallInfo, VisibilityTag,
 };
 use fallow_types::extract::{
-    ClassHeritageInfo, LocalTypeDeclaration, PublicSignatureTypeReference,
+    ClassHeritageInfo, LocalTypeDeclaration, PublicSignatureTypeReference, SinkArgKind, SinkShape,
+    SinkSite,
 };
 
 use crate::asset_url::normalize_asset_url;
@@ -2260,6 +2261,8 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
 
         self.try_record_fluent_chain_access(expr);
 
+        self.capture_call_sink(expr);
+
         walk::walk_call_expression(self, expr);
     }
 
@@ -2403,6 +2406,7 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
                 }
             }
         }
+        self.capture_member_assign_sink(expr);
         walk::walk_assignment_expression(self, expr);
     }
 
@@ -2622,7 +2626,13 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
                 }
             }
         }
+        self.capture_tagged_template_sink(expr);
         walk::walk_tagged_template_expression(self, expr);
+    }
+
+    fn visit_jsx_attribute(&mut self, attr: &oxc_ast::ast::JSXAttribute<'a>) {
+        self.capture_jsx_attr_sink(attr);
+        walk::walk_jsx_attribute(self, attr);
     }
 }
 
@@ -2636,6 +2646,67 @@ fn static_argument_object_name(arg: &Argument<'_>) -> Option<String> {
             member.property.name
         )),
         _ => None,
+    }
+}
+
+/// Recursively unwrap parenthesized expressions to reach the inner expression.
+fn unwrap_parens<'a, 'b>(mut expr: &'b Expression<'a>) -> &'b Expression<'a> {
+    while let Expression::ParenthesizedExpression(paren) = expr {
+        expr = &paren.expression;
+    }
+    expr
+}
+
+/// Flatten an `Identifier` or `StaticMemberExpression` callee to a dotted path.
+///
+/// Deliberately narrower than `static_member_object_name`: it accepts ONLY bare
+/// identifiers and static member chains (no call/new forms), so the catalogue
+/// matcher sees a clean dotted callee path. Returns `None` for dynamic dispatch,
+/// computed members, or aliased call forms (those count as blind spots).
+fn flatten_callee_path(expr: &Expression<'_>) -> Option<String> {
+    match unwrap_parens(expr) {
+        Expression::Identifier(ident) => Some(ident.name.to_string()),
+        Expression::StaticMemberExpression(member) => Some(format!(
+            "{}.{}",
+            flatten_callee_path(&member.object)?,
+            member.property.name
+        )),
+        _ => None,
+    }
+}
+
+/// Whether an expression is a non-literal argument (a conservative trigger for
+/// sink capture). A fully-literal argument is never captured.
+fn is_non_literal_arg(expr: &Expression<'_>) -> bool {
+    match unwrap_parens(expr) {
+        Expression::StringLiteral(_)
+        | Expression::NumericLiteral(_)
+        | Expression::BooleanLiteral(_)
+        | Expression::NullLiteral(_)
+        | Expression::BigIntLiteral(_)
+        | Expression::RegExpLiteral(_) => false,
+        Expression::TemplateLiteral(tpl) => !tpl.expressions.is_empty(),
+        _ => true,
+    }
+}
+
+/// Classify a captured non-literal argument into a finer-grained [`SinkArgKind`]
+/// so the catalogue can require unsafe shapes (concat, template-with-substitution)
+/// and exclude safe ones (object literal, the parameterized form). Parenthesized
+/// wrappers are unwrapped first; a `+` `BinaryExpression` is treated as a string
+/// concatenation (a numeric `+` reaching a SQL/HTML sink is already noise-free
+/// because the catalogue gates on the sink shape and callee).
+fn classify_arg_kind(expr: &Expression<'_>) -> SinkArgKind {
+    match unwrap_parens(expr) {
+        Expression::TemplateLiteral(_) => SinkArgKind::TemplateWithSubst,
+        Expression::BinaryExpression(bin)
+            if bin.operator == oxc_ast::ast::BinaryOperator::Addition =>
+        {
+            SinkArgKind::Concat
+        }
+        Expression::ObjectExpression(_) => SinkArgKind::Object,
+        Expression::CallExpression(_) => SinkArgKind::Call,
+        _ => SinkArgKind::Other,
     }
 }
 
@@ -2701,6 +2772,116 @@ fn collect_instanceof_narrowings<'a>(expr: &'a Expression<'a>, out: &mut Vec<(St
 }
 
 impl ModuleInfoExtractor {
+    /// Capture a call/member-call sink site (category-blind). Pushes one
+    /// `SinkSite` per non-literal positional argument; a callee that cannot be
+    /// flattened to a static path increments the blind-spot counter instead.
+    fn capture_call_sink(&mut self, expr: &CallExpression<'_>) {
+        let Some(callee_path) = flatten_callee_path(&expr.callee) else {
+            self.security_sinks_skipped += 1;
+            return;
+        };
+        let sink_shape = if callee_path.contains('.') {
+            SinkShape::MemberCall
+        } else {
+            SinkShape::Call
+        };
+        for (index, arg) in expr.arguments.iter().enumerate() {
+            let Some(arg_expr) = arg.as_expression() else {
+                continue;
+            };
+            if !is_non_literal_arg(arg_expr) {
+                continue;
+            }
+            let Ok(arg_index) = u32::try_from(index) else {
+                continue;
+            };
+            self.security_sinks.push(SinkSite {
+                sink_shape,
+                callee_path: callee_path.clone(),
+                arg_index,
+                arg_is_non_literal: true,
+                arg_kind: classify_arg_kind(arg_expr),
+                span_start: expr.span.start,
+                span_end: expr.span.end,
+            });
+        }
+    }
+
+    /// Capture a member-assignment sink site (e.g. `el.innerHTML = userInput`).
+    /// Only static-member targets with a non-literal RHS are captured; a target
+    /// whose object cannot be flattened increments the blind-spot counter.
+    fn capture_member_assign_sink(&mut self, expr: &AssignmentExpression<'_>) {
+        let AssignmentTarget::StaticMemberExpression(member) = &expr.left else {
+            return;
+        };
+        if !is_non_literal_arg(&expr.right) {
+            return;
+        }
+        let Some(object_path) = flatten_callee_path(&member.object) else {
+            self.security_sinks_skipped += 1;
+            return;
+        };
+        self.security_sinks.push(SinkSite {
+            sink_shape: SinkShape::MemberAssign,
+            callee_path: format!("{}.{}", object_path, member.property.name),
+            arg_index: 0,
+            arg_is_non_literal: true,
+            arg_kind: classify_arg_kind(&expr.right),
+            span_start: expr.span.start,
+            span_end: expr.span.end,
+        });
+    }
+
+    /// Capture a tagged-template sink site (e.g. ``sql`...${x}...` ``). Only
+    /// templates with at least one substitution are captured.
+    fn capture_tagged_template_sink(&mut self, expr: &TaggedTemplateExpression<'_>) {
+        if expr.quasi.expressions.is_empty() {
+            return;
+        }
+        let Some(callee_path) = flatten_callee_path(&expr.tag) else {
+            return;
+        };
+        self.security_sinks.push(SinkSite {
+            sink_shape: SinkShape::TaggedTemplate,
+            callee_path,
+            arg_index: 0,
+            arg_is_non_literal: true,
+            // A tagged template is captured only with substitutions, so the
+            // argument is always a template-with-substitution.
+            arg_kind: SinkArgKind::TemplateWithSubst,
+            span_start: expr.span.start,
+            span_end: expr.span.end,
+        });
+    }
+
+    /// Capture a JSX-attribute sink site (e.g. `dangerouslySetInnerHTML={x}`).
+    /// Only identifier-named attributes with a non-literal expression-container
+    /// value are captured; the empty `{}` form yields no expression and is
+    /// skipped without an explicit arm.
+    fn capture_jsx_attr_sink(&mut self, attr: &JSXAttribute<'_>) {
+        let JSXAttributeName::Identifier(name) = &attr.name else {
+            return;
+        };
+        let Some(JSXAttributeValue::ExpressionContainer(container)) = &attr.value else {
+            return;
+        };
+        let Some(value_expr) = container.expression.as_expression() else {
+            return;
+        };
+        if !is_non_literal_arg(value_expr) {
+            return;
+        }
+        self.security_sinks.push(SinkSite {
+            sink_shape: SinkShape::JsxAttr,
+            callee_path: name.name.to_string(),
+            arg_index: 0,
+            arg_is_non_literal: true,
+            arg_kind: classify_arg_kind(value_expr),
+            span_start: attr.span.start,
+            span_end: attr.span.end,
+        });
+    }
+
     /// Push an HTML-template-sourced asset reference onto `imports`, mirroring
     /// the HTML parser's remote-url, normalization, and `SideEffect` pipeline.
     fn push_html_template_asset_import(&mut self, raw: &str) {

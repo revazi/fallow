@@ -124,7 +124,15 @@ use crate::MemberKind;
 ///   member access against the narrowed class, changing the persisted
 ///   `member_accesses`; pre-fix entries miss the credit and surface as false
 ///   `unused-class-member`.
-pub(super) const CACHE_VERSION: u32 = 108;
+///
+/// Bumped to 109 for the data-driven security matcher catalogue: JS/TS
+/// extraction now captures non-literal sink sites into `security_sinks`, each
+/// carrying an `arg_kind` discriminator (template-with-substitution, concat,
+/// object, call, other) so the catalogue can require unsafe SQL shapes and
+/// exclude safely-parameterized `` sql`${x}` `` templates and object-form
+/// `.execute({ sql, args })` arguments. Pre-109 entries lack the field, so their
+/// sink sites do not feed the catalogue until the file is re-extracted.
+pub(super) const CACHE_VERSION: u32 = 109;
 
 /// Duplication token cache version. Bump when duplicate tokenization,
 /// normalization, or the on-disk token cache schema changes.
@@ -167,7 +175,7 @@ macro_rules! assert_cached_type_size {
     };
 }
 
-assert_cached_type_size!(CachedModule, 592);
+assert_cached_type_size!(CachedModule, 616);
 assert_cached_type_size!(CachedNamespaceObjectAlias, 72);
 assert_cached_type_size!(CachedLocalTypeDeclaration, 32);
 assert_cached_type_size!(CachedPublicSignatureTypeReference, 56);
@@ -181,6 +189,7 @@ assert_cached_type_size!(CachedReExport, 88);
 assert_cached_type_size!(CachedMember, 64);
 assert_cached_type_size!(CachedDynamicImportPattern, 56);
 assert_cached_type_size!(crate::MemberAccess, 48);
+assert_cached_type_size!(fallow_types::extract::SinkSite, 40);
 assert_cached_type_size!(fallow_types::extract::FunctionComplexity, 72);
 assert_cached_type_size!(fallow_types::extract::FlagUse, 80);
 assert_cached_type_size!(fallow_types::extract::ClassHeritageInfo, 96);
@@ -260,6 +269,13 @@ pub struct CachedModule {
     /// round-trips through the cache so the security `client-server-leak` detector
     /// sees directives on warm-cache loads.
     pub directives: Vec<String>,
+    /// Captured non-literal security sink sites (category-blind). Round-trips
+    /// through the cache so the catalogue-driven `tainted_sink` detector sees
+    /// sinks on warm-cache loads.
+    pub security_sinks: Vec<fallow_types::extract::SinkSite>,
+    /// Count of sink-shaped nodes whose callee could not be flattened to a
+    /// static path. Round-trips so the in-band blind-spot count is stable.
+    pub security_sinks_skipped: u32,
 }
 
 /// Cached namespace-object alias.

@@ -1845,6 +1845,8 @@ mod tests {
             iconify_prefixes: vec![],
             auto_import_candidates: Vec::new(),
             directives: Vec::new(),
+            security_sinks: Vec::new(),
+            security_sinks_skipped: 0,
         }
     }
 

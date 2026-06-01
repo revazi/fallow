@@ -469,6 +469,7 @@ mod tests {
             codeowners: None,
             public_packages: vec![],
             flags: fallow_config::FlagsConfig::default(),
+            security: fallow_config::SecurityConfig::default(),
             fix: fallow_config::FixConfig::default(),
             resolve: fallow_config::ResolveConfig::default(),
             sealed: false,
@@ -550,6 +551,7 @@ mod tests {
             unused_dependency_overrides: Severity::Off,
             misconfigured_dependency_overrides: Severity::Off,
             security_client_server_leak: Severity::Off,
+            security_sink: Severity::Off,
         };
         let config = config_with_rules(rules);
         apply_rules(&mut results, &config);
@@ -662,6 +664,7 @@ mod tests {
             unused_dependency_overrides: Severity::Warn,
             misconfigured_dependency_overrides: Severity::Error,
             security_client_server_leak: Severity::Off,
+            security_sink: Severity::Off,
         };
         assert!(!has_error_severity_issues(&results, &rules, None));
     }
@@ -701,6 +704,7 @@ mod tests {
             unused_dependency_overrides: Severity::Warn,
             misconfigured_dependency_overrides: Severity::Error,
             security_client_server_leak: Severity::Off,
+            security_sink: Severity::Off,
         };
         assert!(!has_error_severity_issues(&results, &rules, None));
 
@@ -756,6 +760,7 @@ mod tests {
             codeowners: None,
             public_packages: vec![],
             flags: fallow_config::FlagsConfig::default(),
+            security: fallow_config::SecurityConfig::default(),
             fix: fallow_config::FixConfig::default(),
             resolve: fallow_config::ResolveConfig::default(),
             sealed: false,
@@ -808,6 +813,7 @@ mod tests {
             codeowners: None,
             public_packages: vec![],
             flags: fallow_config::FlagsConfig::default(),
+            security: fallow_config::SecurityConfig::default(),
             fix: fallow_config::FixConfig::default(),
             resolve: fallow_config::ResolveConfig::default(),
             sealed: false,
@@ -1029,6 +1035,7 @@ mod tests {
             unused_dependency_overrides: Severity::Warn,
             misconfigured_dependency_overrides: Severity::Error,
             security_client_server_leak: Severity::Off,
+            security_sink: Severity::Off,
         };
         promote_warns_to_errors(&mut rules);
 
@@ -1080,6 +1087,7 @@ mod tests {
             unused_dependency_overrides: Severity::Off,
             misconfigured_dependency_overrides: Severity::Off,
             security_client_server_leak: Severity::Off,
+            security_sink: Severity::Off,
         };
         promote_warns_to_errors(&mut rules);
 

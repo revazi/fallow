@@ -591,11 +591,11 @@ export type SecuritySchemaVersion = "1"
  * The kind of security candidate. Findings are CANDIDATES for downstream agent
  * verification, NOT verified vulnerabilities.
  */
-export type SecurityFindingKind = "client-server-leak"
+export type SecurityFindingKind = ("client-server-leak" | "tainted-sink")
 /**
  * The role a hop plays in a security finding's structural import trace.
  */
-export type TraceHopRole = ("client-boundary" | "intermediate" | "secret-source")
+export type TraceHopRole = ("client-boundary" | "intermediate" | "secret-source" | "sink")
 /**
  * Discriminator value for [`CodeClimateIssue::kind`].
  */
@@ -4712,6 +4712,13 @@ security_findings: SecurityFinding[]
  * zero finding count with a non-zero value here is NOT a clean bill.
  */
 unresolved_edge_files: number
+/**
+ * In-band blind spot: number of sink-shaped nodes the catalogue detector
+ * could not flatten to a static callee path (dynamic dispatch, computed
+ * members, aliased bindings). A zero finding count with a non-zero value
+ * here is NOT a clean bill.
+ */
+unresolved_callee_sites: number
 }
 /**
  * A local security CANDIDATE for downstream agent verification, NOT a verified
@@ -4722,6 +4729,16 @@ unresolved_edge_files: number
  */
 export interface SecurityFinding {
 kind: SecurityFindingKind
+/**
+ * The catalogue category id (e.g. `"dangerous-html"`). `None` for
+ * `ClientServerLeak`; `Some` for `TaintedSink`.
+ */
+category?: (string | null)
+/**
+ * The CWE number declared by the matched catalogue entry. `None` for
+ * `ClientServerLeak`; never fabricated beyond the catalogue's value.
+ */
+cwe?: (number | null)
 /**
  * File the finding is anchored on (the client boundary). Absolute
  * internally; JSON strips the project root via `serde_path::serialize`.

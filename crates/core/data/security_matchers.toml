@@ -1,0 +1,220 @@
+# Data-driven catalogue of syntactic security-sink CANDIDATES.
+#
+# Each [[matcher]] maps a captured non-literal SinkSite (see
+# crates/types/src/extract.rs::SinkSite) to a CWE candidate class. Findings are
+# CANDIDATES for downstream agent verification, NOT verified vulnerabilities:
+# fallow is deterministic and syntactic, never taint-proof. We prefer
+# false-negatives over false-positives, so every matcher fires only on a
+# non-literal argument and documents its blind spots.
+#
+# This file is the single source of truth: embedded via include_str! and parsed
+# once behind a OnceLock (see crates/core/src/analyze/security/catalogue.rs).
+# There is NO regen step. Adding a category = one [[matcher]] below + ZERO Rust
+# enum/discriminant churn.
+#
+# callee_patterns are segment-aware (not substring): `fetch` matches `fetch`,
+# not `myfetch`. A leading `*.` segment matches any object: `*.innerHTML`
+# matches `el.innerHTML` and `this.node.innerHTML`. sink_shape is one of:
+# call | member-call | member-assign | tagged-template | jsx-attr.
+# Optional import_provenance narrows a matcher to bindings traceable to a
+# specific import source (trades one FN for fewer FPs on same-named locals).
+# When import_provenance is set and the module has no matching import, the
+# matcher is skipped (the one place we trade a potential false-negative for
+# false-positive reduction on same-named locals).
+#
+# Optional arg_kinds is an allowlist of captured argument shapes (kebab-case:
+# template-with-subst | concat | object | call | other). When set, the matcher
+# fires ONLY when the captured non-literal argument is one of the listed shapes.
+# This is how sql-injection requires the UNSAFE shapes (concat / interpolated
+# template) and excludes the safely-parameterized object form
+# (`.execute({ sql, args })`); a bare parameterized `sql`${x}`` tagged template
+# is simply not a matcher row at all. Unset arg_kinds admits any non-literal
+# shape (the default for shape-only matchers like dangerous-html).
+#
+# Multiple [[matcher]] rows may share an `id` (e.g. dangerous-html spans three
+# shapes). Uniqueness is keyed on the full row (id + sink_shape +
+# callee_patterns), not on `id` alone.
+
+# ── CWE-79: Dangerous HTML (the proven seed; no provenance needed) ──────────
+[[matcher]]
+id = "dangerous-html"
+cwe = 79
+title = "Dangerous HTML sink"
+sink_shape = "member-assign"
+callee_patterns = ["*.innerHTML", "*.outerHTML"]
+arg_index = 0
+evidence_template = "Non-literal value assigned to {callee}. Candidate for verification: confirm the value is not attacker-controlled, or is sanitized, before it reaches the DOM."
+
+[[matcher]]
+id = "dangerous-html"
+cwe = 79
+title = "Dangerous HTML sink"
+sink_shape = "member-call"
+callee_patterns = ["*.insertAdjacentHTML"]
+arg_index = 1
+evidence_template = "Non-literal HTML passed to {callee}(). Candidate for verification: confirm the markup is not attacker-controlled or is sanitized."
+
+[[matcher]]
+id = "dangerous-html"
+cwe = 79
+title = "Dangerous HTML sink"
+sink_shape = "jsx-attr"
+callee_patterns = ["dangerouslySetInnerHTML"]
+arg_index = 0
+evidence_template = "Non-literal value bound to {callee}. Candidate for verification: confirm the HTML is sanitized (e.g. via DOMPurify) before render."
+
+# ── CWE-78: OS command injection ────────────────────────────────────────────
+[[matcher]]
+id = "command-injection"
+cwe = 78
+title = "OS command injection sink"
+sink_shape = "member-call"
+callee_patterns = ["child_process.exec", "child_process.execSync", "child_process.spawn", "child_process.spawnSync"]
+arg_index = 0
+import_provenance = "node:child_process"
+evidence_template = "Non-literal command passed to {callee}(). Candidate for verification: confirm the command/args are not attacker-controlled (prefer the array-arg spawn form)."
+
+[[matcher]]
+id = "command-injection"
+cwe = 78
+title = "OS command injection sink"
+sink_shape = "call"
+callee_patterns = ["exec", "execSync", "spawn", "spawnSync"]
+arg_index = 0
+import_provenance = "node:child_process"
+evidence_template = "Non-literal command passed to {callee}(). Candidate for verification: confirm the command/args are not attacker-controlled."
+
+# ── CWE-94/95: Code injection ───────────────────────────────────────────────
+# `eval` only. setTimeout/setInterval string-code forms pass a literal (never
+# captured) and otherwise FP on the function-callback form; `Function` is a
+# NewExpression, not a CallExpression, so it never matches the `call` shape.
+# Both DROPPED until a NewExpression capture hook and literal-aware refinement
+# land (see plan Open question 1).
+[[matcher]]
+id = "code-injection"
+cwe = 94
+title = "Code injection sink"
+sink_shape = "call"
+callee_patterns = ["eval"]
+arg_index = 0
+evidence_template = "Non-literal value passed to {callee}(). Candidate for verification: confirm a string of code is never executed from untrusted input."
+
+[[matcher]]
+id = "code-injection"
+cwe = 94
+title = "Code injection sink"
+sink_shape = "member-call"
+callee_patterns = ["vm.runInNewContext", "vm.runInThisContext", "vm.runInContext"]
+arg_index = 0
+import_provenance = "node:vm"
+evidence_template = "Non-literal code passed to {callee}(). Candidate for verification: confirm the script source is trusted."
+
+# ── CWE-89: SQL injection ───────────────────────────────────────────────────
+# Tightened to honor the "prefer false-negatives over false-positives"
+# principle. A bare parameterized `sql`...${x}...`` tagged template (Drizzle,
+# postgres.js, slonik) binds `${x}` safely and is DELIBERATELY NOT a matcher row,
+# so it never fires. The `.query` / `.execute` rows require an UNSAFE argument
+# shape (string concat or a raw template literal passed directly to the exec
+# callee); the safely-parameterized object form `.execute({ sql, args })`
+# (arg_kind `object`) is excluded by the arg_kinds allowlist. `sql.raw(...)` is
+# Drizzle's documented injection escape hatch and fires on any non-literal arg.
+[[matcher]]
+id = "sql-injection"
+cwe = 89
+title = "SQL injection sink"
+sink_shape = "member-call"
+callee_patterns = ["*.query", "*.execute"]
+arg_index = 0
+arg_kinds = ["concat", "template-with-subst"]
+evidence_template = "Non-literal SQL ({callee}() called with a string concatenation or interpolated template). Candidate for verification: confirm the query uses parameterized bindings, not string building, for untrusted input."
+
+[[matcher]]
+id = "sql-injection"
+cwe = 89
+title = "SQL injection sink"
+sink_shape = "member-call"
+callee_patterns = ["sql.raw", "*.sql.raw"]
+arg_index = 0
+evidence_template = "Non-literal value passed to {callee}(). Candidate for verification: sql.raw bypasses parameterization (Drizzle's documented injection escape hatch); confirm the fragment is not attacker-controlled."
+
+# ── CWE-918: SSRF ───────────────────────────────────────────────────────────
+[[matcher]]
+id = "ssrf"
+cwe = 918
+title = "Server-side request forgery sink"
+sink_shape = "call"
+callee_patterns = ["fetch"]
+arg_index = 0
+evidence_template = "Non-literal URL passed to {callee}(). Candidate for verification: confirm the destination host is not attacker-controlled (allowlist outbound targets)."
+
+[[matcher]]
+id = "ssrf"
+cwe = 918
+title = "Server-side request forgery sink"
+sink_shape = "member-call"
+callee_patterns = ["axios.get", "axios.post", "http.request", "https.request"]
+arg_index = 0
+evidence_template = "Non-literal URL passed to {callee}(). Candidate for verification: confirm the destination is not attacker-controlled."
+
+# ── CWE-22: Path traversal ──────────────────────────────────────────────────
+[[matcher]]
+id = "path-traversal"
+cwe = 22
+title = "Path traversal sink"
+sink_shape = "member-call"
+callee_patterns = ["path.join", "path.resolve"]
+arg_index = 0
+import_provenance = "node:path"
+evidence_template = "Non-literal path component passed to {callee}(). Candidate for verification: confirm the input cannot escape the intended directory (reject `..`)."
+
+# ── CWE-601: Open redirect ──────────────────────────────────────────────────
+[[matcher]]
+id = "open-redirect"
+cwe = 601
+title = "Open redirect sink"
+sink_shape = "member-call"
+callee_patterns = ["res.redirect", "*.redirect"]
+arg_index = 0
+evidence_template = "Non-literal redirect target passed to {callee}(). Candidate for verification: confirm the target is a relative path or allowlisted host."
+
+# ── CWE-327: Runtime-selectable crypto algorithm (opt-in tier) ──────────────
+# RE-TITLED from "weak crypto" so it does not over-claim CWE-327: the high-signal
+# case (`createHash('md5')`) is a literal arg and is NEVER captured, while safe
+# non-literal algorithms FP. Gate behind `security.categories` opt-in. A
+# literal-aware exception is a deferred extract-layer follow-up (Open question 1).
+[[matcher]]
+id = "weak-crypto"
+cwe = 327
+title = "Runtime-selectable crypto algorithm"
+sink_shape = "member-call"
+callee_patterns = ["crypto.createHash", "crypto.createCipheriv"]
+arg_index = 0
+import_provenance = "node:crypto"
+evidence_template = "Runtime-selectable algorithm passed to {callee}(). Candidate for verification: confirm a weak algorithm (md5/sha1/des/rc4) cannot be selected at runtime."
+
+# CWE-338 insecure-randomness (Math.random) is DROPPED from the first ship:
+# Math.random is called with zero args, so arg_index 0 + non-literal can never
+# be satisfied (structurally dead). Re-add when the extract layer records
+# zero-arg member-calls and the detector adds the near-token-identifier
+# refinement (Open question 1).
+
+# ── CWE-502: Unsafe deserialization ─────────────────────────────────────────
+[[matcher]]
+id = "unsafe-deserialization"
+cwe = 502
+title = "Unsafe deserialization sink"
+sink_shape = "call"
+callee_patterns = ["unserialize"]
+arg_index = 0
+import_provenance = "node-serialize"
+evidence_template = "Non-literal input passed to {callee}(). Candidate for verification: node-serialize unserialize executes embedded functions; confirm the input is trusted."
+
+[[matcher]]
+id = "unsafe-deserialization"
+cwe = 502
+title = "Unsafe deserialization sink"
+sink_shape = "member-call"
+callee_patterns = ["yaml.load", "jsyaml.load"]
+arg_index = 0
+import_provenance = "js-yaml"
+evidence_template = "js-yaml load() without a safe schema. Candidate for verification: use load with the default safe schema (js-yaml >=4) or an explicit SAFE_SCHEMA."

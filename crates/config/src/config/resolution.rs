@@ -18,8 +18,8 @@ use super::rules::{PartialRulesConfig, RulesConfig, Severity};
 use super::used_class_members::UsedClassMemberRule;
 use crate::external_plugin::{ExternalPluginDef, discover_external_plugins};
 
-use super::FallowConfig;
 use super::IgnoreExportsUsedInFileConfig;
+use super::{FallowConfig, SecurityConfig};
 
 /// Process-local dedup state for inter-file rule warnings.
 static INTER_FILE_WARN_SEEN: OnceLock<Mutex<FxHashSet<u64>>> = OnceLock::new();
@@ -191,6 +191,7 @@ pub struct ResolvedConfig {
     pub codeowners: Option<String>,
     pub public_packages: Vec<String>,
     pub flags: FlagsConfig,
+    pub security: SecurityConfig,
     pub fix: super::FixConfig,
     pub resolve: ResolveConfig,
     pub include_entry_exports: bool,
@@ -409,6 +410,7 @@ impl FallowConfig {
             codeowners: self.codeowners,
             public_packages: self.public_packages,
             flags: self.flags,
+            security: self.security,
             fix: self.fix,
             resolve: self.resolve,
             include_entry_exports: self.include_entry_exports,
@@ -500,6 +502,7 @@ mod tests {
             codeowners: None,
             public_packages: vec![],
             flags: FlagsConfig::default(),
+            security: SecurityConfig::default(),
             fix: crate::config::FixConfig::default(),
             resolve: ResolveConfig::default(),
             sealed: false,
@@ -555,6 +558,7 @@ mod tests {
             codeowners: None,
             public_packages: vec![],
             flags: FlagsConfig::default(),
+            security: SecurityConfig::default(),
             fix: crate::config::FixConfig::default(),
             resolve: ResolveConfig::default(),
             sealed: false,
@@ -624,6 +628,7 @@ mod tests {
             codeowners: None,
             public_packages: vec![],
             flags: FlagsConfig::default(),
+            security: SecurityConfig::default(),
             fix: crate::config::FixConfig::default(),
             resolve: ResolveConfig::default(),
             sealed: false,
@@ -684,6 +689,7 @@ mod tests {
             codeowners: None,
             public_packages: vec![],
             flags: FlagsConfig::default(),
+            security: SecurityConfig::default(),
             fix: crate::config::FixConfig::default(),
             resolve: ResolveConfig::default(),
             sealed: false,
@@ -783,6 +789,7 @@ mod tests {
             codeowners: None,
             public_packages: vec![],
             flags: FlagsConfig::default(),
+            security: SecurityConfig::default(),
             fix: crate::config::FixConfig::default(),
             resolve: ResolveConfig::default(),
             sealed: false,
@@ -836,6 +843,7 @@ mod tests {
             codeowners: None,
             public_packages: vec![],
             flags: FlagsConfig::default(),
+            security: SecurityConfig::default(),
             fix: crate::config::FixConfig::default(),
             resolve: ResolveConfig::default(),
             sealed: false,

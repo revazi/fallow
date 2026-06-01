@@ -173,6 +173,9 @@ pub struct FallowConfig {
     pub flags: FlagsConfig,
 
     #[serde(default)]
+    pub security: SecurityConfig,
+
+    #[serde(default)]
     pub fix: FixConfig,
 
     #[serde(default)]
@@ -213,6 +216,30 @@ pub struct FallowConfig {
 
     #[serde(default, skip_serializing_if = "CacheConfig::is_default")]
     pub cache: CacheConfig,
+}
+
+/// Scopes the data-driven security matcher catalogue used by `fallow security`.
+/// An absent block (or both `include`/`exclude` unset) admits every category.
+#[derive(Debug, Default, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SecurityConfig {
+    /// Include/exclude filter over catalogue category ids (e.g. `dangerous-html`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub categories: Option<SecurityCategories>,
+}
+
+/// Include/exclude lists scoping the active security matcher categories. When
+/// `include` is set, only those categories are active; `exclude` removes
+/// categories from the admitted set. Both unset admits every category.
+#[derive(Debug, Default, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SecurityCategories {
+    /// Catalogue category ids to admit. When set, all others are excluded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include: Option<Vec<String>>,
+    /// Catalogue category ids to remove from the admitted set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize, JsonSchema)]

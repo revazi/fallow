@@ -204,6 +204,13 @@ pub struct AnalysisResults {
     /// serialization like [`Self::security_findings`].
     #[serde(skip)]
     pub security_unresolved_edge_files: usize,
+    /// In-band blind-spot count: number of sink-shaped nodes the catalogue
+    /// detector could not flatten to a static callee path (dynamic dispatch,
+    /// computed members, aliased bindings). Surfaced by `fallow security` so an
+    /// empty catalogue result with a non-zero count is not reported as "clean".
+    /// Skipped during serialization like [`Self::security_findings`].
+    #[serde(skip)]
+    pub security_unresolved_callee_sites: usize,
     /// Usage counts for all exports across the project. Used by the LSP for Code Lens.
     /// Not included in issue counts -- this is metadata, not an issue type.
     /// Skipped during serialization: this is internal LSP data, not part of the JSON output schema.
@@ -322,6 +329,7 @@ impl AnalysisResults {
             feature_flags,
             security_findings,
             security_unresolved_edge_files,
+            security_unresolved_callee_sites,
             export_usages,
             entry_point_summary,
         } = other;
@@ -356,6 +364,7 @@ impl AnalysisResults {
         self.feature_flags.extend(feature_flags);
         self.security_findings.extend(security_findings);
         self.security_unresolved_edge_files += security_unresolved_edge_files;
+        self.security_unresolved_callee_sites += security_unresolved_callee_sites;
         self.export_usages.extend(export_usages);
         self.active_suppressions.extend(active_suppressions);
         self.suppression_count += suppression_count;
@@ -812,8 +821,12 @@ pub struct TypeOnlyDependency {
 #[serde(rename_all = "kebab-case")]
 pub enum SecurityFindingKind {
     /// A `"use client"` file transitively imports a module that reads a
-    /// non-public `process.env` secret.
+    /// non-public `process.env` secret (graph-structural; bespoke, not catalogue).
     ClientServerLeak,
+    /// A syntactic sink site matched against the data-driven catalogue
+    /// (`security_matchers.toml`). Serializes `"tainted-sink"`; the CWE class is
+    /// carried in `category` + `cwe`. ONE variant covers all catalogue categories.
+    TaintedSink,
 }
 
 /// The role a hop plays in a security finding's structural import trace.
@@ -827,6 +840,10 @@ pub enum TraceHopRole {
     Intermediate,
     /// The module that reads the secret.
     SecretSource,
+    /// The syntactic sink site of a catalogue-driven `tainted-sink` candidate
+    /// (the single hop the `tainted_sink` detector emits). Distinct from
+    /// `SecretSource`, which is specific to the `client-server-leak` rule.
+    Sink,
 }
 
 /// One hop in a security finding's structural trace. Stored as an absolute path
@@ -858,6 +875,14 @@ pub struct TraceHop {
 pub struct SecurityFinding {
     /// The rule that produced this candidate.
     pub kind: SecurityFindingKind,
+    /// The catalogue category id (e.g. `"dangerous-html"`). `None` for
+    /// `ClientServerLeak`; `Some` for `TaintedSink`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// The CWE number declared by the matched catalogue entry. `None` for
+    /// `ClientServerLeak`; never fabricated beyond the catalogue's value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwe: Option<u32>,
     /// File the finding is anchored on (the client boundary). Absolute
     /// internally; JSON strips the project root via `serde_path::serialize`.
     #[serde(serialize_with = "serde_path::serialize")]

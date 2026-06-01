@@ -15,6 +15,11 @@ mod unused_overrides;
 #[cfg(test)]
 pub(crate) use unused_deps::matches_virtual_prefix;
 
+/// Human-readable title for a security catalogue category id, for the CLI
+/// renderer. Re-exported so the `fallow security` command can label a
+/// `TaintedSink` finding without reaching into the private `security` module.
+pub use security::catalogue_title as security_catalogue_title;
+
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use fallow_config::{PackageJson, ResolvedConfig, Severity};
@@ -825,6 +830,24 @@ pub fn find_dead_code_full(
         results.security_unresolved_edge_files = stats.client_files_with_unresolved_edges;
     }
 
+    if config.rules.security_sink != Severity::Off {
+        let categories = config.security.categories.as_ref();
+        let filter = security::CategoryFilter::new(
+            categories.and_then(|c| c.include.clone()),
+            categories.and_then(|c| c.exclude.clone()),
+        );
+        let (sink_findings, sink_stats) = security::find_tainted_sinks(
+            graph,
+            modules,
+            &suppressions,
+            &line_offsets_by_file,
+            &filter,
+            &config.root,
+        );
+        results.security_findings.extend(sink_findings);
+        results.security_unresolved_callee_sites = sink_stats.sinks_skipped_dynamic_callee;
+    }
+
     if config.rules.stale_suppressions != Severity::Off {
         results
             .stale_suppressions
@@ -1081,6 +1104,7 @@ mod tests {
                 unused_dependency_overrides: Severity::Off,
                 misconfigured_dependency_overrides: Severity::Off,
                 security_client_server_leak: Severity::Off,
+                security_sink: Severity::Off,
             };
             let config = make_config_with_rules(rules);
             let results = find_dead_code(&graph, &config);
@@ -1301,6 +1325,8 @@ mod tests {
                 iconify_prefixes: Vec::new(),
                 auto_import_candidates: Vec::new(),
                 directives: Vec::new(),
+                security_sinks: Vec::new(),
+                security_sinks_skipped: 0,
             }];
 
             let rules = RulesConfig {

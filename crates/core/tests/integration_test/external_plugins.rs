@@ -32,6 +32,7 @@ fn external_plugin_config(root: &std::path::Path) -> fallow_config::ResolvedConf
         codeowners: None,
         public_packages: vec![],
         flags: fallow_config::FlagsConfig::default(),
+        security: fallow_config::SecurityConfig::default(),
         fix: fallow_config::FixConfig::default(),
         resolve: fallow_config::ResolveConfig::default(),
         sealed: false,

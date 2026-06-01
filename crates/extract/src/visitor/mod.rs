@@ -15,7 +15,7 @@ use crate::{
     MemberAccess, MemberInfo, MemberKind, ModuleInfo, ReExportInfo, RequireCallInfo, VisibilityTag,
 };
 use fallow_types::extract::{
-    ClassHeritageInfo, LocalTypeDeclaration, PublicSignatureTypeReference,
+    ClassHeritageInfo, LocalTypeDeclaration, PublicSignatureTypeReference, SinkSite,
 };
 use helpers::LitCustomElementDecorator;
 
@@ -132,6 +132,12 @@ pub(crate) struct ModuleInfoExtractor {
     /// from `Program::directives`. Consumed by the security `client-server-leak`
     /// detector to identify React Server Component client boundaries.
     pub(crate) directives: Vec<String>,
+    /// Captured non-literal security sink sites (category-blind). Consumed by
+    /// the catalogue-driven `tainted_sink` detector.
+    pub(crate) security_sinks: Vec<SinkSite>,
+    /// Count of sink-shaped nodes whose callee could not be flattened to a
+    /// static path (dynamic dispatch, computed members, aliased bindings).
+    pub(crate) security_sinks_skipped: u32,
 }
 
 impl ModuleInfoExtractor {
@@ -721,6 +727,8 @@ impl ModuleInfoExtractor {
             iconify_prefixes: Vec::new(),
             auto_import_candidates: Vec::new(),
             directives: self.directives,
+            security_sinks: self.security_sinks,
+            security_sinks_skipped: self.security_sinks_skipped,
         }
     }
 
@@ -762,6 +770,8 @@ impl ModuleInfoExtractor {
         info.namespace_object_aliases
             .extend(namespace_object_aliases);
         info.directives.extend(self.directives);
+        info.security_sinks.extend(self.security_sinks);
+        info.security_sinks_skipped += self.security_sinks_skipped;
     }
 }
 

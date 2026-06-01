@@ -628,6 +628,8 @@ fn bench_cache_round_trip(c: &mut Criterion) {
         iconify_prefixes: Vec::new(),
         auto_import_candidates: Vec::new(),
         directives: Vec::new(),
+        security_sinks: Vec::new(),
+        security_sinks_skipped: 0,
     };
 
     c.bench_function("cache_round_trip", |b| {

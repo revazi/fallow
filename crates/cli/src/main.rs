@@ -907,15 +907,22 @@ enum Command {
 
     /// Surface local security candidates for downstream agent verification (opt-in).
     ///
-    /// Ships one graph-structural rule, `client-server-leak`: a `"use client"`
-    /// file that transitively imports a module reading a non-public `process.env`
-    /// secret. Findings are CANDIDATES for verification, NOT verified
-    /// vulnerabilities. This command is the only surface for security findings;
-    /// they never appear under bare `fallow` or the `audit` gate. The
-    /// `import.meta.env` (Vite) secret convention is out of scope (blind spot).
-    /// Honors `--root`, `--format {human,json,sarif}`, `--changed-since`,
-    /// `--diff-file`, `--diff-stdin`, `--workspace`, `--changed-workspaces`,
-    /// `--ci`, `--fail-on-issues`, `--sarif-file`, and `--summary`.
+    /// Ships two complementary surfaces. (1) The graph-structural
+    /// `client-server-leak` rule: a `"use client"` file that transitively imports
+    /// a module reading a non-public `process.env` secret. (2) The data-driven
+    /// `tainted-sink` catalogue: syntactic sink sites matched against a CWE
+    /// catalogue (`security_matchers.toml`) spanning 9 categories including
+    /// dangerous-html (CWE-79), command-injection (CWE-78), code-injection
+    /// (CWE-94), sql-injection (CWE-89), ssrf (CWE-918), path-traversal (CWE-22),
+    /// open-redirect (CWE-601), runtime-selectable crypto (CWE-327), and
+    /// unsafe-deserialization (CWE-502). All findings are CANDIDATES for
+    /// verification, NOT verified vulnerabilities. This command is the only
+    /// surface for security findings; they never appear under bare `fallow` or
+    /// the `audit` gate. Build-config and test files are excluded, and the Vite
+    /// `import.meta.env` secret convention is out of scope (blind spot). Honors
+    /// `--root`, `--format {human,json,sarif}`, `--changed-since`, `--diff-file`,
+    /// `--diff-stdin`, `--workspace`, `--changed-workspaces`, `--ci`,
+    /// `--fail-on-issues`, `--sarif-file`, and `--summary`.
     Security,
 
     /// Dump the CLI interface as machine-readable JSON for agent introspection
