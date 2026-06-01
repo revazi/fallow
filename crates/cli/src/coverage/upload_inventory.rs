@@ -1285,6 +1285,7 @@ mod tests {
     fn create_dirty_git_repo() -> TempDir {
         let dir = tempfile::tempdir().expect("create temp repo");
         run_git(dir.path(), &["init", "-q"]);
+        run_git(dir.path(), &["config", "commit.gpgsign", "false"]);
         run_git(dir.path(), &["config", "user.email", "review@example.com"]);
         run_git(dir.path(), &["config", "user.name", "Reviewer"]);
         std::fs::write(dir.path().join("a.js"), "function committed() {}\n")
