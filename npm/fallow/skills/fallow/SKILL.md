@@ -235,7 +235,7 @@ fallow list --entry-points --format json --quiet
 fallow list --plugins --format json --quiet
 ```
 
-Shows detected entry points and active framework plugins (114 built-in: Next.js, Vite, Ember, Wuchale, Jest, Storybook, Tailwind, PandaCSS, Contentlayer, tap, tsd, etc.).
+Shows detected entry points and active framework plugins (118 built-in: Next.js, Vite, Ember, Wuchale, Jest, Storybook, Tailwind, PandaCSS, Contentlayer, tap, tsd, etc.).
 
 ### Production-only analysis
 
@@ -340,7 +340,7 @@ When `--format json` is active and exit code is 2, errors are emitted as JSON on
 
 ## Configuration
 
-Fallow reads config from project root: `.fallowrc.json` > `.fallowrc.jsonc` > `fallow.toml` > `.fallow.toml`. Both `.fallowrc.json` and `.fallowrc.jsonc` accept JSON-with-comments syntax (same parser); the `.jsonc` extension lets editors auto-detect JSONC syntax highlighting. Most projects work with zero configuration thanks to 114 auto-detecting framework plugins.
+Fallow reads config from project root: `.fallowrc.json` > `.fallowrc.jsonc` > `fallow.toml` > `.fallow.toml`. Both `.fallowrc.json` and `.fallowrc.jsonc` accept JSON-with-comments syntax (same parser); the `.jsonc` extension lets editors auto-detect JSONC syntax highlighting. Most projects work with zero configuration thanks to 118 auto-detecting framework plugins.
 
 ```jsonc
 {
