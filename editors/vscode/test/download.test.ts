@@ -64,6 +64,7 @@ import {
   getBinaryVersion,
   platformTargetFor,
   readVersionMarker,
+  releaseApiUrlForVersion,
   verifyBinaryDigest,
   verifyBinarySignature,
   writeVersionMarker,
@@ -199,6 +200,20 @@ describe("platformTargetFor", () => {
   });
 });
 
+describe("releaseApiUrlForVersion", () => {
+  it("targets the release tag when the extension version is known", () => {
+    expect(releaseApiUrlForVersion("2.26.0")).toBe(
+      "https://api.github.com/repos/fallow-rs/fallow/releases/tags/v2.26.0",
+    );
+  });
+
+  it("falls back to the latest release only when the extension version is unavailable", () => {
+    expect(releaseApiUrlForVersion(null)).toBe(
+      "https://api.github.com/repos/fallow-rs/fallow/releases/latest",
+    );
+  });
+});
+
 describe("getInstalledBinaryPath", () => {
   beforeEach(() => {
     mockFiles = {};
@@ -276,7 +291,7 @@ describe("getInstalledBinaryPath", () => {
     expect(getInstalledBinaryPath(fakeContext)).toBe(lspPath);
   });
 
-  it("treats invalid signature as stale and purges the install dir", () => {
+  it("treats invalid signature as stale and purges only that binary", () => {
     mockFiles[lspPath] = binaryBytes;
     mockFiles[lspSigPath] = signatureBytes;
     mockFiles[cliPath] = binaryBytes;
@@ -286,8 +301,8 @@ describe("getInstalledBinaryPath", () => {
 
     expect(getInstalledBinaryPath(fakeContext)).toBeNull();
     expect(mockFiles[lspPath]).toBeUndefined();
-    expect(mockFiles[cliPath]).toBeUndefined();
-    expect(mockFiles[versionPath]).toBeUndefined();
+    expect(mockFiles[cliPath]).toBe(binaryBytes);
+    expect(mockFiles[versionPath]).toBe("2.26.0");
   });
 
   it("does not fall back to digest markers when a signature file is present but invalid", () => {
@@ -303,7 +318,7 @@ describe("getInstalledBinaryPath", () => {
     expect(mockFiles[lspDigestPath]).toBeUndefined();
   });
 
-  it("purges binaries when both signature and digest verification fail", () => {
+  it("purges only the failing binary when both signature and digest verification fail", () => {
     mockFiles[lspPath] = binaryBytes;
     mockFiles[lspDigestPath] = "0".repeat(64);
     mockFiles[cliPath] = binaryBytes;
@@ -313,8 +328,8 @@ describe("getInstalledBinaryPath", () => {
     expect(getInstalledBinaryPath(fakeContext)).toBeNull();
     expect(mockFiles[lspPath]).toBeUndefined();
     expect(mockFiles[lspDigestPath]).toBeUndefined();
-    expect(mockFiles[cliPath]).toBeUndefined();
-    expect(mockFiles[cliDigestPath]).toBeUndefined();
+    expect(mockFiles[cliPath]).toBe(binaryBytes);
+    expect(mockFiles[cliDigestPath]).toBe("0".repeat(64));
   });
 });
 
@@ -330,6 +345,7 @@ describe("getInstalledCliPath", () => {
     mockFiles[cliPath] = binaryBytes;
     mockFiles[cliSigPath] = signatureBytes;
     mockFiles[versionPath] = "2.26.0";
+    mockExecOutput = "fallow 2.26.0\n";
 
     expect(getInstalledCliPath(fakeContext)).toBe(cliPath);
   });
@@ -338,7 +354,33 @@ describe("getInstalledCliPath", () => {
     mockFiles[cliPath] = binaryBytes;
     mockFiles[cliDigestPath] = digestHex;
     mockFiles[versionPath] = "2.26.0";
+    mockExecOutput = "fallow 2.26.0\n";
 
     expect(getInstalledCliPath(fakeContext)).toBe(cliPath);
+  });
+
+  it("treats a stale CLI binary as stale even when the shared marker is current", () => {
+    mockFiles[cliPath] = binaryBytes;
+    mockFiles[cliSigPath] = signatureBytes;
+    mockFiles[versionPath] = "2.26.0";
+    mockExecOutput = "fallow 2.25.0\n";
+
+    expect(getInstalledCliPath(fakeContext)).toBeNull();
+    expect(mockFiles[cliPath]).toBeUndefined();
+    expect(mockFiles[cliSigPath]).toBeUndefined();
+  });
+
+  it("retries a missing managed CLI without purging a trusted LSP binary", () => {
+    mockFiles[lspPath] = binaryBytes;
+    mockFiles[lspSigPath] = signatureBytes;
+    mockFiles[cliPath] = binaryBytes;
+    mockFiles[cliSigPath] = signatureBytes;
+    mockFiles[versionPath] = "2.26.0";
+    mockSignatureValid = false;
+
+    expect(getInstalledCliPath(fakeContext)).toBeNull();
+    expect(mockFiles[cliPath]).toBeUndefined();
+    expect(mockFiles[lspPath]).toBe(binaryBytes);
+    expect(mockFiles[lspSigPath]).toBe(signatureBytes);
   });
 });
