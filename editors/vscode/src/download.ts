@@ -519,9 +519,8 @@ const downloadManagedBinary = async (
   );
 };
 
-export const downloadCliBinary = async (
-  context: vscode.ExtensionContext,
-): Promise<string | null> => downloadManagedBinary(context, CLI_BINARY_NAME, "CLI");
+export const downloadCliBinary = async (context: vscode.ExtensionContext): Promise<string | null> =>
+  downloadManagedBinary(context, CLI_BINARY_NAME, "CLI");
 
 export const downloadBinary = async (context: vscode.ExtensionContext): Promise<string | null> => {
   const target = ensurePlatformTarget();
@@ -573,7 +572,8 @@ export const downloadBinary = async (context: vscode.ExtensionContext): Promise<
               try {
                 cliPath = await downloadAsset(release, CLI_BINARY_NAME, target, dir);
               } catch (retryErr) {
-                const retryMessage = retryErr instanceof Error ? retryErr.message : String(retryErr);
+                const retryMessage =
+                  retryErr instanceof Error ? retryErr.message : String(retryErr);
                 void vscode.window.showWarningMessage(
                   `Fallow: CLI binary is still missing after retry: ${retryMessage}`,
                 );

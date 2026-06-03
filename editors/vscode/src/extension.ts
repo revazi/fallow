@@ -125,11 +125,12 @@ export const activate = async (context: vscode.ExtensionContext): Promise<Extens
       return;
     }
     cliAnalysisRan = true;
-    void triggerCliAnalysis().then((completed) => {
+    void (async (): Promise<void> => {
+      const completed = await triggerCliAnalysis();
       if (!completed) {
         cliAnalysisRan = false;
       }
-    });
+    })();
   };
 
   context.subscriptions.push(
