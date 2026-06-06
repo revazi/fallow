@@ -3964,7 +3964,7 @@ fn destructure_source_path(expr: &Expression<'_>) -> Option<String> {
 /// Whether an expression is a non-literal argument (a conservative trigger for
 /// sink capture). A fully-literal argument is never captured.
 fn is_non_literal_arg(expr: &Expression<'_>) -> bool {
-    match unwrap_parens(expr) {
+    match unwrap_static_expr(expr) {
         Expression::StringLiteral(_)
         | Expression::NumericLiteral(_)
         | Expression::BooleanLiteral(_)
@@ -3978,12 +3978,12 @@ fn is_non_literal_arg(expr: &Expression<'_>) -> bool {
 
 /// Classify a captured non-literal argument into a finer-grained [`SinkArgKind`]
 /// so the catalogue can require unsafe shapes (concat, template-with-substitution)
-/// and exclude safe ones (object literal, the parameterized form). Parenthesized
-/// wrappers are unwrapped first; a `+` `BinaryExpression` is treated as a string
-/// concatenation (a numeric `+` reaching a SQL/HTML sink is already noise-free
-/// because the catalogue gates on the sink shape and callee).
+/// and exclude safe ones (object literal, the parameterized form). Static
+/// TypeScript wrappers are unwrapped first; a `+` `BinaryExpression` is treated
+/// as a string concatenation (a numeric `+` reaching a SQL/HTML sink is already
+/// noise-free because the catalogue gates on the sink shape and callee).
 fn classify_arg_kind(expr: &Expression<'_>) -> SinkArgKind {
-    match unwrap_parens(expr) {
+    match unwrap_static_expr(expr) {
         Expression::TemplateLiteral(_) => SinkArgKind::TemplateWithSubst,
         Expression::BinaryExpression(bin)
             if bin.operator == oxc_ast::ast::BinaryOperator::Addition =>
@@ -3997,7 +3997,7 @@ fn classify_arg_kind(expr: &Expression<'_>) -> SinkArgKind {
 }
 
 fn sink_literal_value(expr: &Expression<'_>) -> Option<SinkLiteralValue> {
-    match unwrap_parens(expr) {
+    match unwrap_static_expr(expr) {
         Expression::StringLiteral(lit) => Some(SinkLiteralValue::String(lit.value.to_string())),
         Expression::BooleanLiteral(lit) => Some(SinkLiteralValue::Boolean(lit.value)),
         Expression::NullLiteral(_) => Some(SinkLiteralValue::Null),
@@ -4006,7 +4006,7 @@ fn sink_literal_value(expr: &Expression<'_>) -> Option<SinkLiteralValue> {
 }
 
 fn object_literal_properties(expr: &Expression<'_>) -> Vec<SinkObjectProperty> {
-    let Expression::ObjectExpression(obj) = unwrap_parens(expr) else {
+    let Expression::ObjectExpression(obj) = unwrap_static_expr(expr) else {
         return Vec::new();
     };
     obj.properties
@@ -4626,7 +4626,7 @@ fn collect_instanceof_narrowings<'a>(expr: &'a Expression<'a>, out: &mut Vec<(St
 
 impl ModuleInfoExtractor {
     /// Capture a call/member-call sink site (category-blind). Pushes one
-    /// `SinkSite` per non-literal positional argument; a callee that cannot be
+    /// `SinkSite` per admitted positional argument; a callee that cannot be
     /// flattened to a static path increments the blind-spot counter instead.
     fn capture_call_sink(&mut self, expr: &CallExpression<'_>) {
         let Some(callee_path) = flatten_callee_path(&expr.callee) else {

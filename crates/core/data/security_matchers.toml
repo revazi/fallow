@@ -893,4 +893,4 @@ evidence_template = "Non-literal XPath expression passed to {callee}(). Candidat
 #     error object / `.stack`" shape check; the bare non-literal form fires on
 #     every dynamic response, so it is too FP-dense for the ADVICE channel.
 #   - `mysql({ multipleStatements: true })`: a literal option-object toggle that
-#     needs option-object capture (#875), not a callee/arg shape.
+#     needs a dedicated catalogue row and confidence decision.

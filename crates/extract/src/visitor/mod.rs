@@ -168,8 +168,8 @@ pub(crate) struct ModuleInfoExtractor {
     /// from `Program::directives`. Consumed by the security `client-server-leak`
     /// detector to identify React Server Component client boundaries.
     pub(crate) directives: Vec<String>,
-    /// Captured non-literal security sink sites (category-blind). Consumed by
-    /// the catalogue-driven `tainted_sink` detector.
+    /// Captured security sink sites (category-blind). Consumed by the
+    /// catalogue-driven `tainted_sink` detector.
     pub(crate) security_sinks: Vec<SinkSite>,
     /// Count of sink-shaped nodes whose callee could not be flattened to a
     /// static path (dynamic dispatch, computed members, aliased bindings).

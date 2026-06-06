@@ -366,9 +366,9 @@ pub struct CachedModule {
     /// round-trips through the cache so the security `client-server-leak` detector
     /// sees directives on warm-cache loads.
     pub directives: Vec<String>,
-    /// Captured non-literal security sink sites (category-blind). Round-trips
-    /// through the cache so the catalogue-driven `tainted_sink` detector sees
-    /// sinks on warm-cache loads.
+    /// Captured security sink sites (category-blind). Round-trips through the
+    /// cache so the catalogue-driven `tainted_sink` detector sees sinks on
+    /// warm-cache loads.
     pub security_sinks: Vec<fallow_types::extract::SinkSite>,
     /// Count of sink-shaped nodes whose callee could not be flattened to a
     /// static path. Round-trips so the in-band blind-spot count is stable.

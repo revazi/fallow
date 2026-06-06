@@ -647,8 +647,10 @@ fn issue_875_literal_aware_sinks_fire() {
         346,
     );
     assert_candidate(&results, "src/cors.ts", "permissive-cors", 942);
+    assert_candidate(&results, "src/cors-satisfies.ts", "permissive-cors", 942);
     assert_candidate(&results, "src/cookie.ts", "insecure-cookie", 614);
     assert_candidate(&results, "src/weak-crypto.ts", "weak-crypto", 327);
+    assert_candidate(&results, "src/weak-crypto-as-const.ts", "weak-crypto", 327);
     assert_candidate(&results, "src/weak-crypto-named.ts", "weak-crypto", 327);
     assert_candidate(&results, "src/string-code.ts", "code-injection", 95);
     assert_candidate(

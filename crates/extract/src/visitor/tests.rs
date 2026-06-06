@@ -119,6 +119,23 @@ fn security_literal_sink_capture_records_literal_argument() {
 }
 
 #[test]
+fn security_literal_sink_capture_unwraps_ts_assertions() {
+    let info = parse(r#"postMessage({ status: "ready" }, "*" as const);"#);
+    let sink = info
+        .security_sinks
+        .iter()
+        .find(|sink| sink.callee_path == "postMessage" && sink.arg_index == 1)
+        .expect("postMessage target-origin sink captured");
+
+    assert!(!sink.arg_is_non_literal);
+    assert_eq!(sink.arg_kind, SinkArgKind::Literal);
+    assert_eq!(
+        sink.arg_literal,
+        Some(SinkLiteralValue::String("*".to_string()))
+    );
+}
+
+#[test]
 fn security_new_expression_capture_records_constructor_argument() {
     let info = parse(r#"const compiled = new Function("return 1");"#);
     let sink = info
@@ -134,6 +151,36 @@ fn security_new_expression_capture_records_constructor_argument() {
     assert_eq!(
         sink.arg_literal,
         Some(SinkLiteralValue::String("return 1".to_string()))
+    );
+}
+
+#[test]
+fn security_object_sink_capture_unwraps_ts_satisfies() {
+    let info = parse(
+        r#"
+            type CorsOptions = { origin: string; credentials: boolean };
+            cors({ origin: "*", credentials: true } satisfies CorsOptions);
+        "#,
+    );
+    let sink = info
+        .security_sinks
+        .iter()
+        .find(|sink| sink.callee_path == "cors" && sink.arg_index == 0)
+        .expect("cors option-object sink captured");
+
+    assert!(sink.arg_is_non_literal);
+    assert_eq!(sink.arg_kind, SinkArgKind::Object);
+    assert!(
+        sink.object_properties
+            .iter()
+            .any(|property| property.key == "origin"
+                && property.value == SinkLiteralValue::String("*".to_string()))
+    );
+    assert!(
+        sink.object_properties
+            .iter()
+            .any(|property| property.key == "credentials"
+                && property.value == SinkLiteralValue::Boolean(true))
     );
 }
 

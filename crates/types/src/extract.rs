@@ -86,8 +86,8 @@ pub struct ModuleInfo {
     /// Consumed by the security `client-server-leak` detector to identify
     /// React Server Component client boundaries.
     pub directives: Vec<String>,
-    /// Captured non-literal security sink sites (category-blind). Consumed by
-    /// the catalogue-driven `tainted_sink` detector. Captured only by JS/TS
+    /// Captured security sink sites (category-blind). Consumed by the
+    /// catalogue-driven `tainted_sink` detector. Captured only by JS/TS
     /// extraction; empty for CSS/MDX/etc. See `security_matchers.toml`.
     pub security_sinks: Vec<SinkSite>,
     /// Count of sink-shaped nodes whose callee could not be flattened to a
@@ -188,12 +188,12 @@ pub enum SinkShape {
     NewExpression,
 }
 
-/// The shape of the non-literal argument captured at a sink site. Category-blind
-/// like [`SinkShape`], but finer-grained: it lets the catalogue matcher require
-/// or exclude specific argument shapes. The discriminator is what distinguishes
-/// an unsafe SQL string concatenation or template-into-`.execute()` from a
-/// safely-parameterized `` sql`${x}` `` tagged template or an object-literal
-/// `.execute({ sql, args })` argument.
+/// The shape of the argument captured at a sink site. Category-blind like
+/// [`SinkShape`], but finer-grained: it lets the catalogue matcher require or
+/// exclude specific argument shapes. The discriminator is what distinguishes an
+/// unsafe SQL string concatenation or template-into-`.execute()` from a
+/// safely-parameterized `` sql`${x}` `` tagged template, an object-literal
+/// `.execute({ sql, args })` argument, or a literal-aware sink argument.
 #[derive(
     Debug,
     Clone,
@@ -278,10 +278,10 @@ pub struct SinkSite {
     /// Whether the relevant argument is non-literal. Existing non-literal
     /// catalogue rows require this to remain true.
     pub arg_is_non_literal: bool,
-    /// The finer-grained shape of the captured non-literal argument. Lets the
-    /// catalogue require unsafe shapes (concat / template-with-substitution) and
-    /// exclude safe ones (object literal, the parameterized form). See
-    /// [`SinkArgKind`].
+    /// The finer-grained shape of the captured argument. Lets the catalogue
+    /// require unsafe shapes (concat / template-with-substitution / literal /
+    /// no-arg) and exclude safe ones (object literal, the parameterized form).
+    /// See [`SinkArgKind`].
     pub arg_kind: SinkArgKind,
     /// Literal argument value for literal-aware rows.
     pub arg_literal: Option<SinkLiteralValue>,
