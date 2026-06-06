@@ -2706,52 +2706,23 @@ fn dispatch_subcommand(command: Command, dispatch: &DispatchContext<'_>) -> Exit
             }
         },
         Command::Config { path } => config::run_config(root, cli.config.as_deref(), path, output),
-        Command::Workspaces => {
-            let production = match resolve_production_modes(cli, root, output, false, false, false)
-            {
-                Ok(modes) => modes.for_analysis(fallow_config::ProductionAnalysis::DeadCode),
-                Err(code) => return code,
-            };
-            list::run_list(&ListOptions {
-                root,
-                config_path: &cli.config,
-                output,
-                threads,
-                no_cache: cli.no_cache,
-                entry_points: false,
-                files: false,
-                plugins: false,
-                boundaries: false,
-                workspaces: true,
-                production,
-            })
-        }
+        Command::Workspaces => dispatch_list(dispatch, ListDispatchArgs::workspaces()),
         Command::List {
             entry_points,
             files,
             plugins,
             boundaries,
             workspaces,
-        } => {
-            let production = match resolve_production_modes(cli, root, output, false, false, false)
-            {
-                Ok(modes) => modes.for_analysis(fallow_config::ProductionAnalysis::DeadCode),
-                Err(code) => return code,
-            };
-            list::run_list(&ListOptions {
-                root,
-                config_path: &cli.config,
-                output,
-                threads,
-                no_cache: cli.no_cache,
+        } => dispatch_list(
+            dispatch,
+            ListDispatchArgs {
                 entry_points,
                 files,
                 plugins,
                 boundaries,
                 workspaces,
-                production,
-            })
-        }
+            },
+        ),
         Command::Dupes {
             mode,
             min_tokens,
@@ -3346,6 +3317,48 @@ struct CheckDispatchArgs {
     include_dupes: bool,
     top: Option<usize>,
     file: Vec<std::path::PathBuf>,
+}
+
+#[derive(Clone, Copy)]
+struct ListDispatchArgs {
+    entry_points: bool,
+    files: bool,
+    plugins: bool,
+    boundaries: bool,
+    workspaces: bool,
+}
+
+impl ListDispatchArgs {
+    fn workspaces() -> Self {
+        Self {
+            entry_points: false,
+            files: false,
+            plugins: false,
+            boundaries: false,
+            workspaces: true,
+        }
+    }
+}
+
+fn dispatch_list(dispatch: &DispatchContext<'_>, args: ListDispatchArgs) -> ExitCode {
+    let cli = dispatch.cli;
+    let production = match dispatch.production_for(fallow_config::ProductionAnalysis::DeadCode) {
+        Ok(production) => production,
+        Err(code) => return code,
+    };
+    list::run_list(&ListOptions {
+        root: dispatch.root,
+        config_path: &cli.config,
+        output: dispatch.output,
+        threads: dispatch.threads,
+        no_cache: cli.no_cache,
+        entry_points: args.entry_points,
+        files: args.files,
+        plugins: args.plugins,
+        boundaries: args.boundaries,
+        workspaces: args.workspaces,
+        production,
+    })
 }
 
 fn dispatch_check(dispatch: &DispatchContext<'_>, args: &CheckDispatchArgs) -> ExitCode {
