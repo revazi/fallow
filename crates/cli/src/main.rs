@@ -2641,25 +2641,7 @@ fn dispatch_subcommand(command: Command, dispatch: &DispatchContext<'_>) -> Exit
                 file,
             },
         ),
-        Command::Watch { no_clear } => {
-            let production = match resolve_production_modes(cli, root, output, false, false, false)
-            {
-                Ok(modes) => modes.for_analysis(fallow_config::ProductionAnalysis::DeadCode),
-                Err(code) => return code,
-            };
-            watch::run_watch(&watch::WatchOptions {
-                root,
-                config_path: &cli.config,
-                output,
-                no_cache: cli.no_cache,
-                threads,
-                quiet,
-                production,
-                clear_screen: !no_clear,
-                explain: cli.explain,
-                include_entry_exports: cli.include_entry_exports,
-            })
-        }
+        Command::Watch { no_clear } => dispatch_watch(dispatch, no_clear),
         Command::Fix {
             dry_run,
             yes,
@@ -3338,6 +3320,26 @@ impl ListDispatchArgs {
             workspaces: true,
         }
     }
+}
+
+fn dispatch_watch(dispatch: &DispatchContext<'_>, no_clear: bool) -> ExitCode {
+    let cli = dispatch.cli;
+    let production = match dispatch.production_for(fallow_config::ProductionAnalysis::DeadCode) {
+        Ok(production) => production,
+        Err(code) => return code,
+    };
+    watch::run_watch(&watch::WatchOptions {
+        root: dispatch.root,
+        config_path: &cli.config,
+        output: dispatch.output,
+        no_cache: cli.no_cache,
+        threads: dispatch.threads,
+        quiet: dispatch.quiet,
+        production,
+        clear_screen: !no_clear,
+        explain: cli.explain,
+        include_entry_exports: cli.include_entry_exports,
+    })
 }
 
 fn dispatch_list(dispatch: &DispatchContext<'_>, args: ListDispatchArgs) -> ExitCode {
