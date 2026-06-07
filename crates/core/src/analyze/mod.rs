@@ -575,35 +575,16 @@ pub fn find_dead_code_full(
                 || {
                     rayon::join(
                         || {
-                            let mut results = AnalysisResults::default();
-                            if config.rules.unused_enum_members != Severity::Off
-                                || config.rules.unused_class_members != Severity::Off
-                            {
-                                let (enum_members, class_members) =
-                                    find_unused_members_with_public_api_entry_points(
-                                        graph,
-                                        resolved_modules,
-                                        modules,
-                                        &suppressions,
-                                        &line_offsets_by_file,
-                                        &user_class_members,
-                                        &config.ignore_decorators,
-                                        &public_api_entry_points,
-                                    );
-                                if config.rules.unused_enum_members != Severity::Off {
-                                    results.unused_enum_members = enum_members
-                                        .into_iter()
-                                        .map(UnusedEnumMemberFinding::with_actions)
-                                        .collect();
-                                }
-                                if config.rules.unused_class_members != Severity::Off {
-                                    results.unused_class_members = class_members
-                                        .into_iter()
-                                        .map(UnusedClassMemberFinding::with_actions)
-                                        .collect();
-                                }
-                            }
-                            results
+                            run_member_detectors(
+                                graph,
+                                resolved_modules,
+                                modules,
+                                config,
+                                &suppressions,
+                                &line_offsets_by_file,
+                                &user_class_members,
+                                &public_api_entry_points,
+                            )
                         },
                         || {
                             let mut results = AnalysisResults::default();
@@ -1037,6 +1018,52 @@ fn run_export_detectors(
     }
     if config.rules.stale_suppressions != Severity::Off {
         results.stale_suppressions.extend(stale_expected);
+    }
+    results
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "member detection needs graph context plus public API and allowlist filters"
+)]
+fn run_member_detectors(
+    graph: &ModuleGraph,
+    resolved_modules: &[ResolvedModule],
+    modules: &[ModuleInfo],
+    config: &ResolvedConfig,
+    suppressions: &crate::suppress::SuppressionContext<'_>,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+    user_class_members: &[fallow_config::UsedClassMemberRule],
+    public_api_entry_points: &FxHashSet<FileId>,
+) -> AnalysisResults {
+    let mut results = AnalysisResults::default();
+    if config.rules.unused_enum_members == Severity::Off
+        && config.rules.unused_class_members == Severity::Off
+    {
+        return results;
+    }
+
+    let (enum_members, class_members) = find_unused_members_with_public_api_entry_points(
+        graph,
+        resolved_modules,
+        modules,
+        suppressions,
+        line_offsets_by_file,
+        user_class_members,
+        &config.ignore_decorators,
+        public_api_entry_points,
+    );
+    if config.rules.unused_enum_members != Severity::Off {
+        results.unused_enum_members = enum_members
+            .into_iter()
+            .map(UnusedEnumMemberFinding::with_actions)
+            .collect();
+    }
+    if config.rules.unused_class_members != Severity::Off {
+        results.unused_class_members = class_members
+            .into_iter()
+            .map(UnusedClassMemberFinding::with_actions)
+            .collect();
     }
     results
 }
