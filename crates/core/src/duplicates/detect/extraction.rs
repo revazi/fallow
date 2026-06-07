@@ -56,15 +56,15 @@ pub(super) fn extract_clone_groups(
                     continue;
                 }
 
-                if let Some(group) = build_raw_group(
+                if let Some(group) = build_raw_group(&RawGroupInput {
                     sa,
                     file_of,
                     file_offsets,
                     files,
                     interval_begin,
                     interval_end,
-                    top_lcp,
-                ) {
+                    length: top_lcp,
+                }) {
                     groups.push(group);
                 }
             }
@@ -100,15 +100,24 @@ fn interval_has_focus(focus_prefix: &[usize], begin: usize, end: usize) -> bool 
 
 /// Build a `RawGroup` from an LCP interval, filtering to non-overlapping
 /// instances.
-fn build_raw_group(
-    sa: &[usize],
-    file_of: &[usize],
-    file_offsets: &[usize],
-    files: &[FileData],
+struct RawGroupInput<'a> {
+    sa: &'a [usize],
+    file_of: &'a [usize],
+    file_offsets: &'a [usize],
+    files: &'a [FileData],
     interval_begin: usize,
     interval_end: usize,
     length: usize,
-) -> Option<RawGroup> {
+}
+
+fn build_raw_group(input: &RawGroupInput<'_>) -> Option<RawGroup> {
+    let sa = input.sa;
+    let file_of = input.file_of;
+    let file_offsets = input.file_offsets;
+    let files = input.files;
+    let interval_begin = input.interval_begin;
+    let interval_end = input.interval_end;
+    let length = input.length;
     let mut instances: Vec<(usize, usize)> = Vec::with_capacity(interval_end - interval_begin);
 
     for &pos in &sa[interval_begin..interval_end] {
