@@ -74,15 +74,24 @@ pub(super) fn print_json(input: &PrintJsonInput<'_>) -> ExitCode {
 }
 
 #[must_use]
-pub(super) fn print_grouped_json(
-    groups: &[ResultGroup],
-    original: &AnalysisResults,
-    root: &Path,
-    elapsed: Duration,
-    explain: bool,
-    resolver: &OwnershipResolver,
-    config_fixable: bool,
-) -> ExitCode {
+pub(super) struct PrintGroupedJsonInput<'a> {
+    pub(super) groups: &'a [ResultGroup],
+    pub(super) original: &'a AnalysisResults,
+    pub(super) root: &'a Path,
+    pub(super) elapsed: Duration,
+    pub(super) explain: bool,
+    pub(super) resolver: &'a OwnershipResolver,
+    pub(super) config_fixable: bool,
+}
+
+pub(super) fn print_grouped_json(input: &PrintGroupedJsonInput<'_>) -> ExitCode {
+    let groups = input.groups;
+    let original = input.original;
+    let root = input.root;
+    let elapsed = input.elapsed;
+    let explain = input.explain;
+    let resolver = input.resolver;
+    let config_fixable = input.config_fixable;
     let entries: Vec<CheckGroupedEntry> = groups
         .iter()
         .map(|group| {

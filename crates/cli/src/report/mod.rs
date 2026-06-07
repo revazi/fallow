@@ -286,15 +286,15 @@ fn print_grouped_results(
             );
             ExitCode::SUCCESS
         }
-        OutputFormat::Json => json::print_grouped_json(
+        OutputFormat::Json => json::print_grouped_json(&json::PrintGroupedJsonInput {
             groups,
             original,
-            ctx.root,
-            ctx.elapsed,
-            ctx.explain,
+            root: ctx.root,
+            elapsed: ctx.elapsed,
+            explain: ctx.explain,
             resolver,
-            ctx.config_fixable,
-        ),
+            config_fixable: ctx.config_fixable,
+        }),
         OutputFormat::Compact => {
             compact::print_grouped_compact(groups, ctx.root);
             ExitCode::SUCCESS
