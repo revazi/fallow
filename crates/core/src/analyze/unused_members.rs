@@ -1377,48 +1377,11 @@ pub(super) fn find_unused_members_with_public_api_entry_points(
     let interface_to_implementers =
         build_interface_to_implementers(graph, resolved_modules, &class_heritage_by_file);
 
-    let mut accessed_members: FxHashMap<ExportKey, FxHashSet<String>> = FxHashMap::default();
-
-    let mut self_accessed_members: FxHashMap<crate::discover::FileId, FxHashSet<String>> =
-        FxHashMap::default();
-
-    let mut whole_object_used_exports: FxHashSet<ExportKey> = FxHashSet::default();
-
-    for resolved in resolved_modules {
-        let local_to_export_keys = build_local_to_export_keys(resolved);
-
-        for access in &resolved.member_accesses {
-            if access.object.starts_with(INSTANCE_EXPORT_SENTINEL)
-                || access.object.starts_with(FACTORY_CALL_SENTINEL)
-                || access.object.starts_with(FLUENT_CHAIN_SENTINEL)
-                || access.object.starts_with(FLUENT_CHAIN_NEW_SENTINEL)
-            {
-                continue;
-            }
-            if access.object == "this" {
-                self_accessed_members
-                    .entry(resolved.file_id)
-                    .or_default()
-                    .insert(access.member.clone());
-                continue;
-            }
-
-            if let Some(export_keys) = local_to_export_keys.get(access.object.as_str()) {
-                for export_key in export_keys {
-                    accessed_members
-                        .entry(export_key.clone())
-                        .or_default()
-                        .insert(access.member.clone());
-                }
-            }
-        }
-
-        for local_name in &resolved.whole_object_uses {
-            if let Some(export_keys) = local_to_export_keys.get(local_name.as_str()) {
-                whole_object_used_exports.extend(export_keys.iter().cloned());
-            }
-        }
-    }
+    let MemberAccessCollections {
+        mut accessed_members,
+        mut self_accessed_members,
+        mut whole_object_used_exports,
+    } = collect_direct_member_accesses(resolved_modules);
 
     propagate_playwright_fixture_accesses(graph, resolved_modules, &mut accessed_members);
     propagate_factory_call_accesses(graph, resolved_modules, &mut accessed_members);
@@ -1815,6 +1778,58 @@ fn build_interface_to_implementers(
         }
     }
     interface_to_implementers
+}
+
+struct MemberAccessCollections {
+    accessed_members: FxHashMap<ExportKey, FxHashSet<String>>,
+    self_accessed_members: FxHashMap<FileId, FxHashSet<String>>,
+    whole_object_used_exports: FxHashSet<ExportKey>,
+}
+
+fn collect_direct_member_accesses(resolved_modules: &[ResolvedModule]) -> MemberAccessCollections {
+    let mut accessed_members: FxHashMap<ExportKey, FxHashSet<String>> = FxHashMap::default();
+    let mut self_accessed_members: FxHashMap<FileId, FxHashSet<String>> = FxHashMap::default();
+    let mut whole_object_used_exports: FxHashSet<ExportKey> = FxHashSet::default();
+
+    for resolved in resolved_modules {
+        let local_to_export_keys = build_local_to_export_keys(resolved);
+        for access in &resolved.member_accesses {
+            if access.object.starts_with(INSTANCE_EXPORT_SENTINEL)
+                || access.object.starts_with(FACTORY_CALL_SENTINEL)
+                || access.object.starts_with(FLUENT_CHAIN_SENTINEL)
+                || access.object.starts_with(FLUENT_CHAIN_NEW_SENTINEL)
+            {
+                continue;
+            }
+            if access.object == "this" {
+                self_accessed_members
+                    .entry(resolved.file_id)
+                    .or_default()
+                    .insert(access.member.clone());
+                continue;
+            }
+            if let Some(export_keys) = local_to_export_keys.get(access.object.as_str()) {
+                for export_key in export_keys {
+                    accessed_members
+                        .entry(export_key.clone())
+                        .or_default()
+                        .insert(access.member.clone());
+                }
+            }
+        }
+
+        for local_name in &resolved.whole_object_uses {
+            if let Some(export_keys) = local_to_export_keys.get(local_name.as_str()) {
+                whole_object_used_exports.extend(export_keys.iter().cloned());
+            }
+        }
+    }
+
+    MemberAccessCollections {
+        accessed_members,
+        self_accessed_members,
+        whole_object_used_exports,
+    }
 }
 
 #[cfg(test)]
