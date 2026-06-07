@@ -645,63 +645,63 @@ fn build_unused_code_section(
     }
     insert_test_src_split(lines, &results.unused_files, |f| &f.file.path);
 
-    build_human_grouped_section(
+    build_human_grouped_section(GroupedSectionInput {
         lines,
-        &filtered_exports,
-        "Unused exports",
-        severity_to_level(rules.unused_exports),
+        items: &filtered_exports,
+        title: "Unused exports",
+        level: severity_to_level(rules.unused_exports),
         root,
-        max_grouped_files,
-        |e| e.export.path.as_path(),
-        &|e: &UnusedExportFinding| format_unused_export(&e.export),
-    );
+        max_files: max_grouped_files,
+        get_path: |e| e.export.path.as_path(),
+        format_detail: &|e: &UnusedExportFinding| format_unused_export(&e.export),
+    });
     push_suppressed_count_note(lines, suppressed_exports);
     insert_test_src_split(lines, &filtered_exports, |e| &e.export.path);
 
-    build_human_grouped_section(
+    build_human_grouped_section(GroupedSectionInput {
         lines,
-        &filtered_types,
-        "Unused type exports",
-        severity_to_level(rules.unused_types),
+        items: &filtered_types,
+        title: "Unused type exports",
+        level: severity_to_level(rules.unused_types),
         root,
-        max_grouped_files,
-        |e| e.export.path.as_path(),
-        &|e: &UnusedTypeFinding| format_unused_export(&e.export),
-    );
+        max_files: max_grouped_files,
+        get_path: |e| e.export.path.as_path(),
+        format_detail: &|e: &UnusedTypeFinding| format_unused_export(&e.export),
+    });
     push_suppressed_count_note(lines, suppressed_types);
 
-    build_human_grouped_section(
+    build_human_grouped_section(GroupedSectionInput {
         lines,
-        &results.private_type_leaks,
-        "Private type leaks",
-        severity_to_level(rules.private_type_leaks),
+        items: &results.private_type_leaks,
+        title: "Private type leaks",
+        level: severity_to_level(rules.private_type_leaks),
         root,
-        max_grouped_files,
-        |e| e.leak.path.as_path(),
-        &format_private_type_leak,
-    );
+        max_files: max_grouped_files,
+        get_path: |e| e.leak.path.as_path(),
+        format_detail: &format_private_type_leak,
+    });
 
-    build_human_grouped_section(
+    build_human_grouped_section(GroupedSectionInput {
         lines,
-        &results.unused_enum_members,
-        "Unused enum members",
-        severity_to_level(rules.unused_enum_members),
+        items: &results.unused_enum_members,
+        title: "Unused enum members",
+        level: severity_to_level(rules.unused_enum_members),
         root,
-        max_grouped_files,
-        |m| m.member.path.as_path(),
-        &|m: &UnusedEnumMemberFinding| format_unused_member(&m.member),
-    );
+        max_files: max_grouped_files,
+        get_path: |m| m.member.path.as_path(),
+        format_detail: &|m: &UnusedEnumMemberFinding| format_unused_member(&m.member),
+    });
 
-    build_human_grouped_section(
+    build_human_grouped_section(GroupedSectionInput {
         lines,
-        &results.unused_class_members,
-        "Unused class members",
-        severity_to_level(rules.unused_class_members),
+        items: &results.unused_class_members,
+        title: "Unused class members",
+        level: severity_to_level(rules.unused_class_members),
         root,
-        max_grouped_files,
-        |m| m.member.path.as_path(),
-        &|m: &UnusedClassMemberFinding| format_unused_member(&m.member),
-    );
+        max_files: max_grouped_files,
+        get_path: |m| m.member.path.as_path(),
+        format_detail: &|m: &UnusedClassMemberFinding| format_unused_member(&m.member),
+    });
 }
 
 fn build_dependencies_section(
@@ -757,22 +757,22 @@ fn build_dependencies_section(
         total_issues,
         root,
     );
-    build_human_grouped_section(
+    build_human_grouped_section(GroupedSectionInput {
         lines,
-        &results.unresolved_imports,
-        "Unresolved imports",
-        severity_to_level(rules.unresolved_imports),
+        items: &results.unresolved_imports,
+        title: "Unresolved imports",
+        level: severity_to_level(rules.unresolved_imports),
         root,
-        max_grouped_files,
-        |i| i.import.path.as_path(),
-        &|i| {
+        max_files: max_grouped_files,
+        get_path: |i| i.import.path.as_path(),
+        format_detail: &|i| {
             format!(
                 "{} {}",
                 format!(":{}", i.import.line).dimmed(),
                 i.import.specifier.bold()
             )
         },
-    );
+    });
     build_human_section_ex(
         lines,
         &results.unlisted_dependencies,
@@ -1323,20 +1323,36 @@ fn build_human_section_ex<T>(
 /// Files are sorted by item count descending. Shows `(N exports)` next to each
 /// file header. Truncates to `max_files` files and `MAX_ITEMS_PER_FILE`
 /// items per file.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "section renderer needs all display parameters"
-)]
-fn build_human_grouped_section<'a, T>(
-    lines: &mut Vec<String>,
+struct GroupedSectionInput<'a, T, P, F>
+where
+    P: Fn(&'a T) -> &'a Path,
+    F: Fn(&T) -> String,
+{
+    lines: &'a mut Vec<String>,
     items: &'a [T],
-    title: &str,
+    title: &'a str,
     level: Level,
-    root: &Path,
+    root: &'a Path,
     max_files: usize,
-    get_path: impl Fn(&'a T) -> &'a Path,
-    format_detail: &impl Fn(&T) -> String,
-) {
+    get_path: P,
+    format_detail: &'a F,
+}
+
+fn build_human_grouped_section<'a, T, P, F>(input: GroupedSectionInput<'a, T, P, F>)
+where
+    P: Fn(&'a T) -> &'a Path,
+    F: Fn(&T) -> String,
+{
+    let GroupedSectionInput {
+        lines,
+        items,
+        title,
+        level,
+        root,
+        max_files,
+        get_path,
+        format_detail,
+    } = input;
     if items.is_empty() {
         return;
     }
