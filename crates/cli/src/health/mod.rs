@@ -2404,15 +2404,17 @@ pub fn run_health(opts: &HealthOptions<'_>) -> ExitCode {
     }
     print_health_result(
         &result,
-        opts.quiet,
-        opts.explain,
-        opts.min_score,
-        opts.min_severity,
-        opts.report_only,
-        opts.summary,
-        true,
-        true,
-        false,
+        HealthPrintOptions {
+            quiet: opts.quiet,
+            explain: opts.explain,
+            min_score: opts.min_score,
+            min_severity: opts.min_severity,
+            report_only: opts.report_only,
+            summary: opts.summary,
+            summary_heading: true,
+            show_explain_tip: true,
+            skip_score_and_trend: false,
+        },
     )
 }
 
@@ -2458,36 +2460,34 @@ pub struct HealthResult {
 /// `--min-score` implies `--score`). If the score is missing the score gate
 /// cannot evaluate, so a direct API caller that requests a score gate without
 /// computing the score would get a permissive `ExitCode::SUCCESS`.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "thin formatting dispatcher that mirrors HealthOptions presentation knobs; bundling would be churn"
-)]
-pub fn print_health_result(
-    result: &HealthResult,
-    quiet: bool,
-    explain: bool,
-    min_score: Option<f64>,
-    min_severity: Option<FindingSeverity>,
-    report_only: bool,
-    summary: bool,
-    summary_heading: bool,
-    show_explain_tip: bool,
-    skip_score_and_trend: bool,
-) -> ExitCode {
+#[derive(Clone, Copy)]
+pub struct HealthPrintOptions {
+    pub quiet: bool,
+    pub explain: bool,
+    pub min_score: Option<f64>,
+    pub min_severity: Option<FindingSeverity>,
+    pub report_only: bool,
+    pub summary: bool,
+    pub summary_heading: bool,
+    pub show_explain_tip: bool,
+    pub skip_score_and_trend: bool,
+}
+
+pub fn print_health_result(result: &HealthResult, options: HealthPrintOptions) -> ExitCode {
     let ctx = report::ReportContext {
         root: &result.config.root,
         rules: &result.config.rules,
         elapsed: result.elapsed,
-        quiet,
-        explain,
+        quiet: options.quiet,
+        explain: options.explain,
         group_by: None,
         top: None,
-        summary,
-        summary_heading,
-        show_explain_tip,
+        summary: options.summary,
+        summary_heading: options.summary_heading,
+        show_explain_tip: options.show_explain_tip,
         baseline_matched: None,
         config_fixable: false,
-        skip_score_and_trend,
+        skip_score_and_trend: options.skip_score_and_trend,
     };
     let report_code = report::print_health_report(
         &result.report,
@@ -2500,17 +2500,17 @@ pub fn print_health_result(
         return report_code;
     }
 
-    if report_only {
+    if options.report_only {
         return ExitCode::SUCCESS;
     }
 
     let mut score_gate_failed = false;
-    if let Some(threshold) = min_score
+    if let Some(threshold) = options.min_score
         && let Some(ref hs) = result.report.health_score
         && hs.score < threshold
     {
         score_gate_failed = true;
-        if !quiet {
+        if !options.quiet {
             eprintln!(
                 "Health score {:.1} ({}) is below minimum threshold {:.0}",
                 hs.score, hs.grade, threshold
@@ -2518,9 +2518,9 @@ pub fn print_health_result(
         }
     }
 
-    let findings_gate_failed = if let Some(min_sev) = min_severity {
+    let findings_gate_failed = if let Some(min_sev) = options.min_severity {
         result.report.findings.iter().any(|f| f.severity >= min_sev)
-    } else if min_score.is_none() {
+    } else if options.min_score.is_none() {
         !result.report.findings.is_empty()
     } else {
         false
@@ -2548,9 +2548,9 @@ pub fn print_health_result(
         return ExitCode::from(1);
     }
 
-    if min_score.is_some()
-        && min_severity.is_none()
-        && !quiet
+    if options.min_score.is_some()
+        && options.min_severity.is_none()
+        && !options.quiet
         && !result.report.findings.is_empty()
         && matches!(result.config.output, OutputFormat::Human)
     {
@@ -4182,7 +4182,18 @@ mod tests {
 
         assert_eq!(
             print_health_result(
-                &result, true, false, None, None, false, false, true, true, false
+                &result,
+                HealthPrintOptions {
+                    quiet: true,
+                    explain: false,
+                    min_score: None,
+                    min_severity: None,
+                    report_only: false,
+                    summary: false,
+                    summary_heading: true,
+                    show_explain_tip: true,
+                    skip_score_and_trend: false,
+                },
             ),
             ExitCode::from(1),
         );
@@ -4248,15 +4259,17 @@ mod tests {
     ) -> ExitCode {
         print_health_result(
             result,
-            true,
-            false,
-            min_score,
-            min_severity,
-            report_only,
-            false,
-            true,
-            true,
-            false,
+            HealthPrintOptions {
+                quiet: true,
+                explain: false,
+                min_score,
+                min_severity,
+                report_only,
+                summary: false,
+                summary_heading: true,
+                show_explain_tip: true,
+                skip_score_and_trend: false,
+            },
         )
     }
 

@@ -3056,7 +3056,18 @@ fn print_audit_human(result: &AuditResult, quiet: bool, explain: bool, output: O
                 eprintln!("── Complexity ─────────────────────────────────────");
             }
             crate::health::print_health_result(
-                health, quiet, explain, None, None, false, false, true, false, false,
+                health,
+                crate::health::HealthPrintOptions {
+                    quiet,
+                    explain,
+                    min_score: None,
+                    min_severity: None,
+                    report_only: false,
+                    summary: false,
+                    summary_heading: true,
+                    show_explain_tip: false,
+                    skip_score_and_trend: false,
+                },
             );
         }
     }

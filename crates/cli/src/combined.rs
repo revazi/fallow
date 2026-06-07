@@ -488,15 +488,17 @@ fn print_human_sections(
         }
         let code = crate::health::print_health_result(
             result,
-            opts.quiet,
-            opts.explain,
-            None,
-            None,
-            false,
-            opts.summary,
-            !show_headers,
-            false,
-            true,
+            crate::health::HealthPrintOptions {
+                quiet: opts.quiet,
+                explain: opts.explain,
+                min_score: None,
+                min_severity: None,
+                report_only: false,
+                summary: opts.summary,
+                summary_heading: !show_headers,
+                show_explain_tip: false,
+                skip_score_and_trend: true,
+            },
         );
         max_exit = max_exit.max(exit_code_to_u8(code));
     }
