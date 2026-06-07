@@ -1764,15 +1764,24 @@ fn collect_matching_rules(
 /// Each group gets a colored header with its key and issue count, followed by
 /// the same section output that `print_human` produces. Unowned groups get
 /// an advisory footer. Doc URL footers are deduplicated across groups.
-pub(in crate::report) fn print_grouped_human(
-    groups: &[crate::report::grouping::ResultGroup],
-    root: &Path,
-    rules: &RulesConfig,
-    elapsed: Duration,
-    quiet: bool,
-    resolver: Option<&OwnershipResolver>,
-    explain: bool,
-) {
+pub(in crate::report) struct PrintGroupedHumanInput<'a> {
+    pub(in crate::report) groups: &'a [crate::report::grouping::ResultGroup],
+    pub(in crate::report) root: &'a Path,
+    pub(in crate::report) rules: &'a RulesConfig,
+    pub(in crate::report) elapsed: Duration,
+    pub(in crate::report) quiet: bool,
+    pub(in crate::report) resolver: Option<&'a OwnershipResolver>,
+    pub(in crate::report) explain: bool,
+}
+
+pub(in crate::report) fn print_grouped_human(input: &PrintGroupedHumanInput<'_>) {
+    let groups = input.groups;
+    let root = input.root;
+    let rules = input.rules;
+    let elapsed = input.elapsed;
+    let quiet = input.quiet;
+    let resolver = input.resolver;
+    let explain = input.explain;
     if !quiet {
         eprintln!();
     }
