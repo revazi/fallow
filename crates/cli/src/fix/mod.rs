@@ -174,11 +174,13 @@ pub fn run_fix(opts: &FixOptions<'_>) -> ExitCode {
         opts.root,
         &results.unused_catalog_entries,
         config.fix.catalog.delete_preceding_comments,
-        &file_hashes,
-        &mut plan,
-        opts.output,
-        opts.dry_run,
-        &mut fixes,
+        catalog::CatalogFixContext {
+            hashes: &file_hashes,
+            plan: &mut plan,
+            output: opts.output,
+            dry_run: opts.dry_run,
+            fixes: &mut fixes,
+        },
     );
     had_write_error |= catalog_summary.write_error;
     let empty_catalog_summary = catalog::apply_empty_catalog_group_fixes(

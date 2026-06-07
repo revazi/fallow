@@ -36,20 +36,27 @@ use super::plan::{CapturedHashes, FixPlan, read_source_with_hash_check};
 /// `skipped_count` only counts entries that were intentionally not
 /// removed (hardcoded consumer, multi-doc YAML, line out of range); it
 /// does NOT count entries that produced a write error.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "fix-layer signatures match the orchestrator's call shape: root + entries + policy + (hashes, plan) for issue #454 batch atomicity + output/dry_run/fixes for the per-fixer wire"
-)]
+pub(super) struct CatalogFixContext<'a> {
+    pub(super) hashes: &'a CapturedHashes,
+    pub(super) plan: &'a mut FixPlan,
+    pub(super) output: OutputFormat,
+    pub(super) dry_run: bool,
+    pub(super) fixes: &'a mut Vec<serde_json::Value>,
+}
+
 pub(super) fn apply_catalog_entry_fixes(
     root: &Path,
     entries: &[UnusedCatalogEntryFinding],
     preceding_comment_policy: CatalogPrecedingCommentPolicy,
-    hashes: &CapturedHashes,
-    plan: &mut FixPlan,
-    output: OutputFormat,
-    dry_run: bool,
-    fixes: &mut Vec<serde_json::Value>,
+    ctx: CatalogFixContext<'_>,
 ) -> CatalogFixSummary {
+    let CatalogFixContext {
+        hashes,
+        plan,
+        output,
+        dry_run,
+        fixes,
+    } = ctx;
     let mut summary = CatalogFixSummary::default();
 
     if entries.is_empty() {
@@ -750,7 +757,16 @@ mod tests {
         let mut plan = FixPlan::new();
         let hashes = CapturedHashes::default();
         let mut summary = apply_catalog_entry_fixes(
-            root, entries, policy, &hashes, &mut plan, output, dry_run, fixes,
+            root,
+            entries,
+            policy,
+            CatalogFixContext {
+                hashes: &hashes,
+                plan: &mut plan,
+                output,
+                dry_run,
+                fixes,
+            },
         );
         if !dry_run && !plan.commit().failed.is_empty() {
             summary.write_error = true;
