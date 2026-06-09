@@ -1,12 +1,198 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
-use fallow_config::ResolvedConfig;
+use fallow_config::{ResolvedConfig, WorkspaceDiagnostic, WorkspaceDiagnosticKind};
 use fallow_types::discover::{DiscoveredFile, FileId};
 use ignore::WalkBuilder;
+use rustc_hash::FxHashSet;
 
 use super::ALLOWED_HIDDEN_DIRS;
+
+/// Process-wide dedupe of the size-skip / largest-files stderr notes, keyed by a
+/// content-derived string, so combined-mode (`fallow` runs check + dupes +
+/// health, each of which can trigger a source walk) emits each note at most once
+/// per distinct content. Mirrors the workspace-diagnostics `should_emit`
+/// pattern (issue #1086).
+fn should_emit_note_once(key: String) -> bool {
+    static EMITTED: OnceLock<Mutex<FxHashSet<String>>> = OnceLock::new();
+    EMITTED
+        .get_or_init(|| Mutex::new(FxHashSet::default()))
+        .lock()
+        .map_or(true, |mut set| set.insert(key))
+}
+
+/// A discovered file path paired with its on-disk size in bytes, as collected
+/// by the parallel walker before [`DiscoveredFile`] ids are assigned.
+type SizedFile = (PathBuf, u64);
+
+/// Number of example file paths named in the aggregated skipped-large-file and
+/// largest-files stderr notes before the tail collapses to "and N more". Keeps
+/// the notes to one bounded line on a monorepo that skips many files.
+const NOTE_EXAMPLE_CAP: usize = 5;
+
+/// Discovered-file-count threshold above which the pre-parse largest-files note
+/// fires, so an out-of-memory hang at the parse stage has a visible suspect
+/// list (issue #1086).
+const LARGE_SET_THRESHOLD: usize = 20_000;
+
+/// Single-file byte threshold above which the pre-parse largest-files note
+/// fires even on a small project. Set just under the default 5 MB skip so the
+/// note fires for kept files that are approaching the skip limit (the genuine
+/// out-of-memory suspects), not for ordinary large-but-benign files.
+const LARGE_FILE_NOTE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Minimum size for a file to appear in the largest-files note. Filters out the
+/// `0.0 MB` entries that would otherwise pad the list once it fires, keeping the
+/// named files to plausible memory contributors.
+const NOTE_FILE_FLOOR_BYTES: u64 = 256 * 1024;
+
+/// Whether a path is a TypeScript declaration file (`.d.ts`/`.d.mts`/`.d.cts`).
+/// Declaration files are exempt from the per-file size skip because they are
+/// reachability roots for global types: skipping a large `auto-imports.d.ts`
+/// would false-flag the files whose types it provides.
+fn is_declaration_file(path: &Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    name.ends_with(".d.ts") || name.ends_with(".d.mts") || name.ends_with(".d.cts")
+}
+
+/// Render a byte count as a megabyte figure with one decimal place.
+fn format_size_mb(bytes: u64) -> String {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "display-only size figure; precision loss past 2^53 bytes is irrelevant"
+    )]
+    let mb = bytes as f64 / (1024.0 * 1024.0);
+    format!("{mb:.1} MB")
+}
+
+/// Join up to [`NOTE_EXAMPLE_CAP`] `path (size)` examples (already ordered) into
+/// one comma-separated string, collapsing the tail to "and N more".
+fn summarize_examples(root: &Path, examples: &[SizedFile]) -> String {
+    let shown: Vec<String> = examples
+        .iter()
+        .take(NOTE_EXAMPLE_CAP)
+        .map(|(path, size)| {
+            let display = path
+                .strip_prefix(root)
+                .unwrap_or(path)
+                .display()
+                .to_string()
+                .replace('\\', "/");
+            format!("{display} ({})", format_size_mb(*size))
+        })
+        .collect();
+    let remaining = examples.len().saturating_sub(NOTE_EXAMPLE_CAP);
+    if remaining > 0 {
+        format!("{}, and {remaining} more", shown.join(", "))
+    } else {
+        shown.join(", ")
+    }
+}
+
+/// Split discovered `(path, size)` pairs into the kept set and the set skipped
+/// for exceeding `max_file_size_bytes`. Declaration files are never skipped.
+fn partition_by_size(
+    raw: Vec<SizedFile>,
+    max_file_size_bytes: Option<u64>,
+) -> (Vec<SizedFile>, Vec<SizedFile>) {
+    let Some(limit) = max_file_size_bytes else {
+        return (raw, Vec::new());
+    };
+    raw.into_iter()
+        .partition(|(path, size)| *size <= limit || is_declaration_file(path))
+}
+
+/// Record the skipped files in the workspace-diagnostics registry (so they
+/// surface in `workspace_diagnostics[]` JSON) and emit one aggregated
+/// `tracing::warn!` so a human running `fallow` sees what was dropped. Mirrors
+/// the JSON-plus-gated-warn pattern used for undeclared workspaces.
+fn report_skipped_large_files(config: &ResolvedConfig, skipped: &[SizedFile]) {
+    if skipped.is_empty() {
+        return;
+    }
+    let diagnostics: Vec<WorkspaceDiagnostic> = skipped
+        .iter()
+        .map(|(path, size_bytes)| {
+            WorkspaceDiagnostic::new(
+                &config.root,
+                path.clone(),
+                WorkspaceDiagnosticKind::SkippedLargeFile {
+                    size_bytes: *size_bytes,
+                },
+            )
+        })
+        .collect();
+    fallow_config::append_workspace_diagnostics(&config.root, diagnostics);
+
+    let mut sorted: Vec<SizedFile> = skipped.to_vec();
+    sorted.sort_unstable_by_key(|f| std::cmp::Reverse(f.1));
+    let count = skipped.len();
+    if !config.quiet
+        && should_emit_note_once(format!(
+            "skip::{}::{count}::{}",
+            config.root.display(),
+            sorted.first().map_or(0, |f| f.1)
+        ))
+    {
+        let examples = summarize_examples(&config.root, &sorted);
+        let noun = if count == 1 { "file" } else { "files" };
+        tracing::warn!(
+            "fallow: skipped {count} {noun} over the max file size limit ({examples}). \
+             Raise the limit with --max-file-size <MB> (or FALLOW_MAX_FILE_SIZE), or add them to ignorePatterns."
+        );
+    }
+}
+
+/// Build the pre-parse largest-files note, or `None` when the discovered set is
+/// neither unusually large nor contains an unusually large file. Pure so the
+/// pluralization, floor filtering, and count-only fallback are unit-testable
+/// without a tracing subscriber. See issue #1086.
+fn build_largest_files_note(root: &Path, files: &[DiscoveredFile]) -> Option<String> {
+    if files.is_empty() {
+        return None;
+    }
+    let largest = files.iter().map(|f| f.size_bytes).max().unwrap_or(0);
+    if files.len() <= LARGE_SET_THRESHOLD && largest < LARGE_FILE_NOTE_BYTES {
+        return None;
+    }
+    let count = files.len();
+    let noun = if count == 1 { "file" } else { "files" };
+    let mut by_size: Vec<SizedFile> = files
+        .iter()
+        .filter(|f| f.size_bytes >= NOTE_FILE_FLOOR_BYTES)
+        .map(|f| (f.path.clone(), f.size_bytes))
+        .collect();
+    by_size.sort_unstable_by_key(|f| std::cmp::Reverse(f.1));
+    if by_size.is_empty() {
+        // Large file SET with no individually large file: report the count only,
+        // omitting a "largest:" list that would otherwise be all sub-floor noise.
+        return Some(format!(
+            "fallow: discovered {count} {noun}. If analysis stalls or runs out of memory, \
+             exclude large generated files via ignorePatterns or --max-file-size."
+        ));
+    }
+    let examples = summarize_examples(root, &by_size);
+    Some(format!(
+        "fallow: discovered {count} {noun}; largest: {examples}. If analysis stalls or runs out of memory, \
+         exclude large generated files via ignorePatterns or --max-file-size."
+    ))
+}
+
+/// Emit a pre-parse note listing the largest kept files when the discovered set
+/// is unusually large or contains an unusually large file, so an out-of-memory
+/// hang at the parse stage is diagnosable (issue #1086). Visible before the
+/// expensive parse begins, so it survives a subsequent crash.
+fn note_largest_files(config: &ResolvedConfig, files: &[DiscoveredFile]) {
+    if config.quiet {
+        return;
+    }
+    if let Some(message) = build_largest_files_note(&config.root, files)
+        && should_emit_note_once(format!("note::{}::{}", config.root.display(), files.len()))
+    {
+        tracing::warn!("{message}");
+    }
+}
 
 /// Package-scoped hidden directories that source discovery should traverse.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,7 +435,14 @@ pub fn discover_files_with_additional_hidden_dirs(
         .expect("walk collector lock poisoned");
     raw.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
-    let files: Vec<DiscoveredFile> = raw
+    // Drop any source-discovery diagnostics from a previous pass (watch-mode
+    // rerun, combined-mode re-walk) BEFORE re-recording this walk's skips, so a
+    // file that is no longer skipped does not leave a stale entry (issue #1086).
+    fallow_config::clear_source_discovery_diagnostics(&config.root);
+    let (kept, skipped) = partition_by_size(raw, config.max_file_size_bytes);
+    report_skipped_large_files(config, &skipped);
+
+    let files: Vec<DiscoveredFile> = kept
         .into_iter()
         .enumerate()
         .map(|(idx, (path, size_bytes))| DiscoveredFile {
@@ -258,6 +451,8 @@ pub fn discover_files_with_additional_hidden_dirs(
             size_bytes,
         })
         .collect();
+
+    note_largest_files(config, &files);
 
     files
 }
@@ -408,6 +603,117 @@ mod tests {
         assert!(!SOURCE_EXTENSIONS.contains(&"txt"));
         assert!(!SOURCE_EXTENSIONS.contains(&"csv"));
         assert!(!SOURCE_EXTENSIONS.contains(&"wasm"));
+    }
+
+    #[test]
+    fn is_declaration_file_matches_dts_variants() {
+        assert!(is_declaration_file(Path::new("env.d.ts")));
+        assert!(is_declaration_file(Path::new("src/auto-imports.d.ts")));
+        assert!(is_declaration_file(Path::new("mod.d.mts")));
+        assert!(is_declaration_file(Path::new("compat.d.cts")));
+        assert!(!is_declaration_file(Path::new("index.ts")));
+        assert!(!is_declaration_file(Path::new("component.tsx")));
+        assert!(!is_declaration_file(Path::new("notes.d.txt")));
+    }
+
+    #[test]
+    fn format_size_mb_renders_one_decimal() {
+        assert_eq!(format_size_mb(5 * 1024 * 1024), "5.0 MB");
+        assert_eq!(format_size_mb(1024 * 1024 + 512 * 1024), "1.5 MB");
+        assert_eq!(format_size_mb(0), "0.0 MB");
+    }
+
+    #[test]
+    fn partition_by_size_no_limit_keeps_all() {
+        let raw = vec![(PathBuf::from("a.ts"), 10), (PathBuf::from("b.ts"), 10_000)];
+        let (kept, skipped) = partition_by_size(raw, None);
+        assert_eq!(kept.len(), 2);
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn partition_by_size_skips_strictly_over_limit() {
+        let raw = vec![
+            (PathBuf::from("under.ts"), 99),
+            (PathBuf::from("exact.ts"), 100),
+            (PathBuf::from("over.ts"), 101),
+        ];
+        let (kept, skipped) = partition_by_size(raw, Some(100));
+        let kept_has = |name: &str| kept.iter().any(|(p, _)| p.as_path() == Path::new(name));
+        assert!(kept_has("under.ts"));
+        assert!(
+            kept_has("exact.ts"),
+            "a file exactly at the limit is kept (skip is strictly-greater)"
+        );
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].0, PathBuf::from("over.ts"));
+    }
+
+    #[test]
+    fn partition_by_size_exempts_declaration_files() {
+        let raw = vec![
+            (PathBuf::from("huge.ts"), 10_000),
+            (PathBuf::from("auto-imports.d.ts"), 10_000),
+        ];
+        let (kept, skipped) = partition_by_size(raw, Some(100));
+        assert!(
+            kept.iter()
+                .any(|(p, _)| p.as_path() == Path::new("auto-imports.d.ts")),
+            "declaration files are exempt from the size skip regardless of size"
+        );
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].0, PathBuf::from("huge.ts"));
+    }
+
+    fn disco(path: &str, size_bytes: u64) -> DiscoveredFile {
+        DiscoveredFile {
+            id: FileId(0),
+            path: PathBuf::from(path),
+            size_bytes,
+        }
+    }
+
+    #[test]
+    fn largest_files_note_below_threshold_is_none() {
+        let files = [disco("a.ts", 100), disco("b.ts", 200)];
+        assert!(build_largest_files_note(Path::new("/p"), &files).is_none());
+    }
+
+    #[test]
+    fn largest_files_note_single_file_uses_singular() {
+        let files = [disco("big.ts", 5 * 1024 * 1024)];
+        let note = build_largest_files_note(Path::new("/p"), &files).expect("note fires");
+        assert!(
+            note.contains("discovered 1 file;"),
+            "singular noun on the single-big-file path (issue #1086 regression): {note}"
+        );
+        assert!(!note.contains("discovered 1 files"));
+        assert!(note.contains("big.ts (5.0 MB)"));
+    }
+
+    #[test]
+    fn largest_files_note_filters_sub_floor_files() {
+        let files = [disco("big.ts", 5 * 1024 * 1024), disco("tiny.ts", 10)];
+        let note = build_largest_files_note(Path::new("/p"), &files).expect("note fires");
+        assert!(note.contains("discovered 2 files;"));
+        assert!(note.contains("big.ts (5.0 MB)"));
+        assert!(
+            !note.contains("tiny.ts"),
+            "sub-floor files are not listed as `0.0 MB` chaff: {note}"
+        );
+    }
+
+    #[test]
+    fn largest_files_note_large_set_no_big_file_omits_list() {
+        let files: Vec<DiscoveredFile> = (0..=LARGE_SET_THRESHOLD)
+            .map(|i| disco(&format!("f{i}.ts"), 100))
+            .collect();
+        let note = build_largest_files_note(Path::new("/p"), &files).expect("large set fires");
+        assert!(note.contains(&format!("discovered {} files", LARGE_SET_THRESHOLD + 1)));
+        assert!(
+            !note.contains("largest:"),
+            "no sub-floor `largest:` list when no file clears the floor: {note}"
+        );
     }
 
     mod discover_files_integration {
@@ -896,6 +1202,107 @@ mod tests {
             );
             assert!(names.contains(&"src/index.ts".to_string()));
             assert!(names.contains(&"src/build/helper.ts".to_string()));
+        }
+
+        /// Resolve a config then override the per-file size limit in bytes.
+        fn make_config_with_max_file_size(
+            root: PathBuf,
+            max_file_size_bytes: Option<u64>,
+        ) -> ResolvedConfig {
+            let mut config = make_config(root, false);
+            config.max_file_size_bytes = max_file_size_bytes;
+            config
+        }
+
+        #[test]
+        fn skips_files_over_max_file_size() {
+            let dir = tempfile::tempdir().expect("create temp dir");
+            let src = dir.path().join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join("small.ts"), "export const a = 1;").unwrap();
+            std::fs::write(src.join("huge.ts"), "x".repeat(5_000)).unwrap();
+
+            let config = make_config_with_max_file_size(dir.path().to_path_buf(), Some(1_000));
+            let files = discover_files(&config);
+            let names = file_names(&files, dir.path());
+
+            assert!(names.contains(&"src/small.ts".to_string()));
+            assert!(
+                !names.contains(&"src/huge.ts".to_string()),
+                "a file over the size limit must not be discovered"
+            );
+        }
+
+        #[test]
+        fn declaration_files_exempt_from_size_skip() {
+            let dir = tempfile::tempdir().expect("create temp dir");
+            let src = dir.path().join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join("auto-imports.d.ts"), "x".repeat(5_000)).unwrap();
+            std::fs::write(src.join("huge.ts"), "x".repeat(5_000)).unwrap();
+
+            let config = make_config_with_max_file_size(dir.path().to_path_buf(), Some(1_000));
+            let files = discover_files(&config);
+            let names = file_names(&files, dir.path());
+
+            assert!(
+                names.contains(&"src/auto-imports.d.ts".to_string()),
+                "a large .d.ts is exempt from the skip (reachability root for global types)"
+            );
+            assert!(!names.contains(&"src/huge.ts".to_string()));
+        }
+
+        #[test]
+        fn unlimited_size_keeps_large_files() {
+            let dir = tempfile::tempdir().expect("create temp dir");
+            let src = dir.path().join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join("huge.ts"), "x".repeat(5_000)).unwrap();
+
+            let config = make_config_with_max_file_size(dir.path().to_path_buf(), None);
+            let files = discover_files(&config);
+            let names = file_names(&files, dir.path());
+
+            assert!(
+                names.contains(&"src/huge.ts".to_string()),
+                "no limit keeps every file"
+            );
+        }
+
+        #[test]
+        fn skipped_file_recorded_in_workspace_diagnostics() {
+            let dir = tempfile::tempdir().expect("create temp dir");
+            let src = dir.path().join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join("huge.ts"), "x".repeat(5_000)).unwrap();
+
+            let config = make_config_with_max_file_size(dir.path().to_path_buf(), Some(1_000));
+            let _ = discover_files(&config);
+
+            let diagnostics = fallow_config::workspace_diagnostics_for(dir.path());
+            let skipped: Vec<_> = diagnostics
+                .iter()
+                .filter(|d| {
+                    matches!(
+                        d.kind,
+                        fallow_config::WorkspaceDiagnosticKind::SkippedLargeFile { .. }
+                    )
+                })
+                .collect();
+            assert_eq!(
+                skipped.len(),
+                1,
+                "the skipped file is recorded in workspace diagnostics for JSON output"
+            );
+            assert!(skipped[0].path.ends_with("src/huge.ts"));
+            assert!(
+                matches!(
+                    skipped[0].kind,
+                    fallow_config::WorkspaceDiagnosticKind::SkippedLargeFile { size_bytes }
+                        if size_bytes == 5_000
+                ),
+                "the recorded diagnostic carries the on-disk byte size"
+            );
         }
     }
 }
