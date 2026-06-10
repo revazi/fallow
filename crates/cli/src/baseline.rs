@@ -123,189 +123,40 @@ pub struct BaselineData {
 }
 
 impl BaselineData {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one match arm per issue type keeps the baseline key map flat and grep-friendly"
-    )]
     pub fn from_results(results: &fallow_core::results::AnalysisResults, root: &Path) -> Self {
+        let file_exports = baseline_file_export_keys(results, root);
+        let member_imports = baseline_member_import_keys(results, root);
+        let dependencies = baseline_dependency_keys(results, root);
+        let graph = baseline_graph_keys(results, root);
+        let catalog = baseline_catalog_keys(results, root);
+
         Self {
-            unused_files: results
-                .unused_files
-                .iter()
-                .map(|f| relative_path(&f.file.path, root))
-                .collect(),
-            unused_exports: results
-                .unused_exports
-                .iter()
-                .map(|e| {
-                    format!(
-                        "{}:{}",
-                        relative_path(&e.export.path, root),
-                        e.export.export_name
-                    )
-                })
-                .collect(),
-            unused_types: results
-                .unused_types
-                .iter()
-                .map(|e| {
-                    format!(
-                        "{}:{}",
-                        relative_path(&e.export.path, root),
-                        e.export.export_name
-                    )
-                })
-                .collect(),
-            private_type_leaks: results
-                .private_type_leaks
-                .iter()
-                .map(|e| {
-                    format!(
-                        "{}:{}->{}",
-                        relative_path(&e.leak.path, root),
-                        e.leak.export_name,
-                        e.leak.type_name
-                    )
-                })
-                .collect(),
-            unused_dependencies: results
-                .unused_dependencies
-                .iter()
-                .map(|d| package_json_dependency_key(&d.dep.package_name, &d.dep.path, root))
-                .collect(),
-            unused_dev_dependencies: results
-                .unused_dev_dependencies
-                .iter()
-                .map(|d| package_json_dependency_key(&d.dep.package_name, &d.dep.path, root))
-                .collect(),
-            circular_dependencies: results
-                .circular_dependencies
-                .iter()
-                .map(|c| circular_dep_key(&c.cycle, root))
-                .collect(),
-            re_export_cycles: results
-                .re_export_cycles
-                .iter()
-                .map(|c| re_export_cycle_key(&c.cycle, root))
-                .collect(),
-            unused_optional_dependencies: results
-                .unused_optional_dependencies
-                .iter()
-                .map(|d| package_json_dependency_key(&d.dep.package_name, &d.dep.path, root))
-                .collect(),
-            unused_enum_members: results
-                .unused_enum_members
-                .iter()
-                .map(|m| {
-                    format!(
-                        "{}:{}.{}",
-                        relative_path(&m.member.path, root),
-                        m.member.parent_name,
-                        m.member.member_name
-                    )
-                })
-                .collect(),
-            unused_class_members: results
-                .unused_class_members
-                .iter()
-                .map(|m| {
-                    format!(
-                        "{}:{}.{}",
-                        relative_path(&m.member.path, root),
-                        m.member.parent_name,
-                        m.member.member_name
-                    )
-                })
-                .collect(),
-            unresolved_imports: results
-                .unresolved_imports
-                .iter()
-                .map(|i| {
-                    format!(
-                        "{}:{}",
-                        relative_path(&i.import.path, root),
-                        i.import.specifier
-                    )
-                })
-                .collect(),
-            unlisted_dependencies: results
-                .unlisted_dependencies
-                .iter()
-                .map(|d| d.dep.package_name.clone())
-                .collect(),
-            duplicate_exports: results
-                .duplicate_exports
-                .iter()
-                .map(|d| duplicate_export_key(&d.export, root))
-                .collect(),
-            type_only_dependencies: results
-                .type_only_dependencies
-                .iter()
-                .map(|d| package_json_dependency_key(&d.dep.package_name, &d.dep.path, root))
-                .collect(),
-            test_only_dependencies: results
-                .test_only_dependencies
-                .iter()
-                .map(|d| package_json_dependency_key(&d.dep.package_name, &d.dep.path, root))
-                .collect(),
-            boundary_violations: results
-                .boundary_violations
-                .iter()
-                .map(|v| boundary_violation_key(&v.violation, root))
-                .collect(),
-            boundary_coverage_violations: results
-                .boundary_coverage_violations
-                .iter()
-                .map(|v| relative_path(&v.violation.path, root))
-                .collect(),
-            boundary_call_violations: results
-                .boundary_call_violations
-                .iter()
-                .map(|v| boundary_call_violation_key(&v.violation, root))
-                .collect(),
-            policy_violations: results
-                .policy_violations
-                .iter()
-                .map(|v| policy_violation_key(&v.violation, root))
-                .collect(),
-            stale_suppressions: results
-                .stale_suppressions
-                .iter()
-                .map(|s| format!("{}:{}", relative_path(&s.path, root), s.line))
-                .collect(),
-            unused_catalog_entries: results
-                .unused_catalog_entries
-                .iter()
-                .map(|e| format!("{}:{}", e.entry.catalog_name, e.entry.entry_name))
-                .collect(),
-            empty_catalog_groups: results
-                .empty_catalog_groups
-                .iter()
-                .map(|g| g.group.catalog_name.clone())
-                .collect(),
-            unresolved_catalog_references: results
-                .unresolved_catalog_references
-                .iter()
-                .map(|r| {
-                    format!(
-                        "{}:{}:{}:{}",
-                        relative_path(&r.reference.path, root),
-                        r.reference.line,
-                        r.reference.catalog_name,
-                        r.reference.entry_name,
-                    )
-                })
-                .collect(),
-            unused_dependency_overrides: results
-                .unused_dependency_overrides
-                .iter()
-                .map(|o| format!("{}:{}", o.entry.source, o.entry.raw_key))
-                .collect(),
-            misconfigured_dependency_overrides: results
-                .misconfigured_dependency_overrides
-                .iter()
-                .map(|o| format!("{}:{}", o.entry.source, o.entry.raw_key))
-                .collect(),
+            unused_files: file_exports.unused_files,
+            unused_exports: file_exports.unused_exports,
+            unused_types: file_exports.unused_types,
+            private_type_leaks: file_exports.private_type_leaks,
+            unused_dependencies: dependencies.unused,
+            unused_dev_dependencies: dependencies.unused_dev,
+            circular_dependencies: graph.circular_dependencies,
+            re_export_cycles: graph.re_export_cycles,
+            unused_optional_dependencies: dependencies.unused_optional,
+            unused_enum_members: member_imports.unused_enum_members,
+            unused_class_members: member_imports.unused_class_members,
+            unresolved_imports: member_imports.unresolved_imports,
+            unlisted_dependencies: dependencies.unlisted,
+            duplicate_exports: member_imports.duplicate_exports,
+            type_only_dependencies: dependencies.type_only,
+            test_only_dependencies: dependencies.test_only,
+            boundary_violations: graph.boundary_violations,
+            boundary_coverage_violations: graph.boundary_coverage_violations,
+            boundary_call_violations: graph.boundary_call_violations,
+            policy_violations: graph.policy_violations,
+            stale_suppressions: member_imports.stale_suppressions,
+            unused_catalog_entries: catalog.unused_catalog_entries,
+            empty_catalog_groups: catalog.empty_catalog_groups,
+            unresolved_catalog_references: catalog.unresolved_catalog_references,
+            unused_dependency_overrides: catalog.unused_dependency_overrides,
+            misconfigured_dependency_overrides: catalog.misconfigured_dependency_overrides,
         }
     }
 
@@ -337,6 +188,264 @@ impl BaselineData {
             + self.unresolved_catalog_references.len()
             + self.unused_dependency_overrides.len()
             + self.misconfigured_dependency_overrides.len()
+    }
+}
+
+struct BaselineFileExportKeys {
+    unused_files: Vec<String>,
+    unused_exports: Vec<String>,
+    unused_types: Vec<String>,
+    private_type_leaks: Vec<String>,
+}
+
+fn baseline_file_export_keys(
+    results: &fallow_core::results::AnalysisResults,
+    root: &Path,
+) -> BaselineFileExportKeys {
+    BaselineFileExportKeys {
+        unused_files: results
+            .unused_files
+            .iter()
+            .map(|f| relative_path(&f.file.path, root))
+            .collect(),
+        unused_exports: results
+            .unused_exports
+            .iter()
+            .map(|e| {
+                format!(
+                    "{}:{}",
+                    relative_path(&e.export.path, root),
+                    e.export.export_name
+                )
+            })
+            .collect(),
+        unused_types: results
+            .unused_types
+            .iter()
+            .map(|e| {
+                format!(
+                    "{}:{}",
+                    relative_path(&e.export.path, root),
+                    e.export.export_name
+                )
+            })
+            .collect(),
+        private_type_leaks: results
+            .private_type_leaks
+            .iter()
+            .map(|e| {
+                format!(
+                    "{}:{}->{}",
+                    relative_path(&e.leak.path, root),
+                    e.leak.export_name,
+                    e.leak.type_name
+                )
+            })
+            .collect(),
+    }
+}
+
+struct BaselineMemberImportKeys {
+    unused_enum_members: Vec<String>,
+    unused_class_members: Vec<String>,
+    unresolved_imports: Vec<String>,
+    duplicate_exports: Vec<String>,
+    stale_suppressions: Vec<String>,
+}
+
+fn baseline_member_import_keys(
+    results: &fallow_core::results::AnalysisResults,
+    root: &Path,
+) -> BaselineMemberImportKeys {
+    BaselineMemberImportKeys {
+        unused_enum_members: results
+            .unused_enum_members
+            .iter()
+            .map(|m| {
+                format!(
+                    "{}:{}.{}",
+                    relative_path(&m.member.path, root),
+                    m.member.parent_name,
+                    m.member.member_name
+                )
+            })
+            .collect(),
+        unused_class_members: results
+            .unused_class_members
+            .iter()
+            .map(|m| {
+                format!(
+                    "{}:{}.{}",
+                    relative_path(&m.member.path, root),
+                    m.member.parent_name,
+                    m.member.member_name
+                )
+            })
+            .collect(),
+        unresolved_imports: results
+            .unresolved_imports
+            .iter()
+            .map(|i| {
+                format!(
+                    "{}:{}",
+                    relative_path(&i.import.path, root),
+                    i.import.specifier
+                )
+            })
+            .collect(),
+        duplicate_exports: results
+            .duplicate_exports
+            .iter()
+            .map(|d| duplicate_export_key(&d.export, root))
+            .collect(),
+        stale_suppressions: results
+            .stale_suppressions
+            .iter()
+            .map(|s| format!("{}:{}", relative_path(&s.path, root), s.line))
+            .collect(),
+    }
+}
+
+struct BaselineDependencyKeys {
+    unused: Vec<String>,
+    unused_dev: Vec<String>,
+    unused_optional: Vec<String>,
+    unlisted: Vec<String>,
+    type_only: Vec<String>,
+    test_only: Vec<String>,
+}
+
+fn baseline_dependency_keys(
+    results: &fallow_core::results::AnalysisResults,
+    root: &Path,
+) -> BaselineDependencyKeys {
+    BaselineDependencyKeys {
+        unused: results
+            .unused_dependencies
+            .iter()
+            .map(|d| package_json_dependency_key(&d.dep.package_name, &d.dep.path, root))
+            .collect(),
+        unused_dev: results
+            .unused_dev_dependencies
+            .iter()
+            .map(|d| package_json_dependency_key(&d.dep.package_name, &d.dep.path, root))
+            .collect(),
+        unused_optional: results
+            .unused_optional_dependencies
+            .iter()
+            .map(|d| package_json_dependency_key(&d.dep.package_name, &d.dep.path, root))
+            .collect(),
+        unlisted: results
+            .unlisted_dependencies
+            .iter()
+            .map(|d| d.dep.package_name.clone())
+            .collect(),
+        type_only: results
+            .type_only_dependencies
+            .iter()
+            .map(|d| package_json_dependency_key(&d.dep.package_name, &d.dep.path, root))
+            .collect(),
+        test_only: results
+            .test_only_dependencies
+            .iter()
+            .map(|d| package_json_dependency_key(&d.dep.package_name, &d.dep.path, root))
+            .collect(),
+    }
+}
+
+struct BaselineGraphKeys {
+    circular_dependencies: Vec<String>,
+    re_export_cycles: Vec<String>,
+    boundary_violations: Vec<String>,
+    boundary_coverage_violations: Vec<String>,
+    boundary_call_violations: Vec<String>,
+    policy_violations: Vec<String>,
+}
+
+fn baseline_graph_keys(
+    results: &fallow_core::results::AnalysisResults,
+    root: &Path,
+) -> BaselineGraphKeys {
+    BaselineGraphKeys {
+        circular_dependencies: results
+            .circular_dependencies
+            .iter()
+            .map(|c| circular_dep_key(&c.cycle, root))
+            .collect(),
+        re_export_cycles: results
+            .re_export_cycles
+            .iter()
+            .map(|c| re_export_cycle_key(&c.cycle, root))
+            .collect(),
+        boundary_violations: results
+            .boundary_violations
+            .iter()
+            .map(|v| boundary_violation_key(&v.violation, root))
+            .collect(),
+        boundary_coverage_violations: results
+            .boundary_coverage_violations
+            .iter()
+            .map(|v| relative_path(&v.violation.path, root))
+            .collect(),
+        boundary_call_violations: results
+            .boundary_call_violations
+            .iter()
+            .map(|v| boundary_call_violation_key(&v.violation, root))
+            .collect(),
+        policy_violations: results
+            .policy_violations
+            .iter()
+            .map(|v| policy_violation_key(&v.violation, root))
+            .collect(),
+    }
+}
+
+struct BaselineCatalogKeys {
+    unused_catalog_entries: Vec<String>,
+    empty_catalog_groups: Vec<String>,
+    unresolved_catalog_references: Vec<String>,
+    unused_dependency_overrides: Vec<String>,
+    misconfigured_dependency_overrides: Vec<String>,
+}
+
+fn baseline_catalog_keys(
+    results: &fallow_core::results::AnalysisResults,
+    root: &Path,
+) -> BaselineCatalogKeys {
+    BaselineCatalogKeys {
+        unused_catalog_entries: results
+            .unused_catalog_entries
+            .iter()
+            .map(|e| format!("{}:{}", e.entry.catalog_name, e.entry.entry_name))
+            .collect(),
+        empty_catalog_groups: results
+            .empty_catalog_groups
+            .iter()
+            .map(|g| g.group.catalog_name.clone())
+            .collect(),
+        unresolved_catalog_references: results
+            .unresolved_catalog_references
+            .iter()
+            .map(|r| {
+                format!(
+                    "{}:{}:{}:{}",
+                    relative_path(&r.reference.path, root),
+                    r.reference.line,
+                    r.reference.catalog_name,
+                    r.reference.entry_name,
+                )
+            })
+            .collect(),
+        unused_dependency_overrides: results
+            .unused_dependency_overrides
+            .iter()
+            .map(|o| format!("{}:{}", o.entry.source, o.entry.raw_key))
+            .collect(),
+        misconfigured_dependency_overrides: results
+            .misconfigured_dependency_overrides
+            .iter()
+            .map(|o| format!("{}:{}", o.entry.source, o.entry.raw_key))
+            .collect(),
     }
 }
 
