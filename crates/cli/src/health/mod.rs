@@ -344,13 +344,11 @@ fn execute_health_inner(
     let mut findings = findings;
     let complexity_ms = t.elapsed().as_secs_f64() * 1000.0;
 
-    let config_coverage_enabled = config.rules.coverage_gaps != fallow_config::Severity::Off;
-    let report_coverage_gaps =
-        opts.coverage_gaps || (opts.config_activates_coverage_gaps && config_coverage_enabled);
-    let enforce_coverage_gaps = opts.enforce_coverage_gap_gate
-        && config.rules.coverage_gaps == fallow_config::Severity::Error;
-
-    let istanbul_coverage = load_health_coverage(opts, &config)?;
+    let HealthCoverageSettings {
+        report_coverage_gaps,
+        enforce_coverage_gaps,
+        istanbul_coverage,
+    } = prepare_health_coverage_settings(opts, &config)?;
 
     let needs_file_scores = opts.file_scores
         || report_coverage_gaps
@@ -659,6 +657,30 @@ fn execute_health_inner(
         timings,
         coverage_gaps_has_findings,
         should_fail_on_coverage_gaps: enforce_coverage_gaps,
+    })
+}
+
+struct HealthCoverageSettings {
+    report_coverage_gaps: bool,
+    enforce_coverage_gaps: bool,
+    istanbul_coverage: Option<scoring::IstanbulCoverage>,
+}
+
+fn prepare_health_coverage_settings(
+    opts: &HealthOptions<'_>,
+    config: &ResolvedConfig,
+) -> Result<HealthCoverageSettings, ExitCode> {
+    let config_coverage_enabled = config.rules.coverage_gaps != fallow_config::Severity::Off;
+    let report_coverage_gaps =
+        opts.coverage_gaps || (opts.config_activates_coverage_gaps && config_coverage_enabled);
+    let enforce_coverage_gaps = opts.enforce_coverage_gap_gate
+        && config.rules.coverage_gaps == fallow_config::Severity::Error;
+    let istanbul_coverage = load_health_coverage(opts, config)?;
+
+    Ok(HealthCoverageSettings {
+        report_coverage_gaps,
+        enforce_coverage_gaps,
+        istanbul_coverage,
     })
 }
 
