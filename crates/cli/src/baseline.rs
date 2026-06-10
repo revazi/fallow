@@ -425,11 +425,302 @@ fn filter_private_type_leaks(
     });
 }
 
+struct BaselineFilterContext<'a> {
+    baseline: &'a BaselineData,
+    root: &'a Path,
+}
+
+impl BaselineFilterContext<'_> {
+    fn filter_cycles_and_members(&self, results: &mut fallow_core::results::AnalysisResults) {
+        let baseline_circular: FxHashSet<&str> = self
+            .baseline
+            .circular_dependencies
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results.circular_dependencies.retain(|cycle| {
+            let key = circular_dep_key(&cycle.cycle, self.root);
+            !baseline_circular.contains(key.as_str())
+        });
+
+        let baseline_re_export_cycles: FxHashSet<&str> = self
+            .baseline
+            .re_export_cycles
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results.re_export_cycles.retain(|cycle| {
+            let key = re_export_cycle_key(&cycle.cycle, self.root);
+            !baseline_re_export_cycles.contains(key.as_str())
+        });
+
+        self.filter_unused_members(results);
+        self.filter_unresolved_and_exports(results);
+    }
+
+    fn filter_unused_members(&self, results: &mut fallow_core::results::AnalysisResults) {
+        let baseline_enum_members: FxHashSet<&str> = self
+            .baseline
+            .unused_enum_members
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results.unused_enum_members.retain(|member| {
+            let key = format!(
+                "{}:{}.{}",
+                relative_path(&member.member.path, self.root),
+                member.member.parent_name,
+                member.member.member_name
+            );
+            !baseline_enum_members.contains(key.as_str())
+        });
+
+        let baseline_class_members: FxHashSet<&str> = self
+            .baseline
+            .unused_class_members
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results.unused_class_members.retain(|member| {
+            let key = format!(
+                "{}:{}.{}",
+                relative_path(&member.member.path, self.root),
+                member.member.parent_name,
+                member.member.member_name
+            );
+            !baseline_class_members.contains(key.as_str())
+        });
+    }
+
+    fn filter_unresolved_and_exports(&self, results: &mut fallow_core::results::AnalysisResults) {
+        let baseline_unresolved: FxHashSet<&str> = self
+            .baseline
+            .unresolved_imports
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results.unresolved_imports.retain(|import| {
+            let key = format!(
+                "{}:{}",
+                relative_path(&import.import.path, self.root),
+                import.import.specifier
+            );
+            !baseline_unresolved.contains(key.as_str())
+        });
+
+        let baseline_unlisted: FxHashSet<&str> = self
+            .baseline
+            .unlisted_dependencies
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results
+            .unlisted_dependencies
+            .retain(|dep| !baseline_unlisted.contains(dep.dep.package_name.as_str()));
+
+        let baseline_dup_exports: FxHashSet<&str> = self
+            .baseline
+            .duplicate_exports
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results.duplicate_exports.retain(|duplicate| {
+            let key = duplicate_export_key(&duplicate.export, self.root);
+            !baseline_dup_exports.contains(key.as_str())
+        });
+    }
+
+    fn filter_dependency_variants(&self, results: &mut fallow_core::results::AnalysisResults) {
+        let baseline_optional_deps: FxHashSet<&str> = self
+            .baseline
+            .unused_optional_dependencies
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results.unused_optional_dependencies.retain(|dep| {
+            let key = package_json_dependency_key(&dep.dep.package_name, &dep.dep.path, self.root);
+            !baseline_contains_dependency(
+                &baseline_optional_deps,
+                &dep.dep.package_name,
+                key.as_str(),
+            )
+        });
+
+        self.filter_type_and_test_only_dependencies(results);
+    }
+
+    fn filter_type_and_test_only_dependencies(
+        &self,
+        results: &mut fallow_core::results::AnalysisResults,
+    ) {
+        let baseline_type_only: FxHashSet<&str> = self
+            .baseline
+            .type_only_dependencies
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results.type_only_dependencies.retain(|dep| {
+            let key = package_json_dependency_key(&dep.dep.package_name, &dep.dep.path, self.root);
+            !baseline_contains_dependency(&baseline_type_only, &dep.dep.package_name, key.as_str())
+        });
+
+        let baseline_test_only: FxHashSet<&str> = self
+            .baseline
+            .test_only_dependencies
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results.test_only_dependencies.retain(|dep| {
+            let key = package_json_dependency_key(&dep.dep.package_name, &dep.dep.path, self.root);
+            !baseline_contains_dependency(&baseline_test_only, &dep.dep.package_name, key.as_str())
+        });
+    }
+
+    fn filter_boundaries_and_suppressions(
+        &self,
+        results: &mut fallow_core::results::AnalysisResults,
+    ) {
+        let baseline_boundary: FxHashSet<&str> = self
+            .baseline
+            .boundary_violations
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results.boundary_violations.retain(|violation| {
+            let key = boundary_violation_key(&violation.violation, self.root);
+            !baseline_boundary.contains(key.as_str())
+        });
+
+        self.filter_boundary_details(results);
+        self.filter_stale_suppressions(results);
+    }
+
+    fn filter_boundary_details(&self, results: &mut fallow_core::results::AnalysisResults) {
+        let baseline_boundary_coverage: FxHashSet<&str> = self
+            .baseline
+            .boundary_coverage_violations
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results.boundary_coverage_violations.retain(|violation| {
+            let key = relative_path(&violation.violation.path, self.root);
+            !baseline_boundary_coverage.contains(key.as_str())
+        });
+
+        let baseline_boundary_calls: FxHashSet<&str> = self
+            .baseline
+            .boundary_call_violations
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results.boundary_call_violations.retain(|violation| {
+            let key = boundary_call_violation_key(&violation.violation, self.root);
+            !baseline_boundary_calls.contains(key.as_str())
+        });
+    }
+
+    fn filter_stale_suppressions(&self, results: &mut fallow_core::results::AnalysisResults) {
+        let baseline_stale: FxHashSet<&str> = self
+            .baseline
+            .stale_suppressions
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results.stale_suppressions.retain(|suppression| {
+            let key = format!(
+                "{}:{}",
+                relative_path(&suppression.path, self.root),
+                suppression.line
+            );
+            !baseline_stale.contains(key.as_str())
+        });
+    }
+
+    fn filter_pnpm_entries(&self, results: &mut fallow_core::results::AnalysisResults) {
+        let baseline_catalog: FxHashSet<&str> = self
+            .baseline
+            .unused_catalog_entries
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results.unused_catalog_entries.retain(|entry| {
+            let key = format!("{}:{}", entry.entry.catalog_name, entry.entry.entry_name);
+            !baseline_catalog.contains(key.as_str())
+        });
+
+        let baseline_empty_catalog_groups: FxHashSet<&str> = self
+            .baseline
+            .empty_catalog_groups
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results.empty_catalog_groups.retain(|group| {
+            !baseline_empty_catalog_groups.contains(group.group.catalog_name.as_str())
+        });
+
+        self.filter_pnpm_references_and_overrides(results);
+    }
+
+    fn filter_pnpm_references_and_overrides(
+        &self,
+        results: &mut fallow_core::results::AnalysisResults,
+    ) {
+        let baseline_unresolved: FxHashSet<&str> = self
+            .baseline
+            .unresolved_catalog_references
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results.unresolved_catalog_references.retain(|reference| {
+            let key = format!(
+                "{}:{}:{}:{}",
+                relative_path(&reference.reference.path, self.root),
+                reference.reference.line,
+                reference.reference.catalog_name,
+                reference.reference.entry_name,
+            );
+            !baseline_unresolved.contains(key.as_str())
+        });
+
+        self.filter_pnpm_overrides(results);
+    }
+
+    fn filter_pnpm_overrides(&self, results: &mut fallow_core::results::AnalysisResults) {
+        let baseline_unused_overrides: FxHashSet<&str> = self
+            .baseline
+            .unused_dependency_overrides
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results
+            .unused_dependency_overrides
+            .retain(|override_entry| {
+                let key = format!(
+                    "{}:{}",
+                    override_entry.entry.source, override_entry.entry.raw_key
+                );
+                !baseline_unused_overrides.contains(key.as_str())
+            });
+
+        let baseline_misconfigured_overrides: FxHashSet<&str> = self
+            .baseline
+            .misconfigured_dependency_overrides
+            .iter()
+            .map(String::as_str)
+            .collect();
+        results
+            .misconfigured_dependency_overrides
+            .retain(|override_entry| {
+                let key = format!(
+                    "{}:{}",
+                    override_entry.entry.source, override_entry.entry.raw_key
+                );
+                !baseline_misconfigured_overrides.contains(key.as_str())
+            });
+    }
+}
+
 /// Filter results to only include issues not present in the baseline.
-#[expect(
-    clippy::too_many_lines,
-    reason = "flat list of per-issue-type retain calls; one block per category keeps each filter local and easy to audit"
-)]
 pub fn filter_new_issues(
     mut results: fallow_core::results::AnalysisResults,
     baseline: &BaselineData,
@@ -485,223 +776,11 @@ pub fn filter_new_issues(
         !baseline_contains_dependency(&baseline_dev_deps, &d.dep.package_name, key.as_str())
     });
 
-    let baseline_circular: FxHashSet<&str> = baseline
-        .circular_dependencies
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results.circular_dependencies.retain(|c| {
-        let key = circular_dep_key(&c.cycle, root);
-        !baseline_circular.contains(key.as_str())
-    });
-
-    let baseline_re_export_cycles: FxHashSet<&str> = baseline
-        .re_export_cycles
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results.re_export_cycles.retain(|c| {
-        let key = re_export_cycle_key(&c.cycle, root);
-        !baseline_re_export_cycles.contains(key.as_str())
-    });
-
-    let baseline_optional_deps: FxHashSet<&str> = baseline
-        .unused_optional_dependencies
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results.unused_optional_dependencies.retain(|d| {
-        let key = package_json_dependency_key(&d.dep.package_name, &d.dep.path, root);
-        !baseline_contains_dependency(&baseline_optional_deps, &d.dep.package_name, key.as_str())
-    });
-
-    let baseline_enum_members: FxHashSet<&str> = baseline
-        .unused_enum_members
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results.unused_enum_members.retain(|m| {
-        let key = format!(
-            "{}:{}.{}",
-            relative_path(&m.member.path, root),
-            m.member.parent_name,
-            m.member.member_name
-        );
-        !baseline_enum_members.contains(key.as_str())
-    });
-
-    let baseline_class_members: FxHashSet<&str> = baseline
-        .unused_class_members
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results.unused_class_members.retain(|m| {
-        let key = format!(
-            "{}:{}.{}",
-            relative_path(&m.member.path, root),
-            m.member.parent_name,
-            m.member.member_name
-        );
-        !baseline_class_members.contains(key.as_str())
-    });
-
-    let baseline_unresolved: FxHashSet<&str> = baseline
-        .unresolved_imports
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results.unresolved_imports.retain(|i| {
-        let key = format!(
-            "{}:{}",
-            relative_path(&i.import.path, root),
-            i.import.specifier
-        );
-        !baseline_unresolved.contains(key.as_str())
-    });
-
-    let baseline_unlisted: FxHashSet<&str> = baseline
-        .unlisted_dependencies
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results
-        .unlisted_dependencies
-        .retain(|d| !baseline_unlisted.contains(d.dep.package_name.as_str()));
-
-    let baseline_dup_exports: FxHashSet<&str> = baseline
-        .duplicate_exports
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results.duplicate_exports.retain(|d| {
-        let key = duplicate_export_key(&d.export, root);
-        !baseline_dup_exports.contains(key.as_str())
-    });
-
-    let baseline_type_only: FxHashSet<&str> = baseline
-        .type_only_dependencies
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results.type_only_dependencies.retain(|d| {
-        let key = package_json_dependency_key(&d.dep.package_name, &d.dep.path, root);
-        !baseline_contains_dependency(&baseline_type_only, &d.dep.package_name, key.as_str())
-    });
-
-    let baseline_test_only: FxHashSet<&str> = baseline
-        .test_only_dependencies
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results.test_only_dependencies.retain(|d| {
-        let key = package_json_dependency_key(&d.dep.package_name, &d.dep.path, root);
-        !baseline_contains_dependency(&baseline_test_only, &d.dep.package_name, key.as_str())
-    });
-
-    let baseline_boundary: FxHashSet<&str> = baseline
-        .boundary_violations
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results.boundary_violations.retain(|v| {
-        let key = boundary_violation_key(&v.violation, root);
-        !baseline_boundary.contains(key.as_str())
-    });
-
-    let baseline_boundary_coverage: FxHashSet<&str> = baseline
-        .boundary_coverage_violations
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results.boundary_coverage_violations.retain(|v| {
-        let key = relative_path(&v.violation.path, root);
-        !baseline_boundary_coverage.contains(key.as_str())
-    });
-
-    let baseline_boundary_calls: FxHashSet<&str> = baseline
-        .boundary_call_violations
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results.boundary_call_violations.retain(|v| {
-        let key = boundary_call_violation_key(&v.violation, root);
-        !baseline_boundary_calls.contains(key.as_str())
-    });
-
-    let baseline_policy: FxHashSet<&str> = baseline
-        .policy_violations
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results.policy_violations.retain(|v| {
-        let key = policy_violation_key(&v.violation, root);
-        !baseline_policy.contains(key.as_str())
-    });
-
-    let baseline_stale: FxHashSet<&str> = baseline
-        .stale_suppressions
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results.stale_suppressions.retain(|s| {
-        let key = format!("{}:{}", relative_path(&s.path, root), s.line);
-        !baseline_stale.contains(key.as_str())
-    });
-
-    let baseline_catalog: FxHashSet<&str> = baseline
-        .unused_catalog_entries
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results.unused_catalog_entries.retain(|e| {
-        let key = format!("{}:{}", e.entry.catalog_name, e.entry.entry_name);
-        !baseline_catalog.contains(key.as_str())
-    });
-
-    let baseline_empty_catalog_groups: FxHashSet<&str> = baseline
-        .empty_catalog_groups
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results
-        .empty_catalog_groups
-        .retain(|g| !baseline_empty_catalog_groups.contains(g.group.catalog_name.as_str()));
-
-    let baseline_unresolved: FxHashSet<&str> = baseline
-        .unresolved_catalog_references
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results.unresolved_catalog_references.retain(|r| {
-        let key = format!(
-            "{}:{}:{}:{}",
-            relative_path(&r.reference.path, root),
-            r.reference.line,
-            r.reference.catalog_name,
-            r.reference.entry_name,
-        );
-        !baseline_unresolved.contains(key.as_str())
-    });
-
-    let baseline_unused_overrides: FxHashSet<&str> = baseline
-        .unused_dependency_overrides
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results.unused_dependency_overrides.retain(|o| {
-        let key = format!("{}:{}", o.entry.source, o.entry.raw_key);
-        !baseline_unused_overrides.contains(key.as_str())
-    });
-
-    let baseline_misconfigured_overrides: FxHashSet<&str> = baseline
-        .misconfigured_dependency_overrides
-        .iter()
-        .map(String::as_str)
-        .collect();
-    results.misconfigured_dependency_overrides.retain(|o| {
-        let key = format!("{}:{}", o.entry.source, o.entry.raw_key);
-        !baseline_misconfigured_overrides.contains(key.as_str())
-    });
+    let filter = BaselineFilterContext { baseline, root };
+    filter.filter_cycles_and_members(&mut results);
+    filter.filter_dependency_variants(&mut results);
+    filter.filter_boundaries_and_suppressions(&mut results);
+    filter.filter_pnpm_entries(&mut results);
 
     results
 }
