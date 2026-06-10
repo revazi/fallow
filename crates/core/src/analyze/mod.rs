@@ -865,60 +865,86 @@ pub fn find_dead_code_full(
     results.suppression_count = suppressions.used_count();
     results.active_suppressions = suppressions.all_suppressions(graph);
 
-    let need_unused_catalogs = config.rules.unused_catalog_entries != Severity::Off;
-    let need_empty_catalog_groups = config.rules.empty_catalog_groups != Severity::Off;
-    let need_unresolved_refs = config.rules.unresolved_catalog_references != Severity::Off;
-    if (need_unused_catalogs || need_empty_catalog_groups || need_unresolved_refs)
-        && let Some(state) = gather_pnpm_catalog_state(config, workspaces)
-    {
-        if need_unused_catalogs {
-            results.unused_catalog_entries = find_unused_catalog_entries(&state)
-                .into_iter()
-                .map(UnusedCatalogEntryFinding::with_actions)
-                .collect();
-        }
-        if need_empty_catalog_groups {
-            results.empty_catalog_groups = find_empty_catalog_groups(&state)
-                .into_iter()
-                .map(EmptyCatalogGroupFinding::with_actions)
-                .collect();
-        }
-        if need_unresolved_refs {
-            results.unresolved_catalog_references = find_unresolved_catalog_references(
-                &state,
-                &config.compiled_ignore_catalog_references,
-                &config.root,
-            )
-            .into_iter()
-            .map(UnresolvedCatalogReferenceFinding::with_actions)
-            .collect();
-        }
-    }
-
-    let need_unused_overrides = config.rules.unused_dependency_overrides != Severity::Off;
-    let need_misconfigured_overrides =
-        config.rules.misconfigured_dependency_overrides != Severity::Off;
-    if (need_unused_overrides || need_misconfigured_overrides)
-        && let Some(state) = gather_pnpm_override_state(config, workspaces)
-    {
-        if need_unused_overrides {
-            results.unused_dependency_overrides = find_unused_dependency_overrides(&state, config)
-                .into_iter()
-                .map(UnusedDependencyOverrideFinding::with_actions)
-                .collect();
-        }
-        if need_misconfigured_overrides {
-            results.misconfigured_dependency_overrides =
-                find_misconfigured_dependency_overrides(&state, config)
-                    .into_iter()
-                    .map(MisconfiguredDependencyOverrideFinding::with_actions)
-                    .collect();
-        }
-    }
+    populate_pnpm_catalog_findings(config, workspaces, &mut results);
+    populate_pnpm_override_findings(config, workspaces, &mut results);
 
     results.sort();
 
     results
+}
+
+#[expect(
+    deprecated,
+    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
+)]
+fn populate_pnpm_catalog_findings(
+    config: &ResolvedConfig,
+    workspaces: &[fallow_config::WorkspaceInfo],
+    results: &mut AnalysisResults,
+) {
+    let need_unused = config.rules.unused_catalog_entries != Severity::Off;
+    let need_empty_groups = config.rules.empty_catalog_groups != Severity::Off;
+    let need_unresolved_refs = config.rules.unresolved_catalog_references != Severity::Off;
+    let Some(state) = ((need_unused || need_empty_groups || need_unresolved_refs)
+        .then(|| gather_pnpm_catalog_state(config, workspaces)))
+    .flatten() else {
+        return;
+    };
+
+    if need_unused {
+        results.unused_catalog_entries = find_unused_catalog_entries(&state)
+            .into_iter()
+            .map(UnusedCatalogEntryFinding::with_actions)
+            .collect();
+    }
+    if need_empty_groups {
+        results.empty_catalog_groups = find_empty_catalog_groups(&state)
+            .into_iter()
+            .map(EmptyCatalogGroupFinding::with_actions)
+            .collect();
+    }
+    if need_unresolved_refs {
+        results.unresolved_catalog_references = find_unresolved_catalog_references(
+            &state,
+            &config.compiled_ignore_catalog_references,
+            &config.root,
+        )
+        .into_iter()
+        .map(UnresolvedCatalogReferenceFinding::with_actions)
+        .collect();
+    }
+}
+
+#[expect(
+    deprecated,
+    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
+)]
+fn populate_pnpm_override_findings(
+    config: &ResolvedConfig,
+    workspaces: &[fallow_config::WorkspaceInfo],
+    results: &mut AnalysisResults,
+) {
+    let need_unused = config.rules.unused_dependency_overrides != Severity::Off;
+    let need_misconfigured = config.rules.misconfigured_dependency_overrides != Severity::Off;
+    let Some(state) = ((need_unused || need_misconfigured)
+        .then(|| gather_pnpm_override_state(config, workspaces)))
+    .flatten() else {
+        return;
+    };
+
+    if need_unused {
+        results.unused_dependency_overrides = find_unused_dependency_overrides(&state, config)
+            .into_iter()
+            .map(UnusedDependencyOverrideFinding::with_actions)
+            .collect();
+    }
+    if need_misconfigured {
+        results.misconfigured_dependency_overrides =
+            find_misconfigured_dependency_overrides(&state, config)
+                .into_iter()
+                .map(MisconfiguredDependencyOverrideFinding::with_actions)
+                .collect();
+    }
 }
 
 fn populate_security_findings(
