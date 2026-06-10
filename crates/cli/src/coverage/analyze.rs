@@ -1514,6 +1514,56 @@ mod tests {
     }
 
     #[test]
+    fn cloud_finding_decision_maps_tracking_states() {
+        let mut used = static_info("src/api.ts", "handler", 10, 20);
+        used.static_used = true;
+        let mut unused = used.clone();
+        unused.static_used = false;
+
+        let never_called = cloud_function("src/api.ts", "handler", Some(10), Some(10), Some(20));
+        assert_eq!(
+            cloud_finding_decision(&never_called, &used),
+            (
+                RuntimeCoverageVerdict::ReviewRequired,
+                RuntimeCoverageConfidence::High,
+                Some(0)
+            )
+        );
+        assert_eq!(
+            cloud_finding_decision(&never_called, &unused),
+            (
+                RuntimeCoverageVerdict::SafeToDelete,
+                RuntimeCoverageConfidence::High,
+                Some(0)
+            )
+        );
+
+        let mut untracked = never_called.clone();
+        untracked.tracking_state = CloudTrackingState::Untracked;
+        untracked.hit_count = None;
+        assert_eq!(
+            cloud_finding_decision(&untracked, &used),
+            (
+                RuntimeCoverageVerdict::CoverageUnavailable,
+                RuntimeCoverageConfidence::None,
+                None
+            )
+        );
+
+        let mut unknown = never_called;
+        unknown.tracking_state = CloudTrackingState::Unknown;
+        unknown.hit_count = Some(42);
+        assert_eq!(
+            cloud_finding_decision(&unknown, &used),
+            (
+                RuntimeCoverageVerdict::Unknown,
+                RuntimeCoverageConfidence::Low,
+                Some(42)
+            )
+        );
+    }
+
+    #[test]
     fn cloud_warnings_dedupe_server_and_cli_no_runtime_data() {
         let snapshot = CloudRuntimeContext {
             repo: "nonexistent-repo".to_owned(),
