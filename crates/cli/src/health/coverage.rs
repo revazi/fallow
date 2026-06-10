@@ -3721,6 +3721,49 @@ mod tests {
     }
 
     #[test]
+    fn resolve_original_source_path_handles_file_absolute_and_relative_sources() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("src/app.ts");
+        let generated = file_url(&dir.path().join("dist/app.js"));
+
+        assert_eq!(
+            super::resolve_original_source_path("", &generated, None),
+            None
+        );
+        assert_eq!(
+            super::resolve_original_source_path(&file_url(&source), &generated, None),
+            Some(source.clone())
+        );
+        assert_eq!(
+            super::resolve_original_source_path(
+                source.to_str().expect("utf8 path"),
+                &generated,
+                None
+            ),
+            Some(source)
+        );
+        assert_eq!(
+            super::resolve_original_source_path("src/app.ts", &generated, None),
+            Some(dir.path().join("dist/src/app.ts"))
+        );
+    }
+
+    #[test]
+    fn resolve_original_source_path_resolves_virtual_sources_from_ancestors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("src/app.ts");
+        std::fs::create_dir_all(source.parent().expect("source parent"))
+            .expect("create source dir");
+        std::fs::write(&source, "export const app = true;").expect("write source");
+        let generated = file_url(&dir.path().join("dist/chunks/app.js"));
+
+        assert_eq!(
+            super::resolve_original_source_path("webpack://app/src/app.ts", &generated, None),
+            Some(source)
+        );
+    }
+
+    #[test]
     fn virtual_source_candidates_strip_known_pseudo_hosts() {
         let url = Url::parse("webpack://_N_E/./src/app.ts").expect("url");
         let candidates = super::virtual_source_candidates(&url);
