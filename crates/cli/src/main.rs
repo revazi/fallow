@@ -3300,36 +3300,7 @@ fn dispatch_subcommand(command: Command, dispatch: &DispatchContext<'_>) -> Exit
             },
         ),
         Command::Impact { subcommand } => dispatch_impact(root, quiet, output, subcommand),
-        Command::Security {
-            runtime_coverage,
-            min_invocations_hot,
-            file,
-            gate,
-            surface,
-        } => {
-            let (output, quiet, fail_on_issues) = dispatch.ci_defaults();
-            security::run(&security::SecurityOptions {
-                root,
-                config_path: &cli.config,
-                output,
-                no_cache: cli.no_cache,
-                threads,
-                quiet,
-                fail_on_issues,
-                sarif_file: cli.sarif_file.as_deref(),
-                summary: cli.summary,
-                changed_since: cli.changed_since.as_deref(),
-                use_shared_diff_index: true,
-                workspace: cli.workspace.as_deref(),
-                changed_workspaces: cli.changed_workspaces.as_deref(),
-                file: file.as_slice(),
-                surface,
-                gate,
-                runtime_coverage: runtime_coverage.as_deref(),
-                min_invocations_hot,
-                explain: cli.explain,
-            })
-        }
+        security @ Command::Security { .. } => dispatch_security_command(security, dispatch),
         Command::Schema => unreachable!("handled above"),
         Command::Migrate {
             toml,
@@ -3370,6 +3341,45 @@ fn dispatch_subcommand(command: Command, dispatch: &DispatchContext<'_>) -> Exit
             uninstall,
         }),
     }
+}
+
+fn dispatch_security_command(command: Command, dispatch: &DispatchContext<'_>) -> ExitCode {
+    let Command::Security {
+        runtime_coverage,
+        min_invocations_hot,
+        file,
+        gate,
+        surface,
+    } = command
+    else {
+        unreachable!("security dispatcher only handles security commands");
+    };
+
+    let cli = dispatch.cli;
+    let root = dispatch.root;
+    let threads = dispatch.threads;
+    let (output, quiet, fail_on_issues) = dispatch.ci_defaults();
+    security::run(&security::SecurityOptions {
+        root,
+        config_path: &cli.config,
+        output,
+        no_cache: cli.no_cache,
+        threads,
+        quiet,
+        fail_on_issues,
+        sarif_file: cli.sarif_file.as_deref(),
+        summary: cli.summary,
+        changed_since: cli.changed_since.as_deref(),
+        use_shared_diff_index: true,
+        workspace: cli.workspace.as_deref(),
+        changed_workspaces: cli.changed_workspaces.as_deref(),
+        file: file.as_slice(),
+        surface,
+        gate,
+        runtime_coverage: runtime_coverage.as_deref(),
+        min_invocations_hot,
+        explain: cli.explain,
+    })
 }
 
 fn dispatch_impact(
