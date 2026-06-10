@@ -1009,10 +1009,6 @@ pub fn combined_meta(include_check: bool, include_dupes: bool, include_health: b
 
 /// Build the `_meta` object for `fallow health --format json --explain`.
 #[must_use]
-#[expect(
-    clippy::too_many_lines,
-    reason = "flat metric table: every entry is 3-4 short lines of metadata and keeping them in one map is clearer than splitting into per-metric helpers"
-)]
 pub fn health_meta() -> Value {
     json!({
         "docs": HEALTH_DOCS,
@@ -1020,7 +1016,36 @@ pub fn health_meta() -> Value {
             "actions[]": ACTIONS_FIELD_DEFINITION,
             "actions[].auto_fixable": ACTIONS_AUTO_FIXABLE_FIELD_DEFINITION
         },
-        "metrics": {
+        "metrics": health_metrics()
+    })
+}
+
+fn health_metrics() -> Value {
+    let mut metrics = serde_json::Map::new();
+    for section in [
+        health_size_complexity_metrics(),
+        health_quality_metrics(),
+        health_coupling_metrics(),
+        health_churn_metrics(),
+        health_refactoring_rank_metrics(),
+        health_refactoring_confidence_metrics(),
+        health_risk_metrics(),
+        health_contributor_metrics(),
+        health_ownership_metrics(),
+        health_runtime_verdict_metrics(),
+        health_runtime_observation_metrics(),
+        health_runtime_production_metrics(),
+    ] {
+        let Value::Object(section) = section else {
+            continue;
+        };
+        metrics.extend(section);
+    }
+    Value::Object(metrics)
+}
+
+fn health_size_complexity_metrics() -> Value {
+    json!({
             "cyclomatic": {
                 "name": "Cyclomatic Complexity",
                 "description": "McCabe cyclomatic complexity: 1 + number of decision points (if/else, switch cases, loops, ternary, logical operators). Measures the number of independent paths through a function.",
@@ -1044,7 +1069,12 @@ pub fn health_meta() -> Value {
                 "description": "Total lines of code in the file (from line offsets). Provides scale context for other metrics: a file with 0.4 complexity density at 80 LOC is different from 0.4 density at 800 LOC.",
                 "range": "[1, \u{221e})",
                 "interpretation": "context-dependent; large files may benefit from splitting even if individual functions are small"
-            },
+            }
+    })
+}
+
+fn health_quality_metrics() -> Value {
+    json!({
             "maintainability_index": {
                 "name": "Maintainability Index",
                 "description": "Composite score: 100 - (complexity_density \u{00d7} 30 \u{00d7} dampening) - (dead_code_ratio \u{00d7} 20) - min(ln(fan_out+1) \u{00d7} 4, 15), where dampening = min(lines/50, 1.0). Clamped to [0, 100]. Higher is better.",
@@ -1062,7 +1092,12 @@ pub fn health_meta() -> Value {
                 "description": "Fraction of value exports (excluding type-only exports like interfaces and type aliases) with zero references across the project.",
                 "range": "[0, 1]",
                 "interpretation": "lower is better; 0 = all exports are used"
-            },
+            }
+    })
+}
+
+fn health_coupling_metrics() -> Value {
+    json!({
             "fan_in": {
                 "name": "Fan-in (Importers)",
                 "description": "Number of files that import this file. High fan-in means high blast radius \u{2014} changes to this file affect many dependents.",
@@ -1075,6 +1110,11 @@ pub fn health_meta() -> Value {
                 "range": "[0, \u{221e})",
                 "interpretation": "lower is better; MI penalty caps at ~40 imports"
             },
+    })
+}
+
+fn health_churn_metrics() -> Value {
+    json!({
             "score": {
                 "name": "Hotspot Score",
                 "description": "normalized_churn \u{00d7} normalized_complexity \u{00d7} 100, where normalization is against the project maximum. Identifies files that are both complex AND frequently changing.",
@@ -1092,7 +1132,12 @@ pub fn health_meta() -> Value {
                 "description": "Compares recent vs older commit frequency within the analysis window. accelerating = recent > 1.5\u{00d7} older, cooling = recent < 0.67\u{00d7} older, stable = in between.",
                 "values": ["accelerating", "stable", "cooling"],
                 "interpretation": "accelerating files need attention; cooling files are stabilizing"
-            },
+            }
+    })
+}
+
+fn health_refactoring_rank_metrics() -> Value {
+    json!({
             "priority": {
                 "name": "Refactoring Priority",
                 "description": "Weighted score: complexity density (30%), hotspot boost (25%), dead code ratio (20%), fan-in (15%), fan-out (10%). Fan-in and fan-out normalization uses adaptive percentile-based thresholds (p95 of the project distribution). Does not use the maintainability index to avoid double-counting.",
@@ -1111,6 +1156,11 @@ pub fn health_meta() -> Value {
                 "values": ["low", "medium", "high"],
                 "interpretation": "low = quick win, high = needs planning and coordination"
             },
+    })
+}
+
+fn health_refactoring_confidence_metrics() -> Value {
+    json!({
             "confidence": {
                 "name": "Confidence Level",
                 "description": "Reliability of the recommendation based on data source. High: deterministic graph/AST analysis (dead code, circular deps, complexity). Medium: heuristic thresholds (fan-in/fan-out coupling). Low: depends on git history quality (churn-based recommendations).",
@@ -1122,13 +1172,23 @@ pub fn health_meta() -> Value {
                 "description": "Project-level aggregate score computed from vital signs: dead code, complexity, maintainability, hotspots, unused dependencies, and circular dependencies. Penalties subtracted from 100. Missing metrics (from pipelines that didn't run) don't penalize. Use --score to compute the score; add --hotspots, or --targets with --score, when the score should include the churn-backed hotspot penalty.",
                 "range": "[0, 100]",
                 "interpretation": "higher is better; A (85\u{2013}100), B (70\u{2013}84), C (55\u{2013}69), D (40\u{2013}54), F (0\u{2013}39)"
-            },
+            }
+    })
+}
+
+fn health_risk_metrics() -> Value {
+    json!({
             "crap_max": {
                 "name": "Untested Complexity Risk (CRAP)",
                 "description": "Change Risk Anti-Patterns score (Savoia & Evans, 2007). Formula: CC\u{00b2} \u{00d7} (1 - cov/100)\u{00b3} + CC. Default model (static_estimated): estimates per-function coverage from export references \u{2014} directly test-referenced exports get 85%, indirectly test-reachable functions get 40%, untested files get 0%. Provide --coverage <path> with Istanbul-format coverage-final.json (from Jest, Vitest, c8, nyc) for exact per-function CRAP scores.",
                 "range": "[1, \u{221e})",
                 "interpretation": "lower is better; >=30 is high-risk (CC >= 5 without test path)"
             },
+    })
+}
+
+fn health_contributor_metrics() -> Value {
+    json!({
             "bus_factor": {
                 "name": "Bus Factor",
                 "description": "Avelino truck factor: the minimum number of distinct contributors who together account for at least 50% of recency-weighted commits to this file in the analysis window. Bot authors are excluded.",
@@ -1147,6 +1207,11 @@ pub fn health_meta() -> Value {
                 "range": "[0, 1]",
                 "interpretation": "share close to 1.0 indicates dominance and pairs with low bus_factor"
             },
+    })
+}
+
+fn health_ownership_metrics() -> Value {
+    json!({
             "stale_days": {
                 "name": "Stale Days",
                 "description": "Days since this contributor last touched the file. Computed at analysis time.",
@@ -1164,13 +1229,23 @@ pub fn health_meta() -> Value {
                 "description": "true = a CODEOWNERS file exists but no rule matches this file; false = a rule matches; null = no CODEOWNERS file was discovered for the repository (cannot determine).",
                 "values": [true, false, null],
                 "interpretation": "true on a hotspot is a review-bottleneck risk; null means the signal is unavailable, not absent"
-            },
+            }
+    })
+}
+
+fn health_runtime_verdict_metrics() -> Value {
+    json!({
             "runtime_coverage_verdict": {
                 "name": "Runtime Coverage Verdict",
                 "description": "Overall verdict across all runtime-coverage findings. `clean` = nothing cold; `cold-code-detected` = one or more tracked functions had zero invocations; `hot-path-touched` = a function modified in the current change set is on the hot path (requires `--diff-file` or `--changed-since` to fire; without a change scope the verdict cannot promote); `license-expired-grace` = analysis ran but the license is in its post-expiry grace window; `unknown` = verdict could not be computed (degenerate input).",
                 "values": ["clean", "hot-path-touched", "cold-code-detected", "license-expired-grace", "unknown"],
                 "interpretation": "`cold-code-detected` is the primary actionable signal in standalone analysis; `hot-path-touched` is promoted to primary in PR context (when a change scope is supplied) so reviewers see the diff-tied signal first. `signals[]` carries the full unprioritized set."
             },
+    })
+}
+
+fn health_runtime_observation_metrics() -> Value {
+    json!({
             "runtime_coverage_state": {
                 "name": "Runtime Coverage State",
                 "description": "Per-function observation: `called` = V8 saw at least one invocation; `never-called` = V8 tracked the function but it never ran; `coverage-unavailable` = the function was not in the V8 tracking set (e.g., lazy-parsed, worker thread, dynamic code); `unknown` = forward-compat sentinel for newer sidecar states.",
@@ -1182,7 +1257,12 @@ pub fn health_meta() -> Value {
                 "description": "Confidence in a runtime-coverage finding. `high` = tracked by V8 with a statistically meaningful observation volume; `medium` = either low observation volume or indirect evidence; `low` = minimal data; `unknown` = insufficient information to classify.",
                 "values": ["high", "medium", "low", "unknown"],
                 "interpretation": "high = act on it; medium = verify context; low = treat as a signal only"
-            },
+            }
+    })
+}
+
+fn health_runtime_production_metrics() -> Value {
+    json!({
             "production_invocations": {
                 "name": "Production Invocations",
                 "description": "Observed invocation count for the function over the collected coverage window. For `coverage-unavailable` findings this is `0` and semantically means `null` (not tracked). Absolute counts are not directly comparable across services without normalizing by trace_count.",
@@ -1195,7 +1275,6 @@ pub fn health_meta() -> Value {
                 "range": "[0, 100]",
                 "interpretation": "lower is better; values above ~10% on a long-running service indicate a large cleanup opportunity"
             }
-        }
     })
 }
 
