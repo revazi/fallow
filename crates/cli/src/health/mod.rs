@@ -162,6 +162,19 @@ struct HealthPipelineInput {
     pre_computed_analysis: Option<fallow_core::AnalysisOutput>,
 }
 
+struct HealthScope<'a> {
+    max_cyclomatic: u16,
+    max_cognitive: u16,
+    max_crap: f64,
+    enforce_crap: bool,
+    ignore_set: globset::GlobSet,
+    changed_files: Option<rustc_hash::FxHashSet<std::path::PathBuf>>,
+    diff_index: Option<&'a crate::report::ci::diff_filter::DiffIndex>,
+    ws_roots: Option<Vec<std::path::PathBuf>>,
+    group_resolver: Option<crate::report::OwnershipResolver>,
+    file_paths: rustc_hash::FxHashMap<fallow_core::discover::FileId, &'a std::path::PathBuf>,
+}
+
 /// Validate an explicit `--churn-file` up front so a malformed import is a loud
 /// hard error (exit 2) rather than a silent hotspot skip. Runs before the
 /// pipeline, and only when churn would actually be consumed (`--hotspots` /
@@ -303,39 +316,18 @@ fn execute_health_inner(
         pre_computed_analysis,
     } = input;
 
-    let max_cyclomatic = opts.max_cyclomatic.unwrap_or(config.health.max_cyclomatic);
-    let max_cognitive = opts.max_cognitive.unwrap_or(config.health.max_cognitive);
-    let max_crap = opts.max_crap.unwrap_or(config.health.max_crap);
-    let enforce_crap = max_crap > 0.0;
-
-    let ignore_set = build_ignore_set(&config.health.ignore);
-    let changed_files = opts
-        .changed_since
-        .and_then(|git_ref| get_changed_files(opts.root, git_ref));
-    let diff_index = match opts.diff_index {
-        Some(index) => Some(index),
-        None if opts.use_shared_diff_index => crate::report::ci::diff_filter::shared_diff_index(),
-        None => None,
-    };
-    let ws_roots = resolve_workspace_scope(
-        opts.root,
-        opts.workspace,
-        opts.changed_workspaces,
-        opts.output,
-    )?;
-
-    let group_resolver = if opts.group_by.is_some() {
-        crate::build_ownership_resolver(
-            opts.group_by,
-            opts.root,
-            config.codeowners.as_deref(),
-            opts.output,
-        )?
-    } else {
-        None
-    };
-
-    let file_paths: rustc_hash::FxHashMap<_, _> = files.iter().map(|f| (f.id, &f.path)).collect();
+    let HealthScope {
+        max_cyclomatic,
+        max_cognitive,
+        max_crap,
+        enforce_crap,
+        ignore_set,
+        changed_files,
+        diff_index,
+        ws_roots,
+        group_resolver,
+        file_paths,
+    } = prepare_health_scope(opts, &config, &files)?;
 
     let t = Instant::now();
     let (findings, files_analyzed, total_functions) = collect_findings(
@@ -699,6 +691,64 @@ fn execute_health_inner(
         coverage_gaps_has_findings,
         should_fail_on_coverage_gaps: enforce_coverage_gaps,
     })
+}
+
+fn prepare_health_scope<'a>(
+    opts: &HealthOptions<'a>,
+    config: &ResolvedConfig,
+    files: &'a [fallow_types::discover::DiscoveredFile],
+) -> Result<HealthScope<'a>, ExitCode> {
+    let max_cyclomatic = opts.max_cyclomatic.unwrap_or(config.health.max_cyclomatic);
+    let max_cognitive = opts.max_cognitive.unwrap_or(config.health.max_cognitive);
+    let max_crap = opts.max_crap.unwrap_or(config.health.max_crap);
+    let ignore_set = build_ignore_set(&config.health.ignore);
+    let changed_files = opts
+        .changed_since
+        .and_then(|git_ref| get_changed_files(opts.root, git_ref));
+    let diff_index = health_diff_index(opts);
+    let ws_roots = resolve_workspace_scope(
+        opts.root,
+        opts.workspace,
+        opts.changed_workspaces,
+        opts.output,
+    )?;
+    let group_resolver = build_health_group_resolver(opts, config)?;
+    let file_paths = files.iter().map(|f| (f.id, &f.path)).collect();
+
+    Ok(HealthScope {
+        max_cyclomatic,
+        max_cognitive,
+        max_crap,
+        enforce_crap: max_crap > 0.0,
+        ignore_set,
+        changed_files,
+        diff_index,
+        ws_roots,
+        group_resolver,
+        file_paths,
+    })
+}
+
+fn health_diff_index<'a>(
+    opts: &HealthOptions<'a>,
+) -> Option<&'a crate::report::ci::diff_filter::DiffIndex> {
+    match opts.diff_index {
+        Some(index) => Some(index),
+        None if opts.use_shared_diff_index => crate::report::ci::diff_filter::shared_diff_index(),
+        None => None,
+    }
+}
+
+fn build_health_group_resolver(
+    opts: &HealthOptions<'_>,
+    config: &ResolvedConfig,
+) -> Result<Option<crate::report::OwnershipResolver>, ExitCode> {
+    crate::build_ownership_resolver(
+        opts.group_by,
+        opts.root,
+        config.codeowners.as_deref(),
+        opts.output,
+    )
 }
 
 fn load_health_coverage(
