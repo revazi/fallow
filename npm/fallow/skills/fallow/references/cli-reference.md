@@ -1027,7 +1027,7 @@ The second rule family is a data-driven `tainted-sink` catalogue: syntactic dang
 | `secret-to-network` | 201 | a non-public `process.env` / `import.meta.env` secret reaching a network call body (`fetch` / `axios` / `got` / ...) via same-identifier flow (include-required) |
 | `xpath-injection` | 643 | `xpath.select` / `select1` with a non-literal expression |
 
-Build-config and test files are excluded from candidate generation. Security rule families default to `off` and are surfaced only by `fallow security`, never under bare `fallow` or the `audit` gate. Scope which catalogue categories run with `security.categories` include / exclude lists in config. `hardcoded-secret` and `secret-to-network` are intentionally include-required and only run when listed in `security.categories.include` (`secret-to-network` is opt-in because legitimate auth is also a secret reaching a network call). Public-by-convention env vars (`NEXT_PUBLIC_`, `VITE_`, ...) are never treated as secrets.
+Build-config and test files are excluded from candidate generation. Security rule families default to `off` and are surfaced only by `fallow security`, never under bare `fallow` or the `audit` gate. Scope which catalogue categories run with `security.categories` include / exclude lists in config. Add project-local request object names with `security.requestReceivers`; it extends the built-in `req` / `request` / `ctx` / `context` / `event` allowlist for HTTP `query`, `params`, and `body` reads. The setting is additive only and does not gate `*.searchParams`. `hardcoded-secret` and `secret-to-network` are intentionally include-required and only run when listed in `security.categories.include` (`secret-to-network` is opt-in because legitimate auth is also a secret reaching a network call). Public-by-convention env vars (`NEXT_PUBLIC_`, `VITE_`, ...) are never treated as secrets.
 
 ### Flags
 
@@ -1044,7 +1044,7 @@ Build-config and test files are excluded from candidate generation. Security rul
 | `--diff-file` | path | none | Scope candidates to added hunks on the client anchor or import trace. Secret-source hops use file-level retention because member-access spans are not yet stored. Use `-` for stdin |
 | `--diff-stdin` | bool | `false` | Read the unified diff from stdin (equivalent to `--diff-file -`) for line-level scoping and the regression gate |
 | `--surface` | bool | `false` | Include the agent-facing `attack_surface[]` inventory in JSON output |
-| `--gate` | `new` | none | Fail (exit code **8**) only when the change introduces a NEW security-sink candidate in the changed lines, not on the whole candidate backlog. Requires a diff source (`--changed-since`, `--diff-file`, or `--diff-stdin`); a diff the gate cannot compute is a loud exit 2, never a green gate. Human output says `REVIEW REQUIRED` (not `FAIL`); SARIF keeps every result at `level: note` with the verdict in `run.properties.fallowGate`; `--format json` carries an additive `gate` block (`mode` / `verdict` / `new_count`) |
+| `--gate` | `new\|newly-reachable` | none | `new` fails (exit code **8**) only when the change introduces a NEW security-sink candidate in the changed lines. It requires a diff source (`--changed-since`, `--diff-file`, or `--diff-stdin`). `newly-reachable` fails when an existing candidate becomes reachable from entry points compared with `--changed-since <ref>`; diff-only inputs exit 2 because this mode analyzes the base tree. Human output says `REVIEW REQUIRED` (not `FAIL`); SARIF keeps every result at `level: note` with the verdict in `run.properties.fallowGate`; `--format json` carries an additive `gate` block (`mode` / `verdict` / `new_count`) |
 | `--workspace` | string | none | Scope to selected workspace packages |
 | `--changed-workspaces` | git ref | none | Scope to workspaces changed since a git ref |
 
@@ -1057,6 +1057,9 @@ git diff --unified=0 origin/main...HEAD | fallow security --diff-file -
 # Regression gate: fail (exit 8) only on candidates introduced in the changed lines
 fallow security --gate new --changed-since origin/main
 git diff --cached --unified=0 | fallow security --gate new --diff-stdin
+
+# Reachability gate: fail when existing sinks become entry-point reachable
+fallow security --gate newly-reachable --changed-since origin/main
 ```
 
 ### JSON Output Structure

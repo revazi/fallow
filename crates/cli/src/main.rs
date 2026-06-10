@@ -232,7 +232,7 @@ struct Cli {
     ///
     /// Used only for opt-in telemetry follow-up measurement. The value is not
     /// interpreted as a path, repository, package, or user identifier. Hidden
-    /// from `--help` until the correlation producer (`analysis_run_id`) ships.
+    /// from `--help`; agents receive the correlation token from JSON output.
     #[arg(long, global = true, value_name = "RUN_ID", hide = true)]
     parent_run: Option<String>,
 
