@@ -1,4 +1,5 @@
 mod boundary;
+mod boundary_calls;
 mod boundary_coverage;
 pub mod feature_flags;
 mod iconify;
@@ -31,13 +32,13 @@ use crate::extract::ModuleInfo;
 use crate::graph::ModuleGraph;
 use crate::resolve::ResolvedModule;
 use fallow_types::output_dead_code::{
-    BoundaryCoverageViolationFinding, BoundaryViolationFinding, CircularDependencyFinding,
-    DuplicateExportFinding, EmptyCatalogGroupFinding, MisconfiguredDependencyOverrideFinding,
-    PrivateTypeLeakFinding, ReExportCycleFinding, TestOnlyDependencyFinding,
-    TypeOnlyDependencyFinding, UnlistedDependencyFinding, UnresolvedCatalogReferenceFinding,
-    UnresolvedImportFinding, UnusedCatalogEntryFinding, UnusedClassMemberFinding,
-    UnusedDependencyFinding, UnusedDependencyOverrideFinding, UnusedDevDependencyFinding,
-    UnusedEnumMemberFinding, UnusedExportFinding, UnusedFileFinding,
+    BoundaryCallViolationFinding, BoundaryCoverageViolationFinding, BoundaryViolationFinding,
+    CircularDependencyFinding, DuplicateExportFinding, EmptyCatalogGroupFinding,
+    MisconfiguredDependencyOverrideFinding, PrivateTypeLeakFinding, ReExportCycleFinding,
+    TestOnlyDependencyFinding, TypeOnlyDependencyFinding, UnlistedDependencyFinding,
+    UnresolvedCatalogReferenceFinding, UnresolvedImportFinding, UnusedCatalogEntryFinding,
+    UnusedClassMemberFinding, UnusedDependencyFinding, UnusedDependencyOverrideFinding,
+    UnusedDevDependencyFinding, UnusedEnumMemberFinding, UnusedExportFinding, UnusedFileFinding,
     UnusedOptionalDependencyFinding, UnusedTypeFinding,
 };
 
@@ -416,6 +417,49 @@ fn run_circular_dep_detector(
         .collect()
 }
 
+/// Thin wrapper around
+/// [`boundary_coverage::find_boundary_coverage_violations`] that gates on the
+/// shared `boundary-violation` severity. Extracted alongside
+/// [`run_circular_dep_detector`].
+fn run_boundary_coverage_detector(
+    graph: &ModuleGraph,
+    config: &ResolvedConfig,
+    suppressions: &crate::suppress::SuppressionContext<'_>,
+) -> Vec<BoundaryCoverageViolationFinding> {
+    if config.rules.boundary_violation == Severity::Off {
+        return Vec::new();
+    }
+    boundary_coverage::find_boundary_coverage_violations(graph, config, suppressions)
+        .into_iter()
+        .map(BoundaryCoverageViolationFinding::with_actions)
+        .collect()
+}
+
+/// Thin wrapper around [`boundary_calls::find_boundary_call_violations`] that
+/// gates on the shared `boundary-violation` severity. Extracted alongside
+/// [`run_circular_dep_detector`].
+fn run_boundary_call_detector(
+    graph: &ModuleGraph,
+    modules: &[ModuleInfo],
+    config: &ResolvedConfig,
+    suppressions: &crate::suppress::SuppressionContext<'_>,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+) -> Vec<BoundaryCallViolationFinding> {
+    if config.rules.boundary_violation == Severity::Off {
+        return Vec::new();
+    }
+    boundary_calls::find_boundary_call_violations(
+        graph,
+        modules,
+        config,
+        suppressions,
+        line_offsets_by_file,
+    )
+    .into_iter()
+    .map(BoundaryCallViolationFinding::with_actions)
+    .collect()
+}
+
 /// Thin wrapper around [`re_export_cycles::find_re_export_cycles`] that gates
 /// on `Severity::Off`. Extracted alongside [`run_circular_dep_detector`].
 fn run_re_export_cycle_detector(
@@ -555,7 +599,7 @@ pub fn find_dead_code_full(
             (
                 (unresolved_imports, duplicate_exports),
                 (
-                    (boundary_violations, boundary_coverage_violations),
+                    (boundary_violations, (boundary_coverage_violations, boundary_call_violations)),
                     (circular_dependencies, (re_export_cycles, export_usages)),
                 ),
             ),
@@ -673,20 +717,24 @@ pub fn find_dead_code_full(
                                             }
                                         },
                                         || {
-                                            if config.rules.boundary_violation != Severity::Off {
-                                                boundary_coverage::find_boundary_coverage_violations(
-                                                    graph,
-                                                    config,
-                                                    &suppressions,
-                                                )
-                                                .into_iter()
-                                                .map(
-                                                    BoundaryCoverageViolationFinding::with_actions,
-                                                )
-                                                .collect::<Vec<_>>()
-                                            } else {
-                                                Vec::new()
-                                            }
+                                            rayon::join(
+                                                || {
+                                                    run_boundary_coverage_detector(
+                                                        graph,
+                                                        config,
+                                                        &suppressions,
+                                                    )
+                                                },
+                                                || {
+                                                    run_boundary_call_detector(
+                                                        graph,
+                                                        modules,
+                                                        config,
+                                                        &suppressions,
+                                                        &line_offsets_by_file,
+                                                    )
+                                                },
+                                            )
                                         },
                                     )
                                 },
@@ -747,6 +795,7 @@ pub fn find_dead_code_full(
         duplicate_exports,
         boundary_violations,
         boundary_coverage_violations,
+        boundary_call_violations,
         circular_dependencies,
         re_export_cycles,
         export_usages,
@@ -1591,6 +1640,7 @@ mod tests {
                 tainted_bindings: Vec::new(),
                 sanitized_sink_args: Vec::new(),
                 security_control_sites: Vec::new(),
+                callee_uses: Vec::new(),
             }];
 
             let rules = RulesConfig {
