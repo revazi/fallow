@@ -115,7 +115,11 @@ pub(super) fn print_grouped_json(input: &PrintGroupedJsonInput<'_>) -> ExitCode 
         total_issues: original.total_issues(),
         groups: entries,
         meta: None,
-        next_steps: crate::report::suggestions::build_dead_code_next_steps(original, root),
+        next_steps: crate::report::suggestions::build_dead_code_next_steps(
+            original,
+            root,
+            crate::report::suggestions::setup_pointer_applicable(root),
+        ),
     };
 
     let mut output = match serialize_root_output(FallowOutput::CheckGrouped(envelope)) {
@@ -171,7 +175,11 @@ pub fn build_json_with_config_fixable(
     config_fixable: bool,
 ) -> Result<serde_json::Value, serde_json::Error> {
     let mut envelope = build_check_output(results, root, elapsed, config_fixable);
-    envelope.next_steps = crate::report::suggestions::build_dead_code_next_steps(results, root);
+    envelope.next_steps = crate::report::suggestions::build_dead_code_next_steps(
+        results,
+        root,
+        crate::report::suggestions::setup_pointer_applicable(root),
+    );
     let mut output = serialize_root_output(FallowOutput::Check(envelope))?;
     postprocess_check_json(&mut output, root);
     Ok(output)
@@ -531,7 +539,11 @@ pub fn build_health_json(
         groups: None,
         meta: None,
         workspace_diagnostics: crate::runtime_support::workspace_diagnostics_for(root),
-        next_steps: crate::report::suggestions::build_health_next_steps(report, root),
+        next_steps: crate::report::suggestions::build_health_next_steps(
+            report,
+            root,
+            crate::report::suggestions::setup_pointer_applicable(root),
+        ),
     };
     let mut output = serialize_root_output(FallowOutput::Health(envelope))?;
     let root_prefix = format!("{}/", root.display());
@@ -574,7 +586,11 @@ pub fn build_grouped_health_json(
         groups: None,
         meta: None,
         workspace_diagnostics: crate::runtime_support::workspace_diagnostics_for(root),
-        next_steps: crate::report::suggestions::build_health_next_steps(report, root),
+        next_steps: crate::report::suggestions::build_health_next_steps(
+            report,
+            root,
+            crate::report::suggestions::setup_pointer_applicable(root),
+        ),
     };
     let mut output = serialize_root_output(FallowOutput::Health(envelope))?;
     strip_root_prefix(&mut output, &root_prefix);
@@ -623,7 +639,11 @@ pub fn build_duplication_json(
     explain: bool,
 ) -> Result<serde_json::Value, serde_json::Error> {
     let payload = DupesReportPayload::from_report(report);
-    let next_steps = crate::report::suggestions::build_dupes_next_steps(&payload, root);
+    let next_steps = crate::report::suggestions::build_dupes_next_steps(
+        &payload,
+        root,
+        crate::report::suggestions::setup_pointer_applicable(root),
+    );
     let envelope = DupesOutput {
         schema_version: SchemaVersion(SCHEMA_VERSION),
         version: ToolVersion(env!("CARGO_PKG_VERSION").to_string()),
@@ -671,7 +691,11 @@ pub fn build_grouped_duplication_json(
 ) -> Result<serde_json::Value, serde_json::Error> {
     let root_prefix = format!("{}/", root.display());
     let payload = DupesReportPayload::from_report(report);
-    let next_steps = crate::report::suggestions::build_dupes_next_steps(&payload, root);
+    let next_steps = crate::report::suggestions::build_dupes_next_steps(
+        &payload,
+        root,
+        crate::report::suggestions::setup_pointer_applicable(root),
+    );
     let envelope = DupesOutput {
         schema_version: SchemaVersion(SCHEMA_VERSION),
         version: ToolVersion(env!("CARGO_PKG_VERSION").to_string()),

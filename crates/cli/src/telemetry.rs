@@ -2021,7 +2021,7 @@ fn key_has_token(key: &str, token: &str) -> bool {
         .any(|(idx, _)| idx == 0 || key.as_bytes()[idx - 1] == b'_')
 }
 
-fn is_ci() -> bool {
+pub fn is_ci() -> bool {
     std::env::var_os("CI").is_some()
         || std::env::var_os("GITHUB_ACTIONS").is_some()
         || std::env::var_os("GITLAB_CI").is_some()

@@ -109,6 +109,40 @@ fn trace_unused_export(results: &AnalysisResults, root: &Path) -> Option<NextSte
     ))
 }
 
+/// `setup`: first-contact pointer for unconfigured projects. The command is the
+/// read-only capability manifest (`fallow schema`), whose `task_matrix` and
+/// commands list name the guided-setup surface (`init --agents`, the hooks
+/// installer); the mutating commands themselves are never embedded here (the
+/// read-only contract), the agent offers them to the user instead. Callers gate
+/// this via [`setup_pointer_applicable`] so CI runs, configured projects, and
+/// projects that declined onboarding never see it.
+fn setup_pointer(offer_setup: bool) -> Option<NextStep> {
+    if !offer_setup {
+        return None;
+    }
+    Some(next_step(
+        "setup",
+        "fallow schema".to_string(),
+        "fallow has no config here; the manifest lists guided-setup commands (agent guide, commit gate) to offer the user",
+    ))
+}
+
+/// Shared first-contact gate for the `setup` next-step and the human setup hint
+/// on bare `fallow`: the project has no fallow config (searched up to the repo
+/// root, same as config loading), the run is not in CI, and onboarding has not
+/// been declined for this project (`fallow impact decline-onboarding`).
+#[must_use]
+pub fn setup_pointer_applicable(root: &Path) -> bool {
+    fallow_config::FallowConfig::find_config_path(root).is_none()
+        && !crate::telemetry::is_ci()
+        && !crate::impact::load(root).onboarding_declined
+}
+
+/// One-line human setup hint for bare `fallow` output: the prose counterpart of
+/// the `setup` next-step (agents get the JSON form, humans get this line).
+/// Worded as an offer, not a deficiency: zero-config is a supported happy path.
+pub const SETUP_HINT: &str = "Setup: `fallow init --agents` writes an agent guide; `fallow hooks install --target agent` adds a commit gate (hide this hint: `fallow impact decline-onboarding`).";
+
 /// `trace-clone`: see sibling locations and an extract-function suggestion for a
 /// duplicated block. Uses the smallest fingerprint for run-to-run determinism.
 fn trace_clone(payload: &DupesReportPayload) -> Option<NextStep> {
@@ -221,13 +255,20 @@ fn run_git(root: &Path, args: &[&str]) -> Option<String> {
 // run is clean (no findings), so a clean run never emits `next_steps`.
 // ---------------------------------------------------------------------------
 
-/// Next-steps for standalone `fallow dead-code`.
+/// Next-steps for standalone `fallow dead-code`. `offer_setup` is the caller's
+/// [`setup_pointer_applicable`] result (threaded as a parameter so the builders
+/// stay free of env/filesystem probes and deterministic under test).
 #[must_use]
-pub fn build_dead_code_next_steps(results: &AnalysisResults, root: &Path) -> Vec<NextStep> {
+pub fn build_dead_code_next_steps(
+    results: &AnalysisResults,
+    root: &Path,
+    offer_setup: bool,
+) -> Vec<NextStep> {
     if !suggestions_enabled() || results.total_issues() == 0 {
         return Vec::new();
     }
     let mut steps: Vec<NextStep> = [
+        setup_pointer(offer_setup),
         trace_unused_export(results, root),
         scope_workspaces(root),
         audit_changed(root),
@@ -239,30 +280,48 @@ pub fn build_dead_code_next_steps(results: &AnalysisResults, root: &Path) -> Vec
     steps
 }
 
-/// Next-steps for standalone `fallow health`.
+/// Next-steps for standalone `fallow health`. See [`build_dead_code_next_steps`]
+/// for the `offer_setup` parameter contract.
 #[must_use]
-pub fn build_health_next_steps(report: &HealthReport, root: &Path) -> Vec<NextStep> {
+pub fn build_health_next_steps(
+    report: &HealthReport,
+    root: &Path,
+    offer_setup: bool,
+) -> Vec<NextStep> {
     if !suggestions_enabled() || report.findings.is_empty() {
         return Vec::new();
     }
-    let mut steps: Vec<NextStep> = [complexity_breakdown(report), audit_changed(root)]
-        .into_iter()
-        .flatten()
-        .collect();
+    let mut steps: Vec<NextStep> = [
+        setup_pointer(offer_setup),
+        complexity_breakdown(report),
+        audit_changed(root),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     steps.truncate(MAX_NEXT_STEPS);
     steps
 }
 
-/// Next-steps for standalone `fallow dupes`.
+/// Next-steps for standalone `fallow dupes`. See [`build_dead_code_next_steps`]
+/// for the `offer_setup` parameter contract.
 #[must_use]
-pub fn build_dupes_next_steps(payload: &DupesReportPayload, root: &Path) -> Vec<NextStep> {
+pub fn build_dupes_next_steps(
+    payload: &DupesReportPayload,
+    root: &Path,
+    offer_setup: bool,
+) -> Vec<NextStep> {
     if !suggestions_enabled() || payload.clone_groups.is_empty() {
         return Vec::new();
     }
-    let mut steps: Vec<NextStep> = [trace_clone(payload), audit_changed(root)]
-        .into_iter()
-        .flatten()
-        .collect();
+    let mut steps: Vec<NextStep> = [
+        setup_pointer(offer_setup),
+        trace_clone(payload),
+        audit_changed(root),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     steps.truncate(MAX_NEXT_STEPS);
     steps
 }
@@ -279,6 +338,7 @@ pub fn build_combined_next_steps(
     dupes: Option<&DupesReportPayload>,
     health: Option<&HealthReport>,
     root: &Path,
+    offer_setup: bool,
 ) -> Vec<NextStep> {
     if !suggestions_enabled() {
         return Vec::new();
@@ -290,6 +350,7 @@ pub fn build_combined_next_steps(
         return Vec::new();
     }
     let mut steps: Vec<NextStep> = [
+        setup_pointer(offer_setup),
         results.and_then(|r| trace_unused_export(r, root)),
         scope_workspaces(root),
         dupes.and_then(trace_clone),
@@ -329,7 +390,10 @@ pub fn build_audit_next_steps(
 
 /// The single highest-priority next-step for the human `Next:` line, computed
 /// from the same candidates and ordering as the combined JSON array so a human
-/// and an agent on the same run never see a contradictory top step.
+/// and an agent on the same run never see a contradictory top step. The `setup`
+/// pointer is deliberately excluded here (`offer_setup: false`): humans get the
+/// dedicated prose [`SETUP_HINT`] line instead, so the `Next:` slot always
+/// shows an analysis follow-up.
 #[must_use]
 pub fn top_combined_next_step(
     results: Option<&AnalysisResults>,
@@ -337,7 +401,7 @@ pub fn top_combined_next_step(
     health: Option<&HealthReport>,
     root: &Path,
 ) -> Option<NextStep> {
-    build_combined_next_steps(results, dupes, health, root)
+    build_combined_next_steps(results, dupes, health, root, false)
         .into_iter()
         .next()
 }
@@ -417,7 +481,35 @@ mod tests {
     fn clean_run_emits_no_next_steps() {
         let root = PathBuf::from("/project");
         let results = AnalysisResults::default();
-        assert!(build_dead_code_next_steps(&results, &root).is_empty());
+        assert!(build_dead_code_next_steps(&results, &root, true).is_empty());
+    }
+
+    #[test]
+    fn setup_pointer_emits_only_when_applicable() {
+        assert!(setup_pointer(false).is_none());
+        let step = setup_pointer(true).expect("step");
+        assert_eq!(step.id, "setup");
+        assert_eq!(step.command, "fallow schema");
+        assert_valid(&step);
+    }
+
+    #[test]
+    fn setup_pointer_leads_when_offered() {
+        let root = PathBuf::from("/project");
+        let results = results_with_exports(vec![unused_export("/project/src/a.ts", "alpha")]);
+        let steps = build_dead_code_next_steps(&results, &root, true);
+        assert_eq!(steps.first().map(|s| s.id.as_str()), Some("setup"));
+        let steps = build_dead_code_next_steps(&results, &root, false);
+        assert!(steps.iter().all(|s| s.id != "setup"));
+    }
+
+    #[test]
+    fn human_top_step_never_surfaces_setup() {
+        let results = results_with_exports(vec![unused_export("/project/src/a.ts", "alpha")]);
+        let top = top_combined_next_step(Some(&results), None, None, Path::new("/project"));
+        if let Some(step) = top {
+            assert_ne!(step.id, "setup");
+        }
     }
 
     #[test]
@@ -455,6 +547,7 @@ mod tests {
             "fallow dupes --trace dup:abcd1234".to_string(),
             "x",
         ));
+        all.extend(setup_pointer(true));
         assert!(!all.is_empty());
         for step in &all {
             assert_valid(step);
@@ -465,8 +558,8 @@ mod tests {
     fn dead_code_steps_capped_at_three() {
         let root = PathBuf::from("/project");
         let results = results_with_exports(vec![unused_export("/project/src/a.ts", "alpha")]);
-        // Even if git/workspaces add candidates, the cap holds.
-        let steps = build_dead_code_next_steps(&results, &root);
+        // Even if git/workspaces/setup add candidates, the cap holds.
+        let steps = build_dead_code_next_steps(&results, &root, true);
         assert!(steps.len() <= MAX_NEXT_STEPS);
     }
 }

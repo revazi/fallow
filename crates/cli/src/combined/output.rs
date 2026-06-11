@@ -171,6 +171,21 @@ fn print_human_sections(
         }
     }
 
+    // First-contact setup hint: prose counterpart of the `setup` next-step.
+    // Deliberately NOT TTY-gated (agents reading piped human output are a
+    // primary audience); CI, pipeline redirection, quiet mode, configured
+    // projects, and a recorded decline all suppress it.
+    if show_headers
+        && has_any_findings
+        && !opts.quiet
+        && !crate::report::sink::is_redirected()
+        && crate::report::suggestions::suggestions_enabled()
+        && crate::report::suggestions::setup_pointer_applicable(opts.root)
+    {
+        println!("{}", crate::report::suggestions::SETUP_HINT.dimmed());
+        println!();
+    }
+
     if let Some(result) = check_result {
         if show_headers {
             eprintln!();
@@ -445,6 +460,7 @@ fn print_combined_json(
         dupes_payload.as_ref(),
         health.map(|result| &result.report),
         root,
+        crate::report::suggestions::setup_pointer_applicable(root),
     );
     if !next_steps.is_empty() {
         match serde_json::to_value(&next_steps) {
