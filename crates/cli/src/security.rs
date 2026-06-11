@@ -1726,13 +1726,9 @@ fn render_human_summary(output: &SecurityOutput) -> String {
 )]
 pub fn render_human(output: &SecurityOutput) -> String {
     use crate::report::plural;
-    use colored::Colorize;
 
     let mut out = String::new();
-    if let Some(gate) = &output.gate {
-        out.push_str(&gate_human_header(gate));
-        out.push_str("\n\n");
-    }
+    push_human_gate(&mut out, output);
     let count = output.security_findings.len();
     out.push_str(&format!("Security review: {count} item{}", plural(count)));
     if count == 0 {
@@ -1748,113 +1744,10 @@ pub fn render_human(output: &SecurityOutput) -> String {
     if output.security_findings.is_empty() {
         out.push_str("No security details to show.\n");
     } else {
-        for finding in &output.security_findings {
-            let kind = security_finding_label(finding);
-            let (glyph, label) = human_severity_marker(finding.severity);
-            out.push_str(&format!(
-                "{} {label} {kind}  {}:{}\n",
-                glyph,
-                finding.path.to_string_lossy().replace('\\', "/").bold(),
-                finding.line,
-            ));
-            out.push_str(&format!("    evidence: {}\n", finding.evidence));
-            if let Some(hint) = dead_code_hint(finding) {
-                out.push_str(&format!("    dead-code: {hint}\n"));
-            }
-            if let Some(runtime) = finding.runtime.as_ref() {
-                out.push_str(&format!("    runtime: {}\n", runtime_hint_text(runtime)));
-            }
-            if let Some(reach) = finding.reachability.as_ref() {
-                let entry = if reach.reachable_from_entry {
-                    "reachable from a runtime entry point"
-                } else {
-                    "not reached from any runtime entry point"
-                };
-                let boundary = if reach.crosses_boundary {
-                    "; crosses an architecture boundary"
-                } else {
-                    ""
-                };
-                out.push_str(&format!(
-                    "    code path: {entry} (blast radius {}){boundary}\n",
-                    reach.blast_radius,
-                ));
-                if reach.reachable_from_untrusted_source {
-                    let hops = reach.untrusted_source_hop_count.unwrap_or(0);
-                    out.push_str(&format!(
-                        "    input path: this module is reachable from a module that receives \
-                         untrusted input via {hops} import hop{}\n",
-                        crate::report::plural(hops as usize),
-                    ));
-                    if !reach.untrusted_source_trace.is_empty() {
-                        out.push_str("    input import trace:\n");
-                        for hop in &reach.untrusted_source_trace {
-                            out.push_str(&format!(
-                                "      {}:{} ({})\n",
-                                hop.path.to_string_lossy().replace('\\', "/"),
-                                hop.line,
-                                hop_role_label(hop.role),
-                            ));
-                        }
-                    }
-                }
-            }
-            if !finding.trace.is_empty() {
-                out.push_str("    import trace:\n");
-                for hop in &finding.trace {
-                    out.push_str(&format!(
-                        "      {}:{} ({})\n",
-                        hop.path.to_string_lossy().replace('\\', "/"),
-                        hop.line,
-                        hop_role_label(hop.role),
-                    ));
-                }
-            }
-            if matches!(finding.kind, SecurityFindingKind::ClientServerLeak) {
-                out.push_str(
-                    "    Next: check whether this import can ship a secret to the browser. If \
-                     it is type-only, server-only, or removed at build time, mark it as a false \
-                     positive.\n",
-                );
-            } else if finding.dead_code.is_some() {
-                out.push_str(
-                    "    Next: first verify the dead-code finding. If the code is safe to \
-                     remove, delete it. Otherwise check and harden the risky call.\n",
-                );
-            } else {
-                out.push_str(
-                    "    Next: check whether unsafe input, secrets, or settings can reach this \
-                     risky call without a safe guard. If not, mark it as a false positive.\n",
-                );
-            }
-            out.push('\n');
-        }
+        push_human_findings(&mut out, &output.security_findings);
     }
 
-    if output.unresolved_edge_files > 0 {
-        let n = output.unresolved_edge_files;
-        let verb = if n == 1 { "uses" } else { "use" };
-        out.push_str(&format!(
-            "{} Blind spot: {n} client file{} {verb} dynamic imports that fallow could not \
-             follow. Code behind those imports may be missing from this report.\n",
-            "[I]".blue().bold(),
-            plural(n),
-        ));
-    }
-
-    if output.unresolved_callee_sites > 0 {
-        let n = output.unresolved_callee_sites;
-        let verb = if n == 1 { "uses" } else { "use" };
-        out.push_str(&format!(
-            "{} Blind spot: {n} call site{} {verb} code patterns that fallow could not resolve, \
-             such as dynamic dispatch, computed members, or aliased bindings.\n",
-            "[I]".blue().bold(),
-            plural(n),
-        ));
-        if let Some(hint) = unresolved_callee_human_hint(output) {
-            out.push_str(&format!("    {hint}\n"));
-        }
-    }
+    push_human_blind_spots(&mut out, output);
 
     out.push_str(&format!(
         "\nResult: {count} security item{} to check.",
@@ -1865,6 +1758,175 @@ pub fn render_human(output: &SecurityOutput) -> String {
     }
     out.push('\n');
     out
+}
+
+fn push_human_gate(out: &mut String, output: &SecurityOutput) {
+    if let Some(gate) = &output.gate {
+        out.push_str(&gate_human_header(gate));
+        out.push_str("\n\n");
+    }
+}
+
+fn push_human_findings(out: &mut String, findings: &[SecurityFinding]) {
+    for finding in findings {
+        push_human_finding(out, finding);
+    }
+}
+
+fn push_human_finding(out: &mut String, finding: &SecurityFinding) {
+    use std::fmt::Write as _;
+
+    push_human_finding_header(out, finding);
+    let _ = writeln!(out, "    evidence: {}", finding.evidence);
+    if let Some(hint) = dead_code_hint(finding) {
+        let _ = writeln!(out, "    dead-code: {hint}");
+    }
+    if let Some(runtime) = finding.runtime.as_ref() {
+        let _ = writeln!(out, "    runtime: {}", runtime_hint_text(runtime));
+    }
+    push_human_reachability(out, finding);
+    push_human_import_trace(out, finding);
+    push_human_next_step(out, finding);
+    out.push('\n');
+}
+
+fn push_human_finding_header(out: &mut String, finding: &SecurityFinding) {
+    use colored::Colorize;
+    use std::fmt::Write as _;
+
+    let kind = security_finding_label(finding);
+    let (glyph, label) = human_severity_marker(finding.severity);
+    let _ = writeln!(
+        out,
+        "{} {label} {kind}  {}:{}",
+        glyph,
+        finding.path.to_string_lossy().replace('\\', "/").bold(),
+        finding.line,
+    );
+}
+
+fn push_human_reachability(out: &mut String, finding: &SecurityFinding) {
+    use std::fmt::Write as _;
+
+    let Some(reach) = finding.reachability.as_ref() else {
+        return;
+    };
+    let entry = if reach.reachable_from_entry {
+        "reachable from a runtime entry point"
+    } else {
+        "not reached from any runtime entry point"
+    };
+    let boundary = if reach.crosses_boundary {
+        "; crosses an architecture boundary"
+    } else {
+        ""
+    };
+    let _ = writeln!(
+        out,
+        "    code path: {entry} (blast radius {}){boundary}",
+        reach.blast_radius,
+    );
+    if reach.reachable_from_untrusted_source {
+        push_human_untrusted_trace(out, finding);
+    }
+}
+
+fn push_human_untrusted_trace(out: &mut String, finding: &SecurityFinding) {
+    use std::fmt::Write as _;
+
+    let Some(reach) = finding.reachability.as_ref() else {
+        return;
+    };
+    let hops = reach.untrusted_source_hop_count.unwrap_or(0);
+    let _ = writeln!(
+        out,
+        "    input path: this module is reachable from a module that receives \
+         untrusted input via {hops} import hop{}",
+        crate::report::plural(hops as usize),
+    );
+    if !reach.untrusted_source_trace.is_empty() {
+        out.push_str("    input import trace:\n");
+        for hop in &reach.untrusted_source_trace {
+            let _ = writeln!(
+                out,
+                "      {}:{} ({})",
+                hop.path.to_string_lossy().replace('\\', "/"),
+                hop.line,
+                hop_role_label(hop.role),
+            );
+        }
+    }
+}
+
+fn push_human_import_trace(out: &mut String, finding: &SecurityFinding) {
+    use std::fmt::Write as _;
+
+    if finding.trace.is_empty() {
+        return;
+    }
+    out.push_str("    import trace:\n");
+    for hop in &finding.trace {
+        let _ = writeln!(
+            out,
+            "      {}:{} ({})",
+            hop.path.to_string_lossy().replace('\\', "/"),
+            hop.line,
+            hop_role_label(hop.role),
+        );
+    }
+}
+
+fn push_human_next_step(out: &mut String, finding: &SecurityFinding) {
+    if matches!(finding.kind, SecurityFindingKind::ClientServerLeak) {
+        out.push_str(
+            "    Next: check whether this import can ship a secret to the browser. If \
+             it is type-only, server-only, or removed at build time, mark it as a false \
+             positive.\n",
+        );
+    } else if finding.dead_code.is_some() {
+        out.push_str(
+            "    Next: first verify the dead-code finding. If the code is safe to \
+             remove, delete it. Otherwise check and harden the risky call.\n",
+        );
+    } else {
+        out.push_str(
+            "    Next: check whether unsafe input, secrets, or settings can reach this \
+             risky call without a safe guard. If not, mark it as a false positive.\n",
+        );
+    }
+}
+
+fn push_human_blind_spots(out: &mut String, output: &SecurityOutput) {
+    use crate::report::plural;
+    use colored::Colorize;
+    use std::fmt::Write as _;
+
+    if output.unresolved_edge_files > 0 {
+        let n = output.unresolved_edge_files;
+        let verb = if n == 1 { "uses" } else { "use" };
+        let _ = writeln!(
+            out,
+            "{} Blind spot: {n} client file{} {verb} dynamic imports that fallow could not \
+             follow. Code behind those imports may be missing from this report.",
+            "[I]".blue().bold(),
+            plural(n),
+        );
+    }
+
+    if output.unresolved_callee_sites > 0 {
+        let n = output.unresolved_callee_sites;
+        let verb = if n == 1 { "uses" } else { "use" };
+        let _ = writeln!(
+            out,
+            "{} Blind spot: {n} call site{} {verb} code patterns that fallow could not resolve, \
+             such as dynamic dispatch, computed members, or aliased bindings.",
+            "[I]".blue().bold(),
+            plural(n),
+        );
+        if let Some(hint) = unresolved_callee_human_hint(output) {
+            let _ = writeln!(out, "    {hint}");
+        }
+    }
 }
 
 /// Render the human-facing label for a finding. `ClientServerLeak` keeps its
