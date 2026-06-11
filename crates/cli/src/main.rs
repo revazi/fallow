@@ -13,7 +13,7 @@
 )]
 
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
@@ -3062,10 +3062,6 @@ fn dispatch_bare_command(dispatch: &DispatchContext<'_>) -> ExitCode {
     })
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "CLI dispatch handles all subcommands"
-)]
 fn dispatch_subcommand(command: Command, dispatch: &DispatchContext<'_>) -> ExitCode {
     let cli = dispatch.cli;
     let root = dispatch.root;
@@ -3136,166 +3132,33 @@ fn dispatch_subcommand(command: Command, dispatch: &DispatchContext<'_>) -> Exit
             },
         ),
         Command::Watch { no_clear } => dispatch_watch(dispatch, no_clear),
-        Command::Fix {
-            dry_run,
-            yes,
-            no_create_config,
-        } => dispatch_fix(
-            dispatch,
-            FixDispatchArgs {
-                dry_run,
-                yes,
-                no_create_config,
-            },
-        ),
-        Command::Init {
-            toml,
-            agents,
-            hooks,
-            branch,
-            decline,
-        } => init::run_init(&init::InitOptions {
-            root,
-            use_toml: toml,
-            agents,
-            hooks,
-            branch: branch.as_deref(),
-            decline,
-            quiet,
-        }),
+        fix @ Command::Fix { .. } => dispatch_fix_command(&fix, dispatch),
+        init @ Command::Init { .. } => dispatch_init_command(init, root, quiet),
         Command::Hooks { subcommand } => run_hooks_command(root, subcommand, output),
         Command::Ci { subcommand } => ci::run(map_ci_subcommand(subcommand), output),
         Command::ConfigSchema => init::run_config_schema(),
         Command::PluginSchema => init::run_plugin_schema(),
         Command::RulePackSchema => init::run_rule_pack_schema(),
-        Command::CiTemplate { subcommand } => match subcommand {
-            CiTemplateCli::Gitlab { vendor, force } => {
-                ci_template::run_gitlab_template(&ci_template::GitlabTemplateOptions {
-                    vendor_dir: vendor,
-                    force,
-                })
-            }
-        },
+        Command::CiTemplate { subcommand } => dispatch_ci_template_command(subcommand),
         Command::Config { path } => config::run_config(root, cli.config.as_deref(), path, output),
-        Command::Workspaces => dispatch_list(dispatch, ListDispatchArgs::workspaces()),
-        Command::List {
-            entry_points,
-            files,
-            plugins,
-            boundaries,
-            workspaces,
-        } => dispatch_list(
-            dispatch,
-            ListDispatchArgs {
-                entry_points,
-                files,
-                plugins,
-                boundaries,
-                workspaces,
-            },
-        ),
-        dupes @ Command::Dupes { .. } => dispatch_dupes_command(dupes, dispatch),
-        Command::Health {
-            max_cyclomatic,
-            max_cognitive,
-            max_crap,
-            top,
-            sort,
-            complexity,
-            complexity_breakdown,
-            file_scores,
-            coverage_gaps,
-            hotspots,
-            ownership,
-            ownership_emails,
-            targets,
-            effort,
-            score,
-            min_score,
-            min_severity,
-            report_only,
-            since,
-            min_commits,
-            save_snapshot,
-            trend,
-            coverage,
-            coverage_root,
-            runtime_coverage,
-            min_invocations_hot,
-            min_observation_volume,
-            low_traffic_threshold,
-        } => {
-            let coverage =
-                coverage.or_else(|| std::env::var("FALLOW_COVERAGE").ok().map(PathBuf::from));
-            let ownership = ownership || ownership_emails.is_some();
-            let hotspots = hotspots || ownership;
-            dispatch_health(
-                dispatch,
-                HealthDispatchArgs {
-                    max_cyclomatic,
-                    max_cognitive,
-                    max_crap,
-                    top,
-                    sort,
-                    complexity,
-                    complexity_breakdown,
-                    file_scores,
-                    coverage_gaps,
-                    hotspots,
-                    ownership,
-                    ownership_emails: ownership_emails.map(EmailModeArg::to_config),
-                    targets,
-                    effort,
-                    score,
-                    min_score,
-                    min_severity,
-                    report_only,
-                    since: since.as_deref(),
-                    min_commits,
-                    save_snapshot: save_snapshot.as_ref(),
-                    trend,
-                    coverage: coverage.as_deref(),
-                    coverage_root: coverage_root.as_deref(),
-                    runtime_coverage: runtime_coverage.as_deref(),
-                    min_invocations_hot,
-                    min_observation_volume,
-                    low_traffic_threshold,
-                },
-            )
+        list @ (Command::Workspaces | Command::List { .. }) => {
+            dispatch_list_command(&list, dispatch)
         }
+        dupes @ Command::Dupes { .. } => dispatch_dupes_command(dupes, dispatch),
+        health @ Command::Health { .. } => dispatch_health_command(health, dispatch),
         Command::Flags { top } => dispatch_flags_command(dispatch, top),
         Command::Explain { issue_type } => explain::run_explain(&issue_type.join(" "), output),
         audit @ Command::Audit { .. } => dispatch_audit_command(audit, dispatch),
         Command::Impact { subcommand } => dispatch_impact(root, quiet, output, subcommand),
         security @ Command::Security { .. } => dispatch_security_command(security, dispatch),
         Command::Schema => unreachable!("handled above"),
-        Command::Migrate {
-            toml,
-            jsonc,
-            dry_run,
-            from,
-        } => migrate::run_migrate(root, toml, jsonc, dry_run, from.as_deref()),
-        Command::License { subcommand } => {
-            license::run(&map_license_subcommand(subcommand), output)
-        }
+        migrate @ Command::Migrate { .. } => dispatch_migrate_command(migrate, root),
+        Command::License { subcommand } => dispatch_license_command(subcommand, output),
         Command::Telemetry { .. } => unreachable!("handled before root validation"),
         Command::Coverage { subcommand } => dispatch_coverage_command(dispatch, &subcommand),
-        Command::SetupHooks {
-            agent,
-            dry_run,
-            force,
-            user,
-            gitignore_claude,
-            uninstall,
-        } => dispatch_setup_hooks_command(
-            dispatch,
-            agent,
-            dry_run,
-            force,
-            user,
-            gitignore_claude,
-            uninstall,
-        ),
+        setup_hooks @ Command::SetupHooks { .. } => {
+            dispatch_setup_hooks_command(&setup_hooks, dispatch)
+        }
     }
 }
 
@@ -3372,6 +3235,104 @@ fn dispatch_dupes_command(command: Command, dispatch: &DispatchContext<'_>) -> E
     )
 }
 
+fn dispatch_init_command(command: Command, root: &Path, quiet: bool) -> ExitCode {
+    let Command::Init {
+        toml,
+        agents,
+        hooks,
+        branch,
+        decline,
+    } = command
+    else {
+        unreachable!("init dispatcher only handles init commands");
+    };
+
+    init::run_init(&init::InitOptions {
+        root,
+        use_toml: toml,
+        agents,
+        hooks,
+        branch: branch.as_deref(),
+        decline,
+        quiet,
+    })
+}
+
+fn dispatch_fix_command(command: &Command, dispatch: &DispatchContext<'_>) -> ExitCode {
+    let Command::Fix {
+        dry_run,
+        yes,
+        no_create_config,
+    } = command
+    else {
+        unreachable!("fix dispatcher only handles fix commands");
+    };
+
+    dispatch_fix(
+        dispatch,
+        FixDispatchArgs {
+            dry_run: *dry_run,
+            yes: *yes,
+            no_create_config: *no_create_config,
+        },
+    )
+}
+
+fn dispatch_list_command(command: &Command, dispatch: &DispatchContext<'_>) -> ExitCode {
+    match command {
+        Command::Workspaces => dispatch_list(dispatch, ListDispatchArgs::workspaces()),
+        Command::List {
+            entry_points,
+            files,
+            plugins,
+            boundaries,
+            workspaces,
+        } => dispatch_list(
+            dispatch,
+            ListDispatchArgs {
+                entry_points: *entry_points,
+                files: *files,
+                plugins: *plugins,
+                boundaries: *boundaries,
+                workspaces: *workspaces,
+            },
+        ),
+        _ => unreachable!("list dispatcher only handles list commands"),
+    }
+}
+
+fn dispatch_migrate_command(command: Command, root: &Path) -> ExitCode {
+    let Command::Migrate {
+        toml,
+        jsonc,
+        dry_run,
+        from,
+    } = command
+    else {
+        unreachable!("migrate dispatcher only handles migrate commands");
+    };
+
+    migrate::run_migrate(root, toml, jsonc, dry_run, from.as_deref())
+}
+
+fn dispatch_license_command(
+    subcommand: LicenseCli,
+    output: fallow_config::OutputFormat,
+) -> ExitCode {
+    license::run(&map_license_subcommand(subcommand), output)
+}
+
+fn dispatch_ci_template_command(subcommand: CiTemplateCli) -> ExitCode {
+    match subcommand {
+        CiTemplateCli::Gitlab { vendor, force } => {
+            ci_template::run_gitlab_template(&ci_template::GitlabTemplateOptions {
+                vendor_dir: vendor,
+                force,
+            })
+        }
+    }
+}
+
 fn dispatch_coverage_command(dispatch: &DispatchContext<'_>, subcommand: &CoverageCli) -> ExitCode {
     let cli = dispatch.cli;
     coverage::run(
@@ -3388,23 +3349,100 @@ fn dispatch_coverage_command(dispatch: &DispatchContext<'_>, subcommand: &Covera
     )
 }
 
-fn dispatch_setup_hooks_command(
-    dispatch: &DispatchContext<'_>,
-    agent: Option<setup_hooks::HookAgentArg>,
-    dry_run: bool,
-    force: bool,
-    user: bool,
-    gitignore_claude: bool,
-    uninstall: bool,
-) -> ExitCode {
-    setup_hooks::run_setup_hooks(&setup_hooks::SetupHooksOptions {
-        root: dispatch.root,
+fn dispatch_health_command(command: Command, dispatch: &DispatchContext<'_>) -> ExitCode {
+    let Command::Health {
+        max_cyclomatic,
+        max_cognitive,
+        max_crap,
+        top,
+        sort,
+        complexity,
+        complexity_breakdown,
+        file_scores,
+        coverage_gaps,
+        hotspots,
+        ownership,
+        ownership_emails,
+        targets,
+        effort,
+        score,
+        min_score,
+        min_severity,
+        report_only,
+        since,
+        min_commits,
+        save_snapshot,
+        trend,
+        coverage,
+        coverage_root,
+        runtime_coverage,
+        min_invocations_hot,
+        min_observation_volume,
+        low_traffic_threshold,
+    } = command
+    else {
+        unreachable!("health dispatcher only handles health commands");
+    };
+
+    let coverage = coverage.or_else(|| std::env::var("FALLOW_COVERAGE").ok().map(PathBuf::from));
+    let ownership = ownership || ownership_emails.is_some();
+    let hotspots = hotspots || ownership;
+    dispatch_health(
+        dispatch,
+        HealthDispatchArgs {
+            max_cyclomatic,
+            max_cognitive,
+            max_crap,
+            top,
+            sort,
+            complexity,
+            complexity_breakdown,
+            file_scores,
+            coverage_gaps,
+            hotspots,
+            ownership,
+            ownership_emails: ownership_emails.map(EmailModeArg::to_config),
+            targets,
+            effort,
+            score,
+            min_score,
+            min_severity,
+            report_only,
+            since: since.as_deref(),
+            min_commits,
+            save_snapshot: save_snapshot.as_ref(),
+            trend,
+            coverage: coverage.as_deref(),
+            coverage_root: coverage_root.as_deref(),
+            runtime_coverage: runtime_coverage.as_deref(),
+            min_invocations_hot,
+            min_observation_volume,
+            low_traffic_threshold,
+        },
+    )
+}
+
+fn dispatch_setup_hooks_command(command: &Command, dispatch: &DispatchContext<'_>) -> ExitCode {
+    let Command::SetupHooks {
         agent,
         dry_run,
         force,
         user,
         gitignore_claude,
         uninstall,
+    } = command
+    else {
+        unreachable!("setup-hooks dispatcher only handles setup-hooks commands");
+    };
+
+    setup_hooks::run_setup_hooks(&setup_hooks::SetupHooksOptions {
+        root: dispatch.root,
+        agent: *agent,
+        dry_run: *dry_run,
+        force: *force,
+        user: *user,
+        gitignore_claude: *gitignore_claude,
+        uninstall: *uninstall,
     })
 }
 

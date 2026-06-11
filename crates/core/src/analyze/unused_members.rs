@@ -656,6 +656,115 @@ fn component_instance_bindings(
         .collect()
 }
 
+struct MemberHeritageContext<'a> {
+    class_heritage_by_export: FxHashMap<ExportKey, (Option<String>, Vec<String>)>,
+    class_heritage_by_file: FxHashMap<FileId, &'a [fallow_types::extract::ClassHeritageInfo]>,
+    token_to_interface: FxHashMap<ExportKey, &'a str>,
+    implementers_by_name: FxHashMap<&'a str, Vec<ExportKey>>,
+    interface_to_implementers: FxHashMap<ExportKey, Vec<ExportKey>>,
+}
+
+fn build_member_heritage_context<'a>(
+    graph: &ModuleGraph,
+    resolved_modules: &[ResolvedModule],
+    modules: &'a [ModuleInfo],
+) -> MemberHeritageContext<'a> {
+    let mut class_heritage_by_export: FxHashMap<ExportKey, (Option<String>, Vec<String>)> =
+        FxHashMap::default();
+    let mut class_heritage_by_file = FxHashMap::default();
+    let mut token_to_interface: FxHashMap<ExportKey, &str> = FxHashMap::default();
+    let mut implementers_by_name: FxHashMap<&str, Vec<ExportKey>> = FxHashMap::default();
+
+    for module in modules {
+        class_heritage_by_file.insert(module.file_id, module.class_heritage.as_slice());
+        class_heritage_by_export.extend(module.class_heritage.iter().map(|heritage| {
+            (
+                ExportKey::new(module.file_id, heritage.export_name.clone()),
+                (heritage.super_class.clone(), heritage.implements.clone()),
+            )
+        }));
+        for (token_name, interface_name) in &module.injection_tokens {
+            token_to_interface.insert(
+                ExportKey::new(module.file_id, token_name.clone()),
+                interface_name.as_str(),
+            );
+        }
+        for heritage in &module.class_heritage {
+            let implementer_key = ExportKey::new(module.file_id, heritage.export_name.clone());
+            for interface_name in &heritage.implements {
+                implementers_by_name
+                    .entry(interface_name.as_str())
+                    .or_default()
+                    .push(implementer_key.clone());
+            }
+        }
+    }
+
+    let interface_to_implementers =
+        build_interface_to_implementers(graph, resolved_modules, &class_heritage_by_file);
+
+    MemberHeritageContext {
+        class_heritage_by_export,
+        class_heritage_by_file,
+        token_to_interface,
+        implementers_by_name,
+        interface_to_implementers,
+    }
+}
+
+fn propagate_interface_member_accesses(
+    interface_to_implementers: &FxHashMap<ExportKey, Vec<ExportKey>>,
+    accessed_members: &mut FxHashMap<ExportKey, FxHashSet<String>>,
+) {
+    if interface_to_implementers.is_empty() {
+        return;
+    }
+
+    let mut propagations: Vec<(ExportKey, Vec<String>)> = Vec::new();
+    for (interface_key, implementer_keys) in interface_to_implementers {
+        let Some(interface_accesses) = accessed_members.get(interface_key) else {
+            continue;
+        };
+        let accesses: Vec<String> = interface_accesses.iter().cloned().collect();
+        for implementer_key in implementer_keys {
+            propagations.push((implementer_key.clone(), accesses.clone()));
+        }
+    }
+
+    for (implementer_key, accesses) in propagations {
+        accessed_members
+            .entry(implementer_key)
+            .or_default()
+            .extend(accesses);
+    }
+}
+
+fn propagate_angular_template_member_accesses(
+    graph: &ModuleGraph,
+    resolved_modules: &[ResolvedModule],
+    heritage_context: &MemberHeritageContext<'_>,
+    accessed_members: &mut FxHashMap<ExportKey, FxHashSet<String>>,
+    self_accessed_members: &mut FxHashMap<FileId, FxHashSet<String>>,
+) {
+    let angular_tpl_refs = build_angular_template_refs(resolved_modules);
+    let mut angular_ref_context = AngularTemplateRefContext {
+        refs: &angular_tpl_refs,
+        self_accessed_members,
+    };
+    angular_ref_context.propagate(resolved_modules);
+
+    let angular_tpl_chain_accesses = build_angular_template_chain_accesses(resolved_modules);
+    let mut angular_chain_context = AngularTemplateChainContext {
+        graph,
+        class_heritage_by_file: &heritage_context.class_heritage_by_file,
+        chain_accesses: &angular_tpl_chain_accesses,
+        token_to_interface: &heritage_context.token_to_interface,
+        implementers_by_name: &heritage_context.implementers_by_name,
+        accessed_members,
+    };
+    angular_chain_context.propagate(resolved_modules);
+}
+
 struct AngularTemplateChainContext<'a, 'b> {
     graph: &'b ModuleGraph,
     class_heritage_by_file: &'b FxHashMap<FileId, &'a [fallow_types::extract::ClassHeritageInfo]>,
@@ -1598,47 +1707,7 @@ pub(super) fn find_unused_members_with_public_api_entry_points(
 
     record_seen_ignore_decorators(graph, &ignore_decorators);
 
-    let mut class_heritage_by_export: FxHashMap<ExportKey, (Option<String>, Vec<String>)> =
-        FxHashMap::default();
-    let mut class_heritage_by_file = FxHashMap::default();
-    // Angular `inject(InjectionToken<Interface>)` template member crediting
-    // (issue #920): `token_to_interface` maps a token const's export key to the
-    // interface its `new InjectionToken<I>(...)` declares; `implementers_by_name`
-    // maps an interface NAME to every class that `implements` it. The Angular
-    // template-chain bridge below follows a token-typed field's access through
-    // these maps to credit the concrete implementation's member. Name-keying for
-    // implementers mirrors the existing `interface_to_implementers` pass: it can
-    // over-credit two same-named interfaces, which is the safe (false-negative,
-    // never false-positive) direction.
-    let mut token_to_interface: FxHashMap<ExportKey, &str> = FxHashMap::default();
-    let mut implementers_by_name: FxHashMap<&str, Vec<ExportKey>> = FxHashMap::default();
-    for module in modules {
-        class_heritage_by_file.insert(module.file_id, module.class_heritage.as_slice());
-        class_heritage_by_export.extend(module.class_heritage.iter().map(|heritage| {
-            (
-                ExportKey::new(module.file_id, heritage.export_name.clone()),
-                (heritage.super_class.clone(), heritage.implements.clone()),
-            )
-        }));
-        for (token_name, interface_name) in &module.injection_tokens {
-            token_to_interface.insert(
-                ExportKey::new(module.file_id, token_name.clone()),
-                interface_name.as_str(),
-            );
-        }
-        for heritage in &module.class_heritage {
-            let implementer_key = ExportKey::new(module.file_id, heritage.export_name.clone());
-            for interface_name in &heritage.implements {
-                implementers_by_name
-                    .entry(interface_name.as_str())
-                    .or_default()
-                    .push(implementer_key.clone());
-            }
-        }
-    }
-
-    let interface_to_implementers =
-        build_interface_to_implementers(graph, resolved_modules, &class_heritage_by_file);
+    let heritage_context = build_member_heritage_context(graph, resolved_modules, modules);
 
     let MemberAccessCollections {
         mut accessed_members,
@@ -1666,43 +1735,18 @@ pub(super) fn find_unused_members_with_public_api_entry_points(
         &mut whole_object_used_exports,
     );
 
-    if !interface_to_implementers.is_empty() {
-        let mut propagations: Vec<(ExportKey, Vec<String>)> = Vec::new();
+    propagate_interface_member_accesses(
+        &heritage_context.interface_to_implementers,
+        &mut accessed_members,
+    );
 
-        for (interface_key, implementer_keys) in &interface_to_implementers {
-            let Some(interface_accesses) = accessed_members.get(interface_key) else {
-                continue;
-            };
-            let accesses: Vec<String> = interface_accesses.iter().cloned().collect();
-            for implementer_key in implementer_keys {
-                propagations.push((implementer_key.clone(), accesses.clone()));
-            }
-        }
-
-        for (implementer_key, accesses) in propagations {
-            accessed_members
-                .entry(implementer_key)
-                .or_default()
-                .extend(accesses);
-        }
-    }
-
-    let angular_tpl_refs = build_angular_template_refs(resolved_modules);
-    let mut angular_ref_context = AngularTemplateRefContext {
-        refs: &angular_tpl_refs,
-        self_accessed_members: &mut self_accessed_members,
-    };
-    angular_ref_context.propagate(resolved_modules);
-    let angular_tpl_chain_accesses = build_angular_template_chain_accesses(resolved_modules);
-    let mut angular_chain_context = AngularTemplateChainContext {
+    propagate_angular_template_member_accesses(
         graph,
-        class_heritage_by_file: &class_heritage_by_file,
-        chain_accesses: &angular_tpl_chain_accesses,
-        token_to_interface: &token_to_interface,
-        implementers_by_name: &implementers_by_name,
-        accessed_members: &mut accessed_members,
-    };
-    angular_chain_context.propagate(resolved_modules);
+        resolved_modules,
+        &heritage_context,
+        &mut accessed_members,
+        &mut self_accessed_members,
+    );
 
     let parent_to_children = build_parent_to_children(graph, resolved_modules);
 
@@ -1714,8 +1758,10 @@ pub(super) fn find_unused_members_with_public_api_entry_points(
 
     let entry_star_targets = entry_point_star_re_export_targets(graph, public_api_entry_points);
 
-    let error_subclass_keys =
-        build_error_subclass_export_keys(&parent_to_children, &class_heritage_by_export);
+    let error_subclass_keys = build_error_subclass_export_keys(
+        &parent_to_children,
+        &heritage_context.class_heritage_by_export,
+    );
 
     let member_results: Vec<(Vec<UnusedMember>, Vec<UnusedMember>)> = graph
         .modules
@@ -1742,7 +1788,8 @@ pub(super) fn find_unused_members_with_public_api_entry_points(
 
                 let export_name = export.name.to_string();
                 let export_key = ExportKey::new(module.file_id, export_name.clone());
-                let (super_class, implemented_interfaces) = class_heritage_by_export
+                let (super_class, implemented_interfaces) = heritage_context
+                    .class_heritage_by_export
                     .get(&export_key)
                     .map_or((None, &[][..]), |(super_class, interfaces)| {
                         (super_class.as_deref(), interfaces.as_slice())
