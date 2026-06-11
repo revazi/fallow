@@ -824,43 +824,24 @@ fn analyze_full(
 
     let total_ms = pipeline_start.elapsed().as_secs_f64() * 1000.0;
 
-    let cache_summary = if cache_hits > 0 {
-        format!(" ({cache_hits} cached, {cache_misses} parsed)")
-    } else {
-        String::new()
-    };
-
-    tracing::debug!(
-        "\n┌─ Pipeline Profile ─────────────────────────────\n\
-         │  discover files:   {:>8.1}ms  ({} files)\n\
-         │  workspaces:       {:>8.1}ms\n\
-         │  plugins:          {:>8.1}ms\n\
-         │  script analysis:  {:>8.1}ms\n\
-         │  parse/extract:    {:>8.1}ms  ({} modules{})\n\
-         │  cache update:     {:>8.1}ms\n\
-         │  entry points:     {:>8.1}ms  ({} entries)\n\
-         │  resolve imports:  {:>8.1}ms\n\
-         │  build graph:      {:>8.1}ms\n\
-         │  analyze:          {:>8.1}ms\n\
-         │  ────────────────────────────────────────────\n\
-         │  TOTAL:            {:>8.1}ms\n\
-         └─────────────────────────────────────────────────",
+    trace_pipeline_profile(&PipelineProfile {
         discover_ms,
-        files.len(),
         workspaces_ms,
         plugins_ms,
         scripts_ms,
         parse_ms,
-        modules.len(),
-        cache_summary,
         cache_ms,
         entry_points_ms,
-        entry_points.all.len(),
         resolve_ms,
         graph_ms,
         analyze_ms,
         total_ms,
-    );
+        file_count: files.len(),
+        module_count: modules.len(),
+        entry_point_count: entry_points.all.len(),
+        cache_hits,
+        cache_misses,
+    });
 
     let timings = if retain {
         Some(PipelineTimings {
@@ -910,6 +891,84 @@ fn analyze_full(
         script_used_packages: plugin_result.script_used_packages,
         file_hashes,
     })
+}
+
+#[derive(Clone, Copy)]
+struct PipelineProfile {
+    discover_ms: f64,
+    workspaces_ms: f64,
+    plugins_ms: f64,
+    scripts_ms: f64,
+    parse_ms: f64,
+    cache_ms: f64,
+    entry_points_ms: f64,
+    resolve_ms: f64,
+    graph_ms: f64,
+    analyze_ms: f64,
+    total_ms: f64,
+    file_count: usize,
+    module_count: usize,
+    entry_point_count: usize,
+    cache_hits: usize,
+    cache_misses: usize,
+}
+
+fn trace_pipeline_profile(profile: &PipelineProfile) {
+    let PipelineProfile {
+        discover_ms,
+        workspaces_ms,
+        plugins_ms,
+        scripts_ms,
+        parse_ms,
+        cache_ms,
+        entry_points_ms,
+        resolve_ms,
+        graph_ms,
+        analyze_ms,
+        total_ms,
+        file_count,
+        module_count,
+        entry_point_count,
+        cache_hits,
+        cache_misses,
+    } = *profile;
+    let cache_summary = if cache_hits > 0 {
+        format!(" ({cache_hits} cached, {cache_misses} parsed)")
+    } else {
+        String::new()
+    };
+
+    tracing::debug!(
+        "\n┌─ Pipeline Profile ─────────────────────────────\n\
+         │  discover files:   {:>8.1}ms  ({} files)\n\
+         │  workspaces:       {:>8.1}ms\n\
+         │  plugins:          {:>8.1}ms\n\
+         │  script analysis:  {:>8.1}ms\n\
+         │  parse/extract:    {:>8.1}ms  ({} modules{})\n\
+         │  cache update:     {:>8.1}ms\n\
+         │  entry points:     {:>8.1}ms  ({} entries)\n\
+         │  resolve imports:  {:>8.1}ms\n\
+         │  build graph:      {:>8.1}ms\n\
+         │  analyze:          {:>8.1}ms\n\
+         │  ────────────────────────────────────────────\n\
+         │  TOTAL:            {:>8.1}ms\n\
+         └─────────────────────────────────────────────────",
+        discover_ms,
+        file_count,
+        workspaces_ms,
+        plugins_ms,
+        scripts_ms,
+        parse_ms,
+        module_count,
+        cache_summary,
+        cache_ms,
+        entry_points_ms,
+        entry_point_count,
+        resolve_ms,
+        graph_ms,
+        analyze_ms,
+        total_ms,
+    );
 }
 
 /// Analyze package.json scripts from root and all workspace packages.

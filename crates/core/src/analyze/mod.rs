@@ -44,7 +44,7 @@ use fallow_types::output_dead_code::{
 };
 
 use crate::results::{AnalysisResults, CircularDependency, CircularDependencyEdge};
-use crate::suppress::IssueKind;
+use crate::suppress::{IssueKind, SuppressionContext};
 
 use re_export_cycles::find_re_export_cycles;
 #[expect(
@@ -580,17 +580,9 @@ fn collect_declared_dependency_names(
 }
 
 /// Find all dead code, with optional resolved module data, plugin context, and workspace info.
-#[expect(
-    deprecated,
-    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
-)]
 #[deprecated(
     since = "2.76.0",
     note = "fallow_core is internal; use fallow_cli::programmatic::detect_dead_code instead. NOTE: replacement returns serde_json::Value, not typed AnalysisResults. See docs/fallow-core-migration.md and ADR-008."
-)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "orchestration function calling all detectors; each call is one-line and the sequence is easier to follow in one place"
 )]
 pub fn find_dead_code_full(
     graph: &ModuleGraph,
@@ -658,211 +650,23 @@ pub fn find_dead_code_full(
         })
         .unwrap_or_default();
 
-    let (
-        (unused_files, export_results),
-        (
-            (member_results, dependency_results),
-            (
-                (unresolved_imports, duplicate_exports),
-                (
-                    (
-                        boundary_violations,
-                        (
-                            boundary_coverage_violations,
-                            (boundary_call_violations, policy_violations),
-                        ),
-                    ),
-                    (circular_dependencies, (re_export_cycles, export_usages)),
-                ),
-            ),
-        ),
-    ) = rayon::join(
-        || {
-            rayon::join(
-                || run_unused_file_detector(graph, config, &suppressions),
-                || {
-                    run_export_detectors(
-                        graph,
-                        modules,
-                        config,
-                        plugin_result,
-                        &suppressions,
-                        &line_offsets_by_file,
-                    )
-                },
-            )
-        },
-        || {
-            rayon::join(
-                || {
-                    rayon::join(
-                        || {
-                            run_member_detectors(
-                                graph,
-                                resolved_modules,
-                                modules,
-                                config,
-                                &suppressions,
-                                &line_offsets_by_file,
-                                &user_class_members,
-                                &public_api_entry_points,
-                            )
-                        },
-                        || {
-                            run_dependency_detectors(
-                                graph,
-                                pkg.as_ref(),
-                                config,
-                                plugin_result,
-                                workspaces,
-                                resolved_modules,
-                                &line_offsets_by_file,
-                            )
-                        },
-                    )
-                },
-                || {
-                    rayon::join(
-                        || {
-                            rayon::join(
-                                || {
-                                    run_unresolved_import_detector(
-                                        resolved_modules,
-                                        config,
-                                        &suppressions,
-                                        &virtual_prefixes,
-                                        &generated_patterns,
-                                        &generated_type_prefixes,
-                                        &line_offsets_by_file,
-                                    )
-                                },
-                                || {
-                                    if config.rules.duplicate_exports != Severity::Off {
-                                        let duplicate_exports =
-                                            if let Some(plugin_result) = plugin_result {
-                                                unused_exports::find_duplicate_exports_with_plugins(
-                                                    graph,
-                                                    config,
-                                                    &suppressions,
-                                                    &line_offsets_by_file,
-                                                    Some(plugin_result),
-                                                    resolved_modules,
-                                                )
-                                            } else {
-                                                unused_exports::find_duplicate_exports(
-                                                    graph,
-                                                    config,
-                                                    &suppressions,
-                                                    &line_offsets_by_file,
-                                                    resolved_modules,
-                                                )
-                                            };
-                                        duplicate_exports
-                                            .into_iter()
-                                            .map(DuplicateExportFinding::with_actions)
-                                            .collect::<Vec<_>>()
-                                    } else {
-                                        Vec::new()
-                                    }
-                                },
-                            )
-                        },
-                        || {
-                            rayon::join(
-                                || {
-                                    rayon::join(
-                                        || {
-                                            if config.rules.boundary_violation != Severity::Off
-                                                && !config.boundaries.is_empty()
-                                            {
-                                                boundary::find_boundary_violations(
-                                                    graph,
-                                                    config,
-                                                    &suppressions,
-                                                    &line_offsets_by_file,
-                                                )
-                                                .into_iter()
-                                                .map(BoundaryViolationFinding::with_actions)
-                                                .collect::<Vec<_>>()
-                                            } else {
-                                                Vec::new()
-                                            }
-                                        },
-                                        || {
-                                            run_boundary_aux_detectors(
-                                                graph,
-                                                modules,
-                                                config,
-                                                &suppressions,
-                                                &line_offsets_by_file,
-                                            )
-                                        },
-                                    )
-                                },
-                                || {
-                                    rayon::join(
-                                        || {
-                                            run_circular_dep_detector(
-                                                graph,
-                                                config,
-                                                &line_offsets_by_file,
-                                                &suppressions,
-                                                workspaces,
-                                            )
-                                        },
-                                        || {
-                                            rayon::join(
-                                                || {
-                                                    run_re_export_cycle_detector(
-                                                        graph,
-                                                        config,
-                                                        &suppressions,
-                                                    )
-                                                },
-                                                || {
-                                                    run_export_usages_collector(
-                                                        graph,
-                                                        &line_offsets_by_file,
-                                                        collect_usages,
-                                                    )
-                                                },
-                                            )
-                                        },
-                                    )
-                                },
-                            )
-                        },
-                    )
-                },
-            )
-        },
-    );
-
-    let mut results = AnalysisResults {
-        unused_files,
-        unused_exports: export_results.unused_exports,
-        unused_types: export_results.unused_types,
-        private_type_leaks: export_results.private_type_leaks,
-        stale_suppressions: export_results.stale_suppressions,
-        unused_enum_members: member_results.unused_enum_members,
-        unused_class_members: member_results.unused_class_members,
-        unused_dependencies: dependency_results.unused_dependencies,
-        unused_dev_dependencies: dependency_results.unused_dev_dependencies,
-        unused_optional_dependencies: dependency_results.unused_optional_dependencies,
-        unlisted_dependencies: dependency_results.unlisted_dependencies,
-        type_only_dependencies: dependency_results.type_only_dependencies,
-        test_only_dependencies: dependency_results.test_only_dependencies,
-        unresolved_imports,
-        duplicate_exports,
-        boundary_violations,
-        boundary_coverage_violations,
-        boundary_call_violations,
-        policy_violations,
-        circular_dependencies,
-        re_export_cycles,
-        export_usages,
-        ..AnalysisResults::default()
-    };
+    let mut results = run_parallel_dead_code_detectors(DeadCodeDetectorInput {
+        graph,
+        config,
+        resolved_modules,
+        workspaces,
+        modules,
+        suppressions: &suppressions,
+        line_offsets_by_file: &line_offsets_by_file,
+        plugin_result,
+        pkg: pkg.as_ref(),
+        user_class_members: &user_class_members,
+        public_api_entry_points: &public_api_entry_points,
+        virtual_prefixes: &virtual_prefixes,
+        generated_patterns: &generated_patterns,
+        generated_type_prefixes: &generated_type_prefixes,
+        collect_usages,
+    });
 
     filter_public_workspace_results(config, workspaces, &mut results);
 
@@ -901,6 +705,295 @@ pub fn find_dead_code_full(
     results.sort();
 
     results
+}
+
+#[derive(Clone, Copy)]
+struct DeadCodeDetectorInput<'a> {
+    graph: &'a ModuleGraph,
+    config: &'a ResolvedConfig,
+    resolved_modules: &'a [ResolvedModule],
+    workspaces: &'a [fallow_config::WorkspaceInfo],
+    modules: &'a [ModuleInfo],
+    suppressions: &'a SuppressionContext<'a>,
+    line_offsets_by_file: &'a LineOffsetsMap<'a>,
+    plugin_result: Option<&'a crate::plugins::AggregatedPluginResult>,
+    pkg: Option<&'a PackageJson>,
+    user_class_members: &'a [fallow_config::UsedClassMemberRule],
+    public_api_entry_points: &'a FxHashSet<FileId>,
+    virtual_prefixes: &'a [&'a str],
+    generated_patterns: &'a [&'a str],
+    generated_type_prefixes: &'a [&'a str],
+    collect_usages: bool,
+}
+
+fn run_parallel_dead_code_detectors(input: DeadCodeDetectorInput<'_>) -> AnalysisResults {
+    let (
+        (unused_files, export_results),
+        (
+            (member_results, dependency_results),
+            (
+                (unresolved_imports, duplicate_exports),
+                (
+                    (
+                        boundary_violations,
+                        (
+                            boundary_coverage_violations,
+                            (boundary_call_violations, policy_violations),
+                        ),
+                    ),
+                    (circular_dependencies, (re_export_cycles, export_usages)),
+                ),
+            ),
+        ),
+    ) = rayon::join(
+        || run_file_and_export_detectors(input),
+        || {
+            rayon::join(
+                || run_member_and_dependency_detectors(input),
+                || {
+                    rayon::join(
+                        || run_import_and_duplicate_detectors(input),
+                        || run_boundary_cycle_and_usage_detectors(input),
+                    )
+                },
+            )
+        },
+    );
+
+    AnalysisResults {
+        unused_files,
+        unused_exports: export_results.unused_exports,
+        unused_types: export_results.unused_types,
+        private_type_leaks: export_results.private_type_leaks,
+        stale_suppressions: export_results.stale_suppressions,
+        unused_enum_members: member_results.unused_enum_members,
+        unused_class_members: member_results.unused_class_members,
+        unused_dependencies: dependency_results.unused_dependencies,
+        unused_dev_dependencies: dependency_results.unused_dev_dependencies,
+        unused_optional_dependencies: dependency_results.unused_optional_dependencies,
+        unlisted_dependencies: dependency_results.unlisted_dependencies,
+        type_only_dependencies: dependency_results.type_only_dependencies,
+        test_only_dependencies: dependency_results.test_only_dependencies,
+        unresolved_imports,
+        duplicate_exports,
+        boundary_violations,
+        boundary_coverage_violations,
+        boundary_call_violations,
+        policy_violations,
+        circular_dependencies,
+        re_export_cycles,
+        export_usages,
+        ..AnalysisResults::default()
+    }
+}
+
+fn run_file_and_export_detectors(
+    input: DeadCodeDetectorInput<'_>,
+) -> (Vec<UnusedFileFinding>, AnalysisResults) {
+    rayon::join(
+        || run_unused_file_detector(input.graph, input.config, input.suppressions),
+        || {
+            run_export_detectors(
+                input.graph,
+                input.modules,
+                input.config,
+                input.plugin_result,
+                input.suppressions,
+                input.line_offsets_by_file,
+            )
+        },
+    )
+}
+
+fn run_member_and_dependency_detectors(
+    input: DeadCodeDetectorInput<'_>,
+) -> (AnalysisResults, AnalysisResults) {
+    rayon::join(
+        || {
+            run_member_detectors(
+                input.graph,
+                input.resolved_modules,
+                input.modules,
+                input.config,
+                input.suppressions,
+                input.line_offsets_by_file,
+                input.user_class_members,
+                input.public_api_entry_points,
+            )
+        },
+        || {
+            run_dependency_detectors(
+                input.graph,
+                input.pkg,
+                input.config,
+                input.plugin_result,
+                input.workspaces,
+                input.resolved_modules,
+                input.line_offsets_by_file,
+            )
+        },
+    )
+}
+
+fn run_import_and_duplicate_detectors(
+    input: DeadCodeDetectorInput<'_>,
+) -> (Vec<UnresolvedImportFinding>, Vec<DuplicateExportFinding>) {
+    rayon::join(
+        || {
+            run_unresolved_import_detector(
+                input.resolved_modules,
+                input.config,
+                input.suppressions,
+                input.virtual_prefixes,
+                input.generated_patterns,
+                input.generated_type_prefixes,
+                input.line_offsets_by_file,
+            )
+        },
+        || {
+            run_duplicate_export_detector(
+                input.graph,
+                input.config,
+                input.suppressions,
+                input.line_offsets_by_file,
+                input.plugin_result,
+                input.resolved_modules,
+            )
+        },
+    )
+}
+
+type BoundaryAuxResults = (
+    Vec<BoundaryCoverageViolationFinding>,
+    (
+        Vec<BoundaryCallViolationFinding>,
+        Vec<PolicyViolationFinding>,
+    ),
+);
+
+type BoundaryCycleUsageResults = (
+    (Vec<BoundaryViolationFinding>, BoundaryAuxResults),
+    (
+        Vec<CircularDependencyFinding>,
+        (Vec<ReExportCycleFinding>, Vec<crate::results::ExportUsage>),
+    ),
+);
+
+fn run_boundary_cycle_and_usage_detectors(
+    input: DeadCodeDetectorInput<'_>,
+) -> BoundaryCycleUsageResults {
+    rayon::join(
+        || {
+            rayon::join(
+                || {
+                    run_boundary_violation_detector(
+                        input.graph,
+                        input.config,
+                        input.suppressions,
+                        input.line_offsets_by_file,
+                    )
+                },
+                || {
+                    run_boundary_aux_detectors(
+                        input.graph,
+                        input.modules,
+                        input.config,
+                        input.suppressions,
+                        input.line_offsets_by_file,
+                    )
+                },
+            )
+        },
+        || {
+            rayon::join(
+                || {
+                    run_circular_dep_detector(
+                        input.graph,
+                        input.config,
+                        input.line_offsets_by_file,
+                        input.suppressions,
+                        input.workspaces,
+                    )
+                },
+                || {
+                    rayon::join(
+                        || {
+                            run_re_export_cycle_detector(
+                                input.graph,
+                                input.config,
+                                input.suppressions,
+                            )
+                        },
+                        || {
+                            run_export_usages_collector(
+                                input.graph,
+                                input.line_offsets_by_file,
+                                input.collect_usages,
+                            )
+                        },
+                    )
+                },
+            )
+        },
+    )
+}
+
+#[expect(
+    deprecated,
+    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
+)]
+fn run_duplicate_export_detector(
+    graph: &ModuleGraph,
+    config: &ResolvedConfig,
+    suppressions: &SuppressionContext<'_>,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+    plugin_result: Option<&crate::plugins::AggregatedPluginResult>,
+    resolved_modules: &[ResolvedModule],
+) -> Vec<DuplicateExportFinding> {
+    if config.rules.duplicate_exports == Severity::Off {
+        return Vec::new();
+    }
+    let duplicate_exports = if let Some(plugin_result) = plugin_result {
+        unused_exports::find_duplicate_exports_with_plugins(
+            graph,
+            config,
+            suppressions,
+            line_offsets_by_file,
+            Some(plugin_result),
+            resolved_modules,
+        )
+    } else {
+        unused_exports::find_duplicate_exports(
+            graph,
+            config,
+            suppressions,
+            line_offsets_by_file,
+            resolved_modules,
+        )
+    };
+    duplicate_exports
+        .into_iter()
+        .map(DuplicateExportFinding::with_actions)
+        .collect()
+}
+
+#[expect(
+    deprecated,
+    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
+)]
+fn run_boundary_violation_detector(
+    graph: &ModuleGraph,
+    config: &ResolvedConfig,
+    suppressions: &SuppressionContext<'_>,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+) -> Vec<BoundaryViolationFinding> {
+    if config.rules.boundary_violation == Severity::Off || config.boundaries.is_empty() {
+        return Vec::new();
+    }
+    boundary::find_boundary_violations(graph, config, suppressions, line_offsets_by_file)
+        .into_iter()
+        .map(BoundaryViolationFinding::with_actions)
+        .collect()
 }
 
 fn filter_public_workspace_results(

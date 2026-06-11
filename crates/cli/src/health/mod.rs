@@ -357,63 +357,25 @@ fn execute_health_inner(
         || opts.targets
         || opts.force_full
         || enforce_crap;
-    let needs_analysis_output = needs_file_scores || opts.runtime_coverage.is_some();
-    let mut shared_analysis_output = prepare_shared_analysis_output(
+    let mut analysis_data = prepare_health_analysis_data(
         opts,
         &config,
         &modules,
+        &file_paths,
+        &ignore_set,
+        changed_files.as_ref(),
+        ws_roots.as_deref(),
+        istanbul_coverage.as_ref(),
         pre_computed_analysis,
-        needs_analysis_output,
-    )?;
-    if let Some(graph) = shared_analysis_output
-        .as_ref()
-        .and_then(|output| output.graph.as_ref())
-    {
-        crate::telemetry::note_graph_structure(graph);
-    }
-
-    let mut runtime_coverage = analyze_runtime_coverage(
-        opts,
-        &config,
-        &modules,
-        shared_analysis_output.as_ref(),
-        istanbul_coverage.as_ref(),
-        &file_paths,
-        &ignore_set,
-        changed_files.as_ref(),
-        ws_roots.as_deref(),
-    )?;
-
-    let precomputed_for_scores = if needs_file_scores {
-        shared_analysis_output.take()
-    } else {
-        None
-    };
-
-    let (file_score_result, file_scores_ms, churn_fetch) = compute_file_scores_and_churn(
-        opts,
-        &config,
-        &modules,
-        &file_paths,
-        changed_files.as_ref(),
-        ws_roots.as_deref(),
-        &ignore_set,
-        istanbul_coverage.as_ref(),
         needs_file_scores,
-        precomputed_for_scores,
     )?;
-    let (git_churn_ms, git_churn_cache_hit) = churn_fetch
-        .as_ref()
-        .map_or((0.0, false), |cf| (cf.git_log_ms, cf.cache_hit));
-    let (score_output, files_scored, average_maintainability) = file_score_result;
 
-    print_slow_churn_note(opts, churn_fetch.as_ref());
-
-    let file_scores_slice = score_output
+    let file_scores_slice = analysis_data
+        .score_output
         .as_ref()
         .map_or(&[] as &[_], |o| o.scores.as_slice());
 
-    if enforce_crap && let Some(ref score_out) = score_output {
+    if enforce_crap && let Some(ref score_out) = analysis_data.score_output {
         merge_crap_findings(
             &mut findings,
             &CrapFindingMergeInput {
@@ -432,7 +394,8 @@ fn execute_health_inner(
             },
         );
     }
-    let template_owner_lookup = score_output
+    let template_owner_lookup = analysis_data
+        .score_output
         .as_ref()
         .map(|o| &o.template_inherit_provenance);
     append_component_rollup_findings(
@@ -469,13 +432,13 @@ fn execute_health_inner(
         file_scores_slice,
         &ignore_set,
         ws_roots.as_deref(),
-        churn_fetch,
+        analysis_data.churn_fetch,
         diff_index,
     );
 
     let (targets, target_thresholds, targets_ms) = compute_filtered_targets(
         opts,
-        score_output.as_ref(),
+        analysis_data.score_output.as_ref(),
         file_scores_slice,
         &hotspots,
         loaded_baseline.as_ref(),
@@ -487,7 +450,7 @@ fn execute_health_inner(
     filter_runtime_coverage_report(
         opts,
         &config,
-        runtime_coverage.as_mut(),
+        analysis_data.runtime_coverage.as_mut(),
         loaded_baseline.as_ref(),
         changed_files.as_ref(),
         diff_index,
@@ -497,65 +460,32 @@ fn execute_health_inner(
         opts,
         &config,
         &findings,
-        runtime_coverage.as_ref(),
+        analysis_data.runtime_coverage.as_ref(),
         &targets,
     )?;
 
-    let project_subset = if candidate_paths.len() == files.len() {
-        SubsetFilter::Full
-    } else {
-        SubsetFilter::Paths(&candidate_paths)
-    };
-    let total_files_scoped = candidate_paths.len();
-    let vital_signs_input = VitalSignsAndCountsInput {
-        score_output: score_output.as_ref(),
-        modules: &modules,
-        file_paths: &file_paths,
-        needs_file_scores,
-        file_scores_slice,
-        needs_hotspots: opts.hotspots || opts.targets,
-        hotspots: &hotspots,
-        total_files: total_files_scoped,
-        subset: &project_subset,
-    };
-    let (mut vital_signs, mut counts) = compute_vital_signs_and_counts(&vital_signs_input);
-
-    let health_score = compute_health_score_metrics(
+    let vital_data = prepare_health_vital_data(
         opts,
-        dupes_report.as_ref(),
-        &mut vital_signs,
-        &mut counts,
-        total_files_scoped,
-    );
-
-    let large_functions = collect_filtered_large_functions(
-        &vital_signs,
         &modules,
         &file_paths,
+        analysis_data.score_output.as_ref(),
+        file_scores_slice,
+        &hotspots,
+        dupes_report.as_ref(),
+        &candidate_paths,
+        files.len(),
         &config,
         &ignore_set,
         changed_files.as_ref(),
         ws_roots.as_deref(),
         diff_index,
-    );
+        hotspot_summary.as_ref(),
+        istanbul_coverage.is_some(),
+        needs_file_scores,
+    )?;
 
-    let active_coverage_model = Some(active_health_coverage_model(istanbul_coverage.is_some()));
-
-    if let Some(ref snapshot_path) = opts.save_snapshot {
-        save_snapshot(SnapshotInput {
-            opts,
-            snapshot_path,
-            vital_signs: &vital_signs,
-            counts: &counts,
-            hotspot_summary: hotspot_summary.as_ref(),
-            health_score: health_score.as_ref(),
-            coverage_model: active_coverage_model,
-        })?;
-    }
-
-    let health_trend = compute_health_trend(opts, &vital_signs, &counts, health_score.as_ref());
-
-    let coverage_gaps_has_findings = score_output
+    let coverage_gaps_has_findings = analysis_data
+        .score_output
         .as_ref()
         .is_some_and(|output| !output.coverage.report.is_empty());
 
@@ -570,11 +500,11 @@ fn execute_health_inner(
             files: &files,
             modules: &modules,
             file_paths: &file_paths,
-            score_output: score_output.as_ref(),
+            score_output: analysis_data.score_output.as_ref(),
             file_scores: file_scores_slice,
             findings: &findings,
             hotspots: &hotspots,
-            large_functions: &large_functions,
+            large_functions: &vital_data.large_functions,
             targets: &targets,
             score_requested: opts.score,
             duplicates_config: opts.score.then_some(&config.duplicates),
@@ -597,19 +527,19 @@ fn execute_health_inner(
             max_cyclomatic,
             max_cognitive,
             max_crap,
-            files_scored,
-            average_maintainability,
-            vital_signs,
-            health_score,
-            score_output,
+            files_scored: analysis_data.files_scored,
+            average_maintainability: analysis_data.average_maintainability,
+            vital_signs: vital_data.vital_signs,
+            health_score: vital_data.health_score,
+            score_output: analysis_data.score_output,
             hotspots,
             hotspot_summary,
             targets,
             target_thresholds,
-            health_trend,
+            health_trend: vital_data.health_trend,
             has_istanbul_coverage: istanbul_coverage.is_some(),
-            runtime_coverage,
-            large_functions,
+            runtime_coverage: analysis_data.runtime_coverage,
+            large_functions: vital_data.large_functions,
             sev_critical,
             sev_high,
             sev_moderate,
@@ -625,9 +555,9 @@ fn execute_health_inner(
             parse_ms,
             parse_cpu_ms,
             complexity_ms,
-            file_scores_ms,
-            git_churn_ms,
-            git_churn_cache_hit,
+            file_scores_ms: analysis_data.file_scores_ms,
+            git_churn_ms: analysis_data.git_churn_ms,
+            git_churn_cache_hit: analysis_data.git_churn_cache_hit,
             hotspots_ms,
             duplication_ms,
             targets_ms,
@@ -935,6 +865,97 @@ fn analyze_runtime_coverage(
     .map(Some)
 }
 
+struct HealthAnalysisData {
+    runtime_coverage: Option<crate::health_types::RuntimeCoverageReport>,
+    score_output: Option<scoring::FileScoreOutput>,
+    files_scored: Option<usize>,
+    average_maintainability: Option<f64>,
+    file_scores_ms: f64,
+    git_churn_ms: f64,
+    git_churn_cache_hit: bool,
+    churn_fetch: Option<hotspots::ChurnFetchResult>,
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "health analysis preparation shares the active scope across runtime coverage and file scores"
+)]
+fn prepare_health_analysis_data(
+    opts: &HealthOptions<'_>,
+    config: &ResolvedConfig,
+    modules: &[fallow_core::extract::ModuleInfo],
+    file_paths: &rustc_hash::FxHashMap<fallow_core::discover::FileId, &std::path::PathBuf>,
+    ignore_set: &globset::GlobSet,
+    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&[std::path::PathBuf]>,
+    istanbul_coverage: Option<&scoring::IstanbulCoverage>,
+    pre_computed_analysis: Option<fallow_core::AnalysisOutput>,
+    needs_file_scores: bool,
+) -> Result<HealthAnalysisData, ExitCode> {
+    let needs_analysis_output = needs_file_scores || opts.runtime_coverage.is_some();
+    let mut shared_analysis_output = prepare_shared_analysis_output(
+        opts,
+        config,
+        modules,
+        pre_computed_analysis,
+        needs_analysis_output,
+    )?;
+    if let Some(graph) = shared_analysis_output
+        .as_ref()
+        .and_then(|output| output.graph.as_ref())
+    {
+        crate::telemetry::note_graph_structure(graph);
+    }
+
+    let runtime_coverage = analyze_runtime_coverage(
+        opts,
+        config,
+        modules,
+        shared_analysis_output.as_ref(),
+        istanbul_coverage,
+        file_paths,
+        ignore_set,
+        changed_files,
+        ws_roots,
+    )?;
+
+    let precomputed_for_scores = if needs_file_scores {
+        shared_analysis_output.take()
+    } else {
+        None
+    };
+
+    let (file_score_result, file_scores_ms, churn_fetch) = compute_file_scores_and_churn(
+        opts,
+        config,
+        modules,
+        file_paths,
+        changed_files,
+        ws_roots,
+        ignore_set,
+        istanbul_coverage,
+        needs_file_scores,
+        precomputed_for_scores,
+    )?;
+    let (git_churn_ms, git_churn_cache_hit) = churn_fetch
+        .as_ref()
+        .map_or((0.0, false), |cf| (cf.git_log_ms, cf.cache_hit));
+    let (score_output, files_scored, average_maintainability) = file_score_result;
+
+    print_slow_churn_note(opts, churn_fetch.as_ref());
+
+    Ok(HealthAnalysisData {
+        runtime_coverage,
+        score_output,
+        files_scored,
+        average_maintainability,
+        file_scores_ms,
+        git_churn_ms,
+        git_churn_cache_hit,
+        churn_fetch,
+    })
+}
+
 type FileScoresAndChurn = (FileScoreResult, f64, Option<hotspots::ChurnFetchResult>);
 
 #[expect(
@@ -1189,6 +1210,93 @@ fn compute_health_duplication_report(
         None
     };
     (dupes_report, t.elapsed().as_secs_f64() * 1000.0)
+}
+
+struct HealthVitalData {
+    vital_signs: crate::health_types::VitalSigns,
+    health_score: Option<HealthScore>,
+    health_trend: Option<crate::health_types::HealthTrend>,
+    large_functions: Vec<crate::health_types::LargeFunctionEntry>,
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "vital-sign preparation needs the active health scope and output toggles"
+)]
+fn prepare_health_vital_data(
+    opts: &HealthOptions<'_>,
+    modules: &[fallow_core::extract::ModuleInfo],
+    file_paths: &rustc_hash::FxHashMap<fallow_core::discover::FileId, &std::path::PathBuf>,
+    score_output: Option<&scoring::FileScoreOutput>,
+    file_scores_slice: &[FileHealthScore],
+    hotspots: &[HotspotEntry],
+    dupes_report: Option<&fallow_core::duplicates::DuplicationReport>,
+    candidate_paths: &rustc_hash::FxHashSet<std::path::PathBuf>,
+    total_files: usize,
+    config: &ResolvedConfig,
+    ignore_set: &globset::GlobSet,
+    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&[std::path::PathBuf]>,
+    diff_index: Option<&crate::report::ci::diff_filter::DiffIndex>,
+    hotspot_summary: Option<&HotspotSummary>,
+    has_istanbul_coverage: bool,
+    needs_file_scores: bool,
+) -> Result<HealthVitalData, ExitCode> {
+    let project_subset = if candidate_paths.len() == total_files {
+        SubsetFilter::Full
+    } else {
+        SubsetFilter::Paths(candidate_paths)
+    };
+    let total_files_scoped = candidate_paths.len();
+    let vital_signs_input = VitalSignsAndCountsInput {
+        score_output,
+        modules,
+        file_paths,
+        needs_file_scores,
+        file_scores_slice,
+        needs_hotspots: opts.hotspots || opts.targets,
+        hotspots,
+        total_files: total_files_scoped,
+        subset: &project_subset,
+    };
+    let (mut vital_signs, mut counts) = compute_vital_signs_and_counts(&vital_signs_input);
+
+    let health_score = compute_health_score_metrics(
+        opts,
+        dupes_report,
+        &mut vital_signs,
+        &mut counts,
+        total_files_scoped,
+    );
+    let large_functions = collect_filtered_large_functions(
+        &vital_signs,
+        modules,
+        file_paths,
+        config,
+        ignore_set,
+        changed_files,
+        ws_roots,
+        diff_index,
+    );
+    if let Some(ref snapshot_path) = opts.save_snapshot {
+        save_snapshot(SnapshotInput {
+            opts,
+            snapshot_path,
+            vital_signs: &vital_signs,
+            counts: &counts,
+            hotspot_summary,
+            health_score: health_score.as_ref(),
+            coverage_model: Some(active_health_coverage_model(has_istanbul_coverage)),
+        })?;
+    }
+    let health_trend = compute_health_trend(opts, &vital_signs, &counts, health_score.as_ref());
+
+    Ok(HealthVitalData {
+        vital_signs,
+        health_score,
+        health_trend,
+        large_functions,
+    })
 }
 
 fn compute_health_score_metrics(

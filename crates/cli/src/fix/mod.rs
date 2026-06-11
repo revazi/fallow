@@ -243,61 +243,19 @@ pub fn run_fix(opts: &FixOptions<'_>) -> ExitCode {
         had_write_error = true;
     }
 
-    if matches!(opts.output, OutputFormat::Json) {
-        let applied_count = fixes
-            .iter()
-            .filter(|f| {
-                f.get("applied")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false)
-            })
-            .count();
-        let skipped_count = fixes
-            .iter()
-            .filter(|f| {
-                let is_skipped = f
-                    .get("skipped")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                let reason = f.get("skip_reason").and_then(serde_json::Value::as_str);
-                let is_plan_skip = matches!(
-                    reason,
-                    Some(
-                        "content_changed"
-                            | "mixed_line_endings"
-                            | "low_confidence_off_graph"
-                            | "low_confidence_unresolved_imports"
-                    )
-                );
-                is_skipped && !is_plan_skip
-            })
-            .count();
-        match serde_json::to_string_pretty(&serde_json::json!({
-            "dry_run": opts.dry_run,
-            "fixes": fixes,
-            "total_fixed": applied_count,
-            "skipped": skipped_count,
-            "skipped_content_changed": content_changed_count,
-            "skipped_mixed_line_endings": mixed_line_endings_count,
-            "skipped_low_confidence_exports": low_confidence_count,
-        })) {
-            Ok(json) => println!("{json}"),
-            Err(e) => {
-                eprintln!("Error: failed to serialize fix output: {e}");
-                return ExitCode::from(2);
-            }
-        }
-    } else if !opts.quiet {
-        emit_human_summary(&HumanSummaryInput {
-            dry_run: opts.dry_run,
-            fixes: &fixes,
-            catalog_applied,
-            catalog_skipped,
-            catalog_comment_lines_removed,
-            content_changed_count,
-            mixed_line_endings_count,
-            low_confidence_count,
-        });
+    if let Err(code) = emit_fix_output(&FixOutputInput {
+        output: opts.output,
+        quiet: opts.quiet,
+        dry_run: opts.dry_run,
+        fixes: &fixes,
+        catalog_applied,
+        catalog_skipped,
+        catalog_comment_lines_removed,
+        content_changed_count,
+        mixed_line_endings_count,
+        low_confidence_count,
+    }) {
+        return code;
     }
 
     if had_write_error {
@@ -320,6 +278,81 @@ impl CommitOutcome {
     pub(super) fn had_failures(&self) -> bool {
         !self.failed.is_empty()
     }
+}
+
+struct FixOutputInput<'a> {
+    output: OutputFormat,
+    quiet: bool,
+    dry_run: bool,
+    fixes: &'a [serde_json::Value],
+    catalog_applied: usize,
+    catalog_skipped: usize,
+    catalog_comment_lines_removed: usize,
+    content_changed_count: usize,
+    mixed_line_endings_count: usize,
+    low_confidence_count: usize,
+}
+
+fn emit_fix_output(input: &FixOutputInput<'_>) -> Result<(), ExitCode> {
+    if matches!(input.output, OutputFormat::Json) {
+        let applied_count = input
+            .fixes
+            .iter()
+            .filter(|fix| {
+                fix.get("applied")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+            })
+            .count();
+        let skipped_count = input
+            .fixes
+            .iter()
+            .filter(|fix| {
+                let is_skipped = fix
+                    .get("skipped")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let reason = fix.get("skip_reason").and_then(serde_json::Value::as_str);
+                let is_plan_skip = matches!(
+                    reason,
+                    Some(
+                        "content_changed"
+                            | "mixed_line_endings"
+                            | "low_confidence_off_graph"
+                            | "low_confidence_unresolved_imports"
+                    )
+                );
+                is_skipped && !is_plan_skip
+            })
+            .count();
+        match serde_json::to_string_pretty(&serde_json::json!({
+            "dry_run": input.dry_run,
+            "fixes": input.fixes,
+            "total_fixed": applied_count,
+            "skipped": skipped_count,
+            "skipped_content_changed": input.content_changed_count,
+            "skipped_mixed_line_endings": input.mixed_line_endings_count,
+            "skipped_low_confidence_exports": input.low_confidence_count,
+        })) {
+            Ok(json) => println!("{json}"),
+            Err(e) => {
+                eprintln!("Error: failed to serialize fix output: {e}");
+                return Err(ExitCode::from(2));
+            }
+        }
+    } else if !input.quiet {
+        emit_human_summary(&HumanSummaryInput {
+            dry_run: input.dry_run,
+            fixes: input.fixes,
+            catalog_applied: input.catalog_applied,
+            catalog_skipped: input.catalog_skipped,
+            catalog_comment_lines_removed: input.catalog_comment_lines_removed,
+            content_changed_count: input.content_changed_count,
+            mixed_line_endings_count: input.mixed_line_endings_count,
+            low_confidence_count: input.low_confidence_count,
+        });
+    }
+    Ok(())
 }
 
 /// Build JSON entries for files the FixPlan decided to skip during the

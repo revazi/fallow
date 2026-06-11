@@ -155,6 +155,74 @@ fn warn_once_tsconfig(ctx: &ResolveContext<'_>, err: &ResolveError) {
     }
 }
 
+fn try_root_relative_specifier(
+    ctx: &ResolveContext<'_>,
+    from_file: &Path,
+    specifier: &str,
+) -> Option<ResolveResult> {
+    if !specifier.starts_with('/') || !is_root_relative_importer(from_file) {
+        return None;
+    }
+
+    let relative = format!(".{specifier}");
+    let source_dir = from_file.parent().unwrap_or(ctx.root);
+    if let Some(result) = resolve_root_relative_from_dir(ctx, source_dir, &relative) {
+        return Some(result);
+    }
+    if source_dir != ctx.root
+        && let Some(result) = resolve_root_relative_from_dir(ctx, ctx.root, &relative)
+    {
+        return Some(result);
+    }
+    if let Some(result) = try_html_public_root_relative_asset(ctx, from_file, specifier) {
+        return Some(result);
+    }
+    Some(ResolveResult::Unresolvable(specifier.to_string()))
+}
+
+fn is_root_relative_importer(from_file: &Path) -> bool {
+    from_file.extension().is_some_and(|extension| {
+        matches!(
+            extension.to_str(),
+            Some(
+                "html"
+                    | "jsx"
+                    | "tsx"
+                    | "js"
+                    | "ts"
+                    | "mjs"
+                    | "cjs"
+                    | "mts"
+                    | "cts"
+                    | "gts"
+                    | "gjs"
+            )
+        )
+    })
+}
+
+fn resolve_root_relative_from_dir(
+    ctx: &ResolveContext<'_>,
+    source_dir: &Path,
+    relative: &str,
+) -> Option<ResolveResult> {
+    let resolved = ctx.resolver.resolve(source_dir, relative).ok()?;
+    let resolved_path = resolved.path();
+    if let Some(&file_id) = ctx.raw_path_to_id.get(resolved_path) {
+        return Some(ResolveResult::InternalModule(file_id));
+    }
+    let canonical = dunce::canonicalize(resolved_path).ok()?;
+    if let Some(&file_id) = ctx.path_to_id.get(canonical.as_path()) {
+        return Some(ResolveResult::InternalModule(file_id));
+    }
+    if let Some(fallback) = ctx.canonical_fallback
+        && let Some(file_id) = fallback.get(&canonical)
+    {
+        return Some(ResolveResult::InternalModule(file_id));
+    }
+    None
+}
+
 fn nearest_tsconfig_path(root: &Path, from_file: &Path) -> Option<PathBuf> {
     let mut current = from_file.parent()?;
     loop {
@@ -1195,11 +1263,6 @@ impl ResolvedPathContext<'_, '_> {
 /// SFC `<style lang="scss">` blocks and `<style src>` references). It enables
 /// SCSS partial / include-path / node_modules fallbacks for SFC importers
 /// without applying them to JS-context imports from the same file.
-#[expect(
-    clippy::too_many_lines,
-    reason = "central import resolver keeps fallback order visible; style-preservation logic is \
-              intentionally local to the resolution decision tree"
-)]
 pub(super) fn resolve_specifier(
     ctx: &ResolveContext<'_>,
     from_file: &Path,
@@ -1228,66 +1291,8 @@ pub(super) fn resolve_specifier(
         return result;
     }
 
-    if specifier.starts_with('/')
-        && from_file.extension().is_some_and(|e| {
-            matches!(
-                e.to_str(),
-                Some(
-                    "html"
-                        | "jsx"
-                        | "tsx"
-                        | "js"
-                        | "ts"
-                        | "mjs"
-                        | "cjs"
-                        | "mts"
-                        | "cts"
-                        | "gts"
-                        | "gjs"
-                )
-            )
-        })
-    {
-        let relative = format!(".{specifier}");
-        let source_dir = from_file.parent().unwrap_or(ctx.root);
-        if let Ok(resolved) = ctx.resolver.resolve(source_dir, &relative) {
-            let resolved_path = resolved.path();
-            if let Some(&file_id) = ctx.raw_path_to_id.get(resolved_path) {
-                return ResolveResult::InternalModule(file_id);
-            }
-            if let Ok(canonical) = dunce::canonicalize(resolved_path) {
-                if let Some(&file_id) = ctx.path_to_id.get(canonical.as_path()) {
-                    return ResolveResult::InternalModule(file_id);
-                }
-                if let Some(fallback) = ctx.canonical_fallback
-                    && let Some(file_id) = fallback.get(&canonical)
-                {
-                    return ResolveResult::InternalModule(file_id);
-                }
-            }
-        }
-        if source_dir != ctx.root
-            && let Ok(resolved) = ctx.resolver.resolve(ctx.root, &relative)
-        {
-            let resolved_path = resolved.path();
-            if let Some(&file_id) = ctx.raw_path_to_id.get(resolved_path) {
-                return ResolveResult::InternalModule(file_id);
-            }
-            if let Ok(canonical) = dunce::canonicalize(resolved_path) {
-                if let Some(&file_id) = ctx.path_to_id.get(canonical.as_path()) {
-                    return ResolveResult::InternalModule(file_id);
-                }
-                if let Some(fallback) = ctx.canonical_fallback
-                    && let Some(file_id) = fallback.get(&canonical)
-                {
-                    return ResolveResult::InternalModule(file_id);
-                }
-            }
-        }
-        if let Some(result) = try_html_public_root_relative_asset(ctx, from_file, specifier) {
-            return result;
-        }
-        return ResolveResult::Unresolvable(specifier.to_string());
+    if let Some(result) = try_root_relative_specifier(ctx, from_file, specifier) {
+        return result;
     }
 
     if from_style && let Some(result) = try_scss_fallbacks(ctx, from_file, specifier, true) {
