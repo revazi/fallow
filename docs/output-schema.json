@@ -9948,6 +9948,10 @@
         "onboarding_declined": {
           "type": "boolean",
           "description": "Whether the local agent onboarding prompt has been explicitly declined.\nStored under `.fallow/` so agents can avoid cross-session nags."
+        },
+        "explicit_decision": {
+          "type": "boolean",
+          "description": "Whether the user ever made an explicit enable/disable decision for\nImpact tracking. `enabled: false` with `explicit_decision: false` means\n\"never asked\"; with `true` it means \"asked and declined\". Agents use\nthis to offer the impact opt-in exactly once per project."
         }
       },
       "required": [
@@ -9960,7 +9964,8 @@
         "suppressed_total",
         "recent_resolved",
         "attribution_active",
-        "onboarding_declined"
+        "onboarding_declined",
+        "explicit_decision"
       ],
       "title": "fallow impact --format json",
       "description": "The rendered impact report, derived purely from the store (no analysis run)."

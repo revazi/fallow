@@ -5210,6 +5210,13 @@ attribution_active: boolean
  * Stored under `.fallow/` so agents can avoid cross-session nags.
  */
 onboarding_declined: boolean
+/**
+ * Whether the user ever made an explicit enable/disable decision for
+ * Impact tracking. `enabled: false` with `explicit_decision: false` means
+ * "never asked"; with `true` it means "asked and declined". Agents use
+ * this to offer the impact opt-in exactly once per project.
+ */
+explicit_decision: boolean
 }
 /**
  * Per-category issue counts captured at a recorded run.

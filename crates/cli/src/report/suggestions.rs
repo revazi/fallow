@@ -144,6 +144,72 @@ pub fn setup_pointer_applicable(root: &Path) -> bool {
 /// Worded as an offer, not a deficiency: zero-config is a supported happy path.
 pub const SETUP_HINT: &str = "Setup: `fallow init --agents` writes an agent guide; `fallow hooks install --target agent` adds a commit gate (hide this hint: `fallow init --decline`).";
 
+/// `impact-report`: the periodic local value digest. Emitted at most once per
+/// week per project (the cadence stamp lives in the impact store, not the
+/// agent, so it is consistent across agents and sessions), only when impact
+/// tracking is enabled and has non-zero value to report, never in CI. Unlike
+/// every other trigger this one may surface on a CLEAN run: a clean project
+/// after a period of gate containment is exactly the moment the value report
+/// is informative.
+fn impact_digest_step(digest: Option<crate::impact::ImpactDigest>) -> Option<NextStep> {
+    let digest = digest?;
+    Some(next_step(
+        "impact-report",
+        "fallow impact".to_string(),
+        &format!(
+            "local value report: {}; share the non-zero numbers with the user",
+            digest_summary(digest)
+        ),
+    ))
+}
+
+/// Real-counter summary fragment shared by the next-step reason and the human
+/// one-liner (the placeholder-free contract: numbers come from the store).
+fn digest_summary(digest: crate::impact::ImpactDigest) -> String {
+    let mut parts = Vec::new();
+    if digest.containment_count > 0 {
+        parts.push(format!(
+            "{} commit{} contained at the gate",
+            digest.containment_count,
+            if digest.containment_count == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ));
+    }
+    if digest.resolved_total > 0 {
+        parts.push(format!(
+            "{} finding{} resolved",
+            digest.resolved_total,
+            if digest.resolved_total == 1 { "" } else { "s" }
+        ));
+    }
+    parts.join(", ")
+}
+
+/// One-line human counterpart of the `impact-report` next-step, printed with
+/// the run summary on bare `fallow`.
+#[must_use]
+pub fn impact_digest_line(digest: crate::impact::ImpactDigest) -> String {
+    format!(
+        "Impact: {} (details: `fallow impact`).",
+        digest_summary(digest)
+    )
+}
+
+/// Read-and-stamp the due periodic impact digest for the envelope being built.
+/// Returns `None` in CI or when suggestions are disabled, WITHOUT consuming the
+/// cadence stamp, so the digest is never burned by a surface that will not
+/// show it.
+#[must_use]
+pub fn due_impact_digest(root: &Path) -> Option<crate::impact::ImpactDigest> {
+    if !suggestions_enabled() || crate::telemetry::is_ci() {
+        return None;
+    }
+    crate::impact::take_due_digest(root)
+}
+
 /// `trace-clone`: see sibling locations and an extract-function suggestion for a
 /// duplicated block. Uses the smallest fingerprint for run-to-run determinism.
 fn trace_clone(payload: &DupesReportPayload) -> Option<NextStep> {
@@ -253,7 +319,8 @@ fn run_git(root: &Path, args: &[&str]) -> Option<String> {
 
 // ---------------------------------------------------------------------------
 // Public per-command builders. Each no-ops when suggestions are disabled or the
-// run is clean (no findings), so a clean run never emits `next_steps`.
+// run is clean (no findings), so a clean run never emits `next_steps`, with one
+// documented exception: a due `impact-report` digest may ride a clean run.
 // ---------------------------------------------------------------------------
 
 /// Next-steps for standalone `fallow dead-code`. `offer_setup` is the caller's
@@ -264,12 +331,17 @@ pub fn build_dead_code_next_steps(
     results: &AnalysisResults,
     root: &Path,
     offer_setup: bool,
+    digest: Option<crate::impact::ImpactDigest>,
 ) -> Vec<NextStep> {
-    if !suggestions_enabled() || results.total_issues() == 0 {
+    if !suggestions_enabled() {
         return Vec::new();
+    }
+    if results.total_issues() == 0 {
+        return impact_digest_step(digest).into_iter().collect();
     }
     let mut steps: Vec<NextStep> = [
         setup_pointer(offer_setup),
+        impact_digest_step(digest),
         trace_unused_export(results, root),
         scope_workspaces(root),
         audit_changed(root),
@@ -288,12 +360,17 @@ pub fn build_health_next_steps(
     report: &HealthReport,
     root: &Path,
     offer_setup: bool,
+    digest: Option<crate::impact::ImpactDigest>,
 ) -> Vec<NextStep> {
-    if !suggestions_enabled() || report.findings.is_empty() {
+    if !suggestions_enabled() {
         return Vec::new();
+    }
+    if report.findings.is_empty() {
+        return impact_digest_step(digest).into_iter().collect();
     }
     let mut steps: Vec<NextStep> = [
         setup_pointer(offer_setup),
+        impact_digest_step(digest),
         complexity_breakdown(report),
         audit_changed(root),
     ]
@@ -311,12 +388,17 @@ pub fn build_dupes_next_steps(
     payload: &DupesReportPayload,
     root: &Path,
     offer_setup: bool,
+    digest: Option<crate::impact::ImpactDigest>,
 ) -> Vec<NextStep> {
-    if !suggestions_enabled() || payload.clone_groups.is_empty() {
+    if !suggestions_enabled() {
         return Vec::new();
+    }
+    if payload.clone_groups.is_empty() {
+        return impact_digest_step(digest).into_iter().collect();
     }
     let mut steps: Vec<NextStep> = [
         setup_pointer(offer_setup),
+        impact_digest_step(digest),
         trace_clone(payload),
         audit_changed(root),
     ]
@@ -340,6 +422,7 @@ pub fn build_combined_next_steps(
     health: Option<&HealthReport>,
     root: &Path,
     offer_setup: bool,
+    digest: Option<crate::impact::ImpactDigest>,
 ) -> Vec<NextStep> {
     if !suggestions_enabled() {
         return Vec::new();
@@ -348,10 +431,11 @@ pub fn build_combined_next_steps(
         || dupes.is_some_and(|d| !d.clone_groups.is_empty())
         || health.is_some_and(|h| !h.findings.is_empty());
     if !has_findings {
-        return Vec::new();
+        return impact_digest_step(digest).into_iter().collect();
     }
     let mut steps: Vec<NextStep> = [
         setup_pointer(offer_setup),
+        impact_digest_step(digest),
         results.and_then(|r| trace_unused_export(r, root)),
         scope_workspaces(root),
         dupes.and_then(trace_clone),
@@ -402,7 +486,7 @@ pub fn top_combined_next_step(
     health: Option<&HealthReport>,
     root: &Path,
 ) -> Option<NextStep> {
-    build_combined_next_steps(results, dupes, health, root, false)
+    build_combined_next_steps(results, dupes, health, root, false, None)
         .into_iter()
         .next()
 }
@@ -482,7 +566,7 @@ mod tests {
     fn clean_run_emits_no_next_steps() {
         let root = PathBuf::from("/project");
         let results = AnalysisResults::default();
-        assert!(build_dead_code_next_steps(&results, &root, true).is_empty());
+        assert!(build_dead_code_next_steps(&results, &root, true, None).is_empty());
     }
 
     #[test]
@@ -505,9 +589,9 @@ mod tests {
     fn setup_pointer_leads_when_offered() {
         let root = PathBuf::from("/project");
         let results = results_with_exports(vec![unused_export("/project/src/a.ts", "alpha")]);
-        let steps = build_dead_code_next_steps(&results, &root, true);
+        let steps = build_dead_code_next_steps(&results, &root, true, None);
         assert_eq!(steps.first().map(|s| s.id.as_str()), Some("setup"));
-        let steps = build_dead_code_next_steps(&results, &root, false);
+        let steps = build_dead_code_next_steps(&results, &root, false, None);
         assert!(steps.iter().all(|s| s.id != "setup"));
     }
 
@@ -518,6 +602,55 @@ mod tests {
         if let Some(step) = top {
             assert_ne!(step.id, "setup");
         }
+    }
+
+    fn digest(containment: usize, resolved: usize) -> crate::impact::ImpactDigest {
+        crate::impact::ImpactDigest {
+            containment_count: containment,
+            resolved_total: resolved,
+        }
+    }
+
+    #[test]
+    fn impact_digest_step_carries_real_counters() {
+        assert!(impact_digest_step(None).is_none());
+        let step = impact_digest_step(Some(digest(4, 12))).expect("step");
+        assert_eq!(step.id, "impact-report");
+        assert_eq!(step.command, "fallow impact");
+        assert!(step.reason.contains("4 commits contained at the gate"));
+        assert!(step.reason.contains("12 findings resolved"));
+        assert_valid(&step);
+        let singular = impact_digest_step(Some(digest(1, 0))).expect("step");
+        assert!(singular.reason.contains("1 commit contained at the gate"));
+        assert!(!singular.reason.contains("resolved"));
+    }
+
+    #[test]
+    fn due_digest_rides_a_clean_run() {
+        let root = PathBuf::from("/project");
+        let results = AnalysisResults::default();
+        let steps = build_dead_code_next_steps(&results, &root, true, Some(digest(2, 0)));
+        assert_eq!(steps.len(), 1, "clean run carries ONLY the digest");
+        assert_eq!(steps[0].id, "impact-report");
+    }
+
+    #[test]
+    fn digest_follows_setup_on_dirty_runs() {
+        let root = PathBuf::from("/project");
+        let results = results_with_exports(vec![unused_export("/project/src/a.ts", "alpha")]);
+        let steps = build_dead_code_next_steps(&results, &root, true, Some(digest(2, 3)));
+        let ids: Vec<&str> = steps.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids[0], "setup");
+        assert_eq!(ids[1], "impact-report");
+    }
+
+    #[test]
+    fn impact_digest_line_renders_counters() {
+        let line = impact_digest_line(digest(2, 1));
+        assert_eq!(
+            line,
+            "Impact: 2 commits contained at the gate, 1 finding resolved (details: `fallow impact`)."
+        );
     }
 
     #[test]
@@ -567,7 +700,7 @@ mod tests {
         let root = PathBuf::from("/project");
         let results = results_with_exports(vec![unused_export("/project/src/a.ts", "alpha")]);
         // Even if git/workspaces/setup add candidates, the cap holds.
-        let steps = build_dead_code_next_steps(&results, &root, true);
+        let steps = build_dead_code_next_steps(&results, &root, true, None);
         assert!(steps.len() <= MAX_NEXT_STEPS);
     }
 }

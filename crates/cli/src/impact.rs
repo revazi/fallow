@@ -156,6 +156,16 @@ pub struct ImpactStore {
     pub recent_resolved: Vec<ResolutionEvent>,
     #[serde(default)]
     pub onboarding_declined: bool,
+    /// Whether the user ever ran an explicit `impact enable` or `impact
+    /// disable`. Distinguishes "deliberately declined" from "never asked" so
+    /// the agent skill asks for the impact opt-in exactly once per project.
+    #[serde(default)]
+    pub explicit_decision: bool,
+    /// Unix epoch seconds when the periodic impact digest was last surfaced
+    /// (the `impact-report` next-step / human one-liner). Internal cadence
+    /// state, never exposed on the report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_digest_epoch: Option<u64>,
 }
 
 fn store_path(root: &Path) -> PathBuf {
@@ -209,6 +219,7 @@ pub fn enable(root: &Path) -> bool {
     let mut store = load(root);
     let was_enabled = store.enabled;
     store.enabled = true;
+    store.explicit_decision = true;
     if store.schema_version == 0 {
         store.schema_version = STORE_SCHEMA_VERSION;
     }
@@ -236,13 +247,63 @@ fn ensure_fallow_gitignored(root: &Path) {
 }
 
 /// Disable Impact tracking. Retains existing history. Returns whether it was
-/// newly disabled (false if already off).
+/// newly disabled (false if already off). Also records the explicit decision,
+/// so declining the impact opt-in on a never-enabled project (`impact
+/// disable`) persists "asked and said no" for the agent skill.
 pub fn disable(root: &Path) -> bool {
     let mut store = load(root);
     let was_enabled = store.enabled;
     store.enabled = false;
+    store.explicit_decision = true;
+    if store.schema_version == 0 {
+        store.schema_version = STORE_SCHEMA_VERSION;
+    }
     save(&store, root);
     was_enabled
+}
+
+/// A due periodic value digest: the headline counters for "what has fallow
+/// done for you here". Returned by [`take_due_digest`] at most once per
+/// [`DIGEST_INTERVAL_SECS`] per project.
+#[derive(Debug, Clone, Copy)]
+pub struct ImpactDigest {
+    pub containment_count: usize,
+    pub resolved_total: usize,
+}
+
+/// Minimum seconds between periodic digest surfacings (one week).
+const DIGEST_INTERVAL_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// Return the periodic value digest when it is due, stamping the store so the
+/// next one is at least [`DIGEST_INTERVAL_SECS`] away. Due means: tracking is
+/// enabled, there is non-zero value to report (anti-nag: a zero digest never
+/// surfaces), and the previous digest is older than the interval (or never
+/// happened). Best-effort like the rest of the store: a clean run that drops
+/// the emitted step simply defers the digest to the next interval.
+pub fn take_due_digest(root: &Path) -> Option<ImpactDigest> {
+    let mut store = load(root);
+    if !store.enabled {
+        return None;
+    }
+    let containment_count = store.containment.len();
+    if containment_count == 0 && store.resolved_total == 0 {
+        return None;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    if let Some(last) = store.last_digest_epoch
+        && now.saturating_sub(last) < DIGEST_INTERVAL_SECS
+    {
+        return None;
+    }
+    store.last_digest_epoch = Some(now);
+    save(&store, root);
+    Some(ImpactDigest {
+        containment_count,
+        resolved_total: store.resolved_total,
+    })
 }
 
 /// Persist that the local user declined the agent onboarding prompt.
@@ -1022,6 +1083,11 @@ pub struct ImpactReport {
     /// Whether the local agent onboarding prompt has been explicitly declined.
     /// Stored under `.fallow/` so agents can avoid cross-session nags.
     pub onboarding_declined: bool,
+    /// Whether the user ever made an explicit enable/disable decision for
+    /// Impact tracking. `enabled: false` with `explicit_decision: false` means
+    /// "never asked"; with `true` it means "asked and declined". Agents use
+    /// this to offer the impact opt-in exactly once per project.
+    pub explicit_decision: bool,
 }
 
 /// Build a report from the store. Defensive: a single record (or none) yields
@@ -1094,6 +1160,7 @@ pub fn build_report(store: &ImpactStore) -> ImpactReport {
         recent_resolved,
         attribution_active,
         onboarding_declined: store.onboarding_declined,
+        explicit_decision: store.explicit_decision,
     }
 }
 
@@ -1489,6 +1556,55 @@ mod tests {
         let store = load(root);
         assert!(store.records.is_empty());
         assert!(!store.enabled);
+    }
+
+    #[test]
+    fn enable_and_disable_record_the_explicit_decision() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert!(!load(root).explicit_decision, "fresh store: never asked");
+
+        // Declining on a never-enabled project is an explicit decision too.
+        disable(root);
+        let store = load(root);
+        assert!(!store.enabled);
+        assert!(store.explicit_decision);
+        assert!(build_report(&store).explicit_decision);
+    }
+
+    #[test]
+    fn due_digest_stamps_and_respects_interval_and_gates() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Disabled, or enabled with zero value: never due.
+        assert!(take_due_digest(root).is_none());
+        enable(root);
+        assert!(take_due_digest(root).is_none(), "zero counters never nag");
+
+        let mut store = load(root);
+        store.resolved_total = 3;
+        store.containment.push(ContainmentEvent {
+            blocked_at: "2026-06-11T00:00:00Z".to_string(),
+            cleared_at: "2026-06-11T00:05:00Z".to_string(),
+            git_sha: None,
+            blocked_counts: ImpactCounts::default(),
+        });
+        save(&store, root);
+
+        let digest = take_due_digest(root).expect("first digest is due");
+        assert_eq!(digest.containment_count, 1);
+        assert_eq!(digest.resolved_total, 3);
+        assert!(
+            take_due_digest(root).is_none(),
+            "stamped: not due again within the interval"
+        );
+
+        // An expired stamp makes it due again.
+        let mut store = load(root);
+        store.last_digest_epoch = Some(0);
+        save(&store, root);
+        assert!(take_due_digest(root).is_some());
     }
 
     #[test]
@@ -2167,6 +2283,7 @@ mod tests {
             recent_resolved: vec![],
             attribution_active: true,
             onboarding_declined: false,
+            explicit_decision: false,
         };
         let human = render_human(&report);
         let resolved_idx = human.find("  RESOLVED").expect("RESOLVED header present");
@@ -2359,6 +2476,7 @@ mod tests {
             recent_resolved: vec![],
             attribution_active,
             onboarding_declined: false,
+            explicit_decision: false,
         }
     }
 

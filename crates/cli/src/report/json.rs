@@ -119,6 +119,7 @@ pub(super) fn print_grouped_json(input: &PrintGroupedJsonInput<'_>) -> ExitCode 
             original,
             root,
             crate::report::suggestions::setup_pointer_applicable(root),
+            crate::report::suggestions::due_impact_digest(root),
         ),
     };
 
@@ -179,6 +180,7 @@ pub fn build_json_with_config_fixable(
         results,
         root,
         crate::report::suggestions::setup_pointer_applicable(root),
+        crate::report::suggestions::due_impact_digest(root),
     );
     let mut output = serialize_root_output(FallowOutput::Check(envelope))?;
     postprocess_check_json(&mut output, root);
@@ -543,6 +545,7 @@ pub fn build_health_json(
             report,
             root,
             crate::report::suggestions::setup_pointer_applicable(root),
+            crate::report::suggestions::due_impact_digest(root),
         ),
     };
     let mut output = serialize_root_output(FallowOutput::Health(envelope))?;
@@ -590,6 +593,7 @@ pub fn build_grouped_health_json(
             report,
             root,
             crate::report::suggestions::setup_pointer_applicable(root),
+            crate::report::suggestions::due_impact_digest(root),
         ),
     };
     let mut output = serialize_root_output(FallowOutput::Health(envelope))?;
@@ -643,6 +647,7 @@ pub fn build_duplication_json(
         &payload,
         root,
         crate::report::suggestions::setup_pointer_applicable(root),
+        crate::report::suggestions::due_impact_digest(root),
     );
     let envelope = DupesOutput {
         schema_version: SchemaVersion(SCHEMA_VERSION),
@@ -695,6 +700,7 @@ pub fn build_grouped_duplication_json(
         &payload,
         root,
         crate::report::suggestions::setup_pointer_applicable(root),
+        crate::report::suggestions::due_impact_digest(root),
     );
     let envelope = DupesOutput {
         schema_version: SchemaVersion(SCHEMA_VERSION),

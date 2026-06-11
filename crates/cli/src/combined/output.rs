@@ -310,6 +310,17 @@ fn print_failure_summary(
             .unwrap_or_default();
         eprintln!("\nFailed: {}{nudge}", parts.join(", "));
 
+        // Periodic value digest: prose counterpart of the `impact-report`
+        // next-step, at most weekly (the cadence stamp lives in the impact
+        // store) and only with non-zero numbers. Shares the caller's quiet
+        // gate; CI and disabled suggestions suppress it inside the peek.
+        if let Some(digest) = crate::report::suggestions::due_impact_digest(root) {
+            eprintln!(
+                "{}",
+                crate::report::suggestions::impact_digest_line(digest).dimmed()
+            );
+        }
+
         // First-contact setup hint: prose counterpart of the `setup`
         // next-step, printed after the failure summary so it is the last
         // thing a human reads on a big first run instead of scrolling away
@@ -459,6 +470,7 @@ fn print_combined_json(
         health.map(|result| &result.report),
         root,
         crate::report::suggestions::setup_pointer_applicable(root),
+        crate::report::suggestions::due_impact_digest(root),
     );
     if !next_steps.is_empty() {
         match serde_json::to_value(&next_steps) {
