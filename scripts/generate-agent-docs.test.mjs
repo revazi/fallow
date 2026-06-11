@@ -278,7 +278,11 @@ test("task-matrix section regenerates from the manifest and is idempotent", () =
   // Stale row replaced by the manifest rows.
   assert.ok(!once.includes("stale row that should be regenerated"));
   assert.ok(once.includes("| When the agent is about to... | Run |"));
-  assert.ok(once.includes("| delete an unused export or file | `fallow dead-code --trace <file>:<export>` |"));
+  assert.ok(
+    once.includes(
+      "| delete an unused export or file | `fallow dead-code --trace <file>:<export>` |",
+    ),
+  );
   // The flag-fragment row appends its note after a semicolon.
   assert.ok(
     once.includes(
