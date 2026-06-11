@@ -2484,10 +2484,6 @@ fn finalize_report_file(
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "top-level CLI orchestration: parse, validate, set up output redirection, dispatch, record telemetry"
-)]
 fn main() -> ExitCode {
     install_signal_handlers();
     install_spawn_hooks();
@@ -2511,40 +2507,15 @@ fn main() -> ExitCode {
         report::ci::pr_comment::set_workspace_marker_from_list(workspaces);
     }
 
-    if matches!(cli.command, Some(Command::Schema)) {
-        return schema::run_schema();
-    }
-    if matches!(cli.command, Some(Command::ConfigSchema)) {
-        return init::run_config_schema();
-    }
-    if matches!(cli.command, Some(Command::PluginSchema)) {
-        return init::run_plugin_schema();
-    }
-    if matches!(cli.command, Some(Command::RulePackSchema)) {
-        return init::run_rule_pack_schema();
+    if let Some(code) = run_schema_command_if_requested(&cli) {
+        return code;
     }
 
     let fmt = resolve_format(&cli);
     if let Some(code) = run_telemetry_command_if_requested(&mut cli, fmt.output) {
         return code;
     }
-    setup_tracing();
-    let telemetry_run = TelemetryRun {
-        workflow: telemetry_workflow_for_command(cli.command.as_ref(), fmt.output),
-        output: fmt.output,
-        quiet: fmt.quiet,
-        start: std::time::Instant::now(),
-        context: telemetry_context_for_command(&cli, cli.command.as_ref(), fmt.output),
-    };
-    output_envelope::set_telemetry_analysis_run_id(
-        matches!(fmt.output, fallow_config::OutputFormat::Json)
-            .then(telemetry::new_analysis_run_id),
-    );
-
-    // Deliver any telemetry events the previous run spooled at exit. Detached and
-    // gated on telemetry being enabled, so it overlaps the analysis work below and
-    // never blocks the command (the opt-out path does no spool I/O at all).
-    telemetry::flush_spool_in_background();
+    let telemetry_run = start_telemetry_run(&cli, &fmt);
 
     let (root, threads) = match validate_inputs(&cli, fmt.output) {
         Ok(v) => v,
@@ -2559,58 +2530,17 @@ fn main() -> ExitCode {
         cli_format_was_explicit,
     } = fmt;
 
-    let diff_source = match report::ci::diff_filter::resolve_diff_source(
-        cli.diff_file.as_deref(),
-        cli.diff_stdin,
-        &root,
-    ) {
-        Ok(src) => src,
-        Err(msg) => {
-            let code = emit_known_failure(&msg, 2, output, telemetry::FailureReason::Diff);
-            return record_run_epilogue(
-                telemetry_run,
-                code,
-                Some(telemetry::FailureReason::Diff),
-                cli.parent_run.as_deref(),
-            );
-        }
-    };
-    if diff_source.is_some() && cli.changed_since.is_some() && !quiet {
-        eprintln!(
-            "fallow: --diff-file precedes --changed-since for line-level \
-             filtering; --changed-since still scopes file discovery. Drop \
-             one of them to disable this combination."
+    if let Err(code) = init_cli_diff_filter(&cli, &root, output, quiet) {
+        return record_run_epilogue(
+            telemetry_run,
+            code,
+            Some(telemetry::FailureReason::Diff),
+            cli.parent_run.as_deref(),
         );
     }
-    let suppress_warnings = quiet
-        && matches!(
-            diff_source,
-            Some(report::ci::diff_filter::DiffSource::EnvVar(_)) | None
-        );
-    let _ = report::ci::diff_filter::init_shared_diff(diff_source.as_ref(), suppress_warnings);
 
     if (cli.ci || cli.fail_on_issues || cli.sarif_file.is_some() || cli.output_file.is_some())
-        && matches!(
-            cli.command,
-            Some(
-                Command::Init { .. }
-                    | Command::ConfigSchema
-                    | Command::PluginSchema
-                    | Command::RulePackSchema
-                    | Command::Schema
-                    | Command::Explain { .. }
-                    | Command::CiTemplate { .. }
-                    | Command::Config { .. }
-                    | Command::Ci { .. }
-                    | Command::List { .. }
-                    | Command::Flags { .. }
-                    | Command::Migrate { .. }
-                    | Command::License { .. }
-                    | Command::Coverage { .. }
-                    | Command::Hooks { .. }
-                    | Command::SetupHooks { .. }
-            )
-        )
+        && command_rejects_output_gate(cli.command.as_ref())
     {
         let code = emit_known_failure(
             "--ci, --fail-on-issues, --sarif-file, and --output-file are only valid with dead-code, dupes, health, security, or bare invocation",
@@ -2626,43 +2556,8 @@ fn main() -> ExitCode {
         );
     }
 
-    if (!cli.only.is_empty() || !cli.skip.is_empty()) && cli.command.is_some() {
-        let code = emit_known_failure(
-            "--only and --skip can only be used without a subcommand",
-            2,
-            output,
-            telemetry::FailureReason::Validation,
-        );
-        return record_run_epilogue(
-            telemetry_run,
-            code,
-            Some(telemetry::FailureReason::Validation),
-            cli.parent_run.as_deref(),
-        );
-    }
-    if (cli.production_dead_code || cli.production_health || cli.production_dupes)
-        && cli.command.is_some()
-    {
-        let code = emit_known_failure(
-            "--production-dead-code, --production-health, and --production-dupes can only be used without a subcommand. For audit, pass them after `audit`",
-            2,
-            output,
-            telemetry::FailureReason::Validation,
-        );
-        return record_run_epilogue(
-            telemetry_run,
-            code,
-            Some(telemetry::FailureReason::Validation),
-            cli.parent_run.as_deref(),
-        );
-    }
-    if !cli.only.is_empty() && !cli.skip.is_empty() {
-        let code = emit_known_failure(
-            "--only and --skip are mutually exclusive",
-            2,
-            output,
-            telemetry::FailureReason::Validation,
-        );
+    if let Some(message) = global_filter_error(&cli) {
+        let code = emit_known_failure(message, 2, output, telemetry::FailureReason::Validation);
         return record_run_epilogue(
             telemetry_run,
             code,
@@ -2671,15 +2566,9 @@ fn main() -> ExitCode {
         );
     }
 
-    let tolerance = match regression::Tolerance::parse(&cli.tolerance) {
-        Ok(t) => t,
-        Err(e) => {
-            let code = emit_known_failure(
-                &format!("invalid --tolerance: {e}"),
-                2,
-                output,
-                telemetry::FailureReason::Validation,
-            );
+    let tolerance = match parse_cli_tolerance(&cli, output) {
+        Ok(tolerance) => tolerance,
+        Err(code) => {
             return record_run_epilogue(
                 telemetry_run,
                 code,
@@ -2689,13 +2578,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let save_regression_file: Option<std::path::PathBuf> =
-        cli.save_regression_baseline.as_ref().and_then(|opt| {
-            opt.as_ref()
-                .filter(|s| !s.is_empty())
-                .map(std::path::PathBuf::from)
-        });
-    let save_to_config = cli.save_regression_baseline.is_some() && save_regression_file.is_none();
+    let (save_regression_file, save_to_config) = regression_save_targets(&cli);
 
     // Redirect the rendered report to a file (ambient sink read by the report
     // layer's `outln!`). Set up before dispatch so rendering lands in the file;
@@ -2761,6 +2644,23 @@ fn record_run_epilogue(
         update_check::maybe_nudge(run.output, run.quiet, note_printed || cache_notice_printed);
     }
     exit_code
+}
+
+fn start_telemetry_run(cli: &Cli, fmt: &FormatConfig) -> TelemetryRun {
+    setup_tracing();
+    let run = TelemetryRun {
+        workflow: telemetry_workflow_for_command(cli.command.as_ref(), fmt.output),
+        output: fmt.output,
+        quiet: fmt.quiet,
+        start: std::time::Instant::now(),
+        context: telemetry_context_for_command(cli, cli.command.as_ref(), fmt.output),
+    };
+    output_envelope::set_telemetry_analysis_run_id(
+        matches!(fmt.output, fallow_config::OutputFormat::Json)
+            .then(telemetry::new_analysis_run_id),
+    );
+    telemetry::flush_spool_in_background();
+    run
 }
 
 fn telemetry_context_for_command(
@@ -2995,6 +2895,109 @@ fn run_telemetry_command_if_requested(
         return Some(telemetry::run(map_telemetry_subcommand(subcommand), output));
     }
     None
+}
+
+fn run_schema_command_if_requested(cli: &Cli) -> Option<ExitCode> {
+    match cli.command {
+        Some(Command::Schema) => Some(schema::run_schema()),
+        Some(Command::ConfigSchema) => Some(init::run_config_schema()),
+        Some(Command::PluginSchema) => Some(init::run_plugin_schema()),
+        Some(Command::RulePackSchema) => Some(init::run_rule_pack_schema()),
+        _ => None,
+    }
+}
+
+fn command_rejects_output_gate(command: Option<&Command>) -> bool {
+    matches!(
+        command,
+        Some(
+            Command::Init { .. }
+                | Command::ConfigSchema
+                | Command::PluginSchema
+                | Command::RulePackSchema
+                | Command::Schema
+                | Command::Explain { .. }
+                | Command::CiTemplate { .. }
+                | Command::Config { .. }
+                | Command::Ci { .. }
+                | Command::List { .. }
+                | Command::Flags { .. }
+                | Command::Migrate { .. }
+                | Command::License { .. }
+                | Command::Coverage { .. }
+                | Command::Hooks { .. }
+                | Command::SetupHooks { .. }
+        )
+    )
+}
+
+fn global_filter_error(cli: &Cli) -> Option<&'static str> {
+    if (!cli.only.is_empty() || !cli.skip.is_empty()) && cli.command.is_some() {
+        return Some("--only and --skip can only be used without a subcommand");
+    }
+    if (cli.production_dead_code || cli.production_health || cli.production_dupes)
+        && cli.command.is_some()
+    {
+        return Some(
+            "--production-dead-code, --production-health, and --production-dupes can only be used without a subcommand. For audit, pass them after `audit`",
+        );
+    }
+    if !cli.only.is_empty() && !cli.skip.is_empty() {
+        return Some("--only and --skip are mutually exclusive");
+    }
+    None
+}
+
+fn parse_cli_tolerance(
+    cli: &Cli,
+    output: fallow_config::OutputFormat,
+) -> Result<regression::Tolerance, ExitCode> {
+    regression::Tolerance::parse(&cli.tolerance).map_err(|e| {
+        emit_known_failure(
+            &format!("invalid --tolerance: {e}"),
+            2,
+            output,
+            telemetry::FailureReason::Validation,
+        )
+    })
+}
+
+fn regression_save_targets(cli: &Cli) -> (Option<std::path::PathBuf>, bool) {
+    let save_file = cli.save_regression_baseline.as_ref().and_then(|opt| {
+        opt.as_ref()
+            .filter(|path| !path.is_empty())
+            .map(std::path::PathBuf::from)
+    });
+    let save_to_config = cli.save_regression_baseline.is_some() && save_file.is_none();
+    (save_file, save_to_config)
+}
+
+fn init_cli_diff_filter(
+    cli: &Cli,
+    root: &std::path::Path,
+    output: fallow_config::OutputFormat,
+    quiet: bool,
+) -> Result<(), ExitCode> {
+    let diff_source = report::ci::diff_filter::resolve_diff_source(
+        cli.diff_file.as_deref(),
+        cli.diff_stdin,
+        root,
+    )
+    .map_err(|msg| emit_known_failure(&msg, 2, output, telemetry::FailureReason::Diff))?;
+    if diff_source.is_some() && cli.changed_since.is_some() && !quiet {
+        eprintln!(
+            "fallow: --diff-file precedes --changed-since for line-level \
+             filtering; --changed-since still scopes file discovery. Drop \
+             one of them to disable this combination."
+        );
+    }
+    let suppress_warnings = quiet
+        && matches!(
+            diff_source,
+            Some(report::ci::diff_filter::DiffSource::EnvVar(_)) | None
+        );
+    let _ = report::ci::diff_filter::init_shared_diff(diff_source.as_ref(), suppress_warnings);
+    Ok(())
 }
 
 fn dispatch_bare_command(dispatch: &DispatchContext<'_>) -> ExitCode {
@@ -4278,20 +4281,18 @@ fn dispatch_health(dispatch: &DispatchContext<'_>, args: HealthDispatchArgs<'_>)
         );
     }
     let targets = targets || effort.is_some();
-    let badge_format = matches!(output, fallow_config::OutputFormat::Badge);
-    let score = score || min_score.is_some() || trend || badge_format;
-    let snapshot_requested = save_snapshot.is_some();
-    let any_section = complexity || file_scores || coverage_gaps || hotspots || targets || score;
-    let eff_score = if any_section { score } else { true } || snapshot_requested;
-    let force_full = snapshot_requested || eff_score;
-    let needs_hotspot_vitals = snapshot_requested || trend;
-    let score_only_output =
-        score && !complexity && !file_scores && !coverage_gaps && !hotspots && !targets && !trend;
-    let eff_file_scores = if any_section { file_scores } else { true } || force_full;
-    let eff_coverage_gaps = if any_section { coverage_gaps } else { false };
-    let eff_hotspots = if any_section { hotspots } else { true } || needs_hotspot_vitals;
-    let eff_complexity = if any_section { complexity } else { true };
-    let eff_targets = if any_section { targets } else { true };
+    let sections = effective_health_sections(&EffectiveHealthSectionInput {
+        output,
+        complexity,
+        file_scores,
+        coverage_gaps,
+        hotspots,
+        targets,
+        score,
+        min_score,
+        save_snapshot,
+        trend,
+    });
     let runtime_coverage = if let Some(path) = runtime_coverage {
         match health::coverage::prepare_options(
             path,
@@ -4331,20 +4332,20 @@ fn dispatch_health(dispatch: &DispatchContext<'_>, args: HealthDispatchArgs<'_>)
         changed_workspaces: cli.changed_workspaces.as_deref(),
         baseline: cli.baseline.as_deref(),
         save_baseline: cli.save_baseline.as_deref(),
-        complexity: eff_complexity,
+        complexity: sections.complexity,
         complexity_breakdown,
-        file_scores: eff_file_scores,
-        coverage_gaps: eff_coverage_gaps,
-        config_activates_coverage_gaps: !any_section,
-        hotspots: eff_hotspots,
-        ownership: ownership && eff_hotspots,
+        file_scores: sections.file_scores,
+        coverage_gaps: sections.coverage_gaps,
+        config_activates_coverage_gaps: !sections.any_section,
+        hotspots: sections.hotspots,
+        ownership: ownership && sections.hotspots,
         ownership_emails,
-        targets: eff_targets,
-        force_full,
-        score_only_output,
+        targets: sections.targets,
+        force_full: sections.force_full,
+        score_only_output: sections.score_only_output,
         enforce_coverage_gap_gate: true,
         effort: effort.map(EffortFilter::to_estimate),
-        score: eff_score,
+        score: sections.score,
         min_score,
         min_severity,
         report_only,
@@ -4361,6 +4362,74 @@ fn dispatch_health(dispatch: &DispatchContext<'_>, args: HealthDispatchArgs<'_>)
         runtime_coverage,
         churn_file: cli.churn_file.as_deref(),
     })
+}
+
+struct EffectiveHealthSectionInput<'a> {
+    output: fallow_config::OutputFormat,
+    complexity: bool,
+    file_scores: bool,
+    coverage_gaps: bool,
+    hotspots: bool,
+    targets: bool,
+    score: bool,
+    min_score: Option<f64>,
+    save_snapshot: Option<&'a Option<String>>,
+    trend: bool,
+}
+
+struct EffectiveHealthSections {
+    any_section: bool,
+    complexity: bool,
+    file_scores: bool,
+    coverage_gaps: bool,
+    hotspots: bool,
+    targets: bool,
+    score: bool,
+    force_full: bool,
+    score_only_output: bool,
+}
+
+fn effective_health_sections(input: &EffectiveHealthSectionInput<'_>) -> EffectiveHealthSections {
+    let score = input.score
+        || input.min_score.is_some()
+        || input.trend
+        || matches!(input.output, fallow_config::OutputFormat::Badge);
+    let snapshot_requested = input.save_snapshot.is_some();
+    let any_section = input.complexity
+        || input.file_scores
+        || input.coverage_gaps
+        || input.hotspots
+        || input.targets
+        || score;
+    let eff_score = if any_section { score } else { true } || snapshot_requested;
+    let force_full = snapshot_requested || eff_score;
+    EffectiveHealthSections {
+        any_section,
+        complexity: if any_section { input.complexity } else { true },
+        file_scores: if any_section { input.file_scores } else { true } || force_full,
+        coverage_gaps: if any_section {
+            input.coverage_gaps
+        } else {
+            false
+        },
+        hotspots: if any_section { input.hotspots } else { true }
+            || snapshot_requested
+            || input.trend,
+        targets: if any_section { input.targets } else { true },
+        score: eff_score,
+        force_full,
+        score_only_output: is_health_score_only_output(input, score),
+    }
+}
+
+fn is_health_score_only_output(input: &EffectiveHealthSectionInput<'_>, score: bool) -> bool {
+    score
+        && !input.complexity
+        && !input.file_scores
+        && !input.coverage_gaps
+        && !input.hotspots
+        && !input.targets
+        && !input.trend
 }
 
 #[cfg(test)]

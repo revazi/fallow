@@ -36,47 +36,9 @@ pub fn run_list(opts: &ListOptions<'_>) -> ExitCode {
 
     let show_all = should_show_all(opts);
 
-    let plugin_result = if opts.plugins || opts.entry_points || show_all {
-        let disc = fallow_core::discover::discover_files_with_plugin_scopes(&config);
-        let file_paths: Vec<std::path::PathBuf> = disc.iter().map(|f| f.path.clone()).collect();
-        let registry = fallow_core::plugins::PluginRegistry::new(config.external_plugins.clone());
-
-        let pkg_path = opts.root.join("package.json");
-        let mut result = if let Ok(pkg) = fallow_config::PackageJson::load(&pkg_path) {
-            match registry.try_run(&pkg, opts.root, &file_paths) {
-                Ok(result) => result,
-                Err(errors) => {
-                    let message =
-                        fallow_core::plugins::registry::format_plugin_regex_errors(&errors);
-                    return crate::error::emit_error(&message, 2, opts.output);
-                }
-            }
-        } else {
-            fallow_core::plugins::AggregatedPluginResult::default()
-        };
-
-        let workspaces = fallow_config::discover_workspaces(opts.root);
-        for ws in &workspaces {
-            let ws_pkg_path = ws.root.join("package.json");
-            if let Ok(ws_pkg) = fallow_config::PackageJson::load(&ws_pkg_path) {
-                let ws_result = match registry.try_run(&ws_pkg, &ws.root, &file_paths) {
-                    Ok(result) => result,
-                    Err(errors) => {
-                        let message =
-                            fallow_core::plugins::registry::format_plugin_regex_errors(&errors);
-                        return crate::error::emit_error(&message, 2, opts.output);
-                    }
-                };
-                for plugin_name in &ws_result.active_plugins {
-                    if !result.active_plugins.contains(plugin_name) {
-                        result.active_plugins.push(plugin_name.clone());
-                    }
-                }
-            }
-        }
-        Some(result)
-    } else {
-        None
+    let plugin_result = match collect_plugin_result(opts, &config, show_all) {
+        Ok(result) => result,
+        Err(code) => return code,
     };
 
     let need_files = needs_file_discovery(opts.files, show_all, opts.entry_points, opts.boundaries);
@@ -193,6 +155,74 @@ const fn needs_file_discovery(
     boundaries: bool,
 ) -> bool {
     files || show_all || entry_points || boundaries
+}
+
+fn collect_plugin_result(
+    opts: &ListOptions<'_>,
+    config: &fallow_config::ResolvedConfig,
+    show_all: bool,
+) -> Result<Option<fallow_core::plugins::AggregatedPluginResult>, ExitCode> {
+    if !(opts.plugins || opts.entry_points || show_all) {
+        return Ok(None);
+    }
+    let disc = fallow_core::discover::discover_files_with_plugin_scopes(config);
+    let file_paths: Vec<std::path::PathBuf> = disc.iter().map(|f| f.path.clone()).collect();
+    let registry = fallow_core::plugins::PluginRegistry::new(config.external_plugins.clone());
+    let mut result = run_package_plugins(
+        &registry,
+        &opts.root.join("package.json"),
+        opts.root,
+        &file_paths,
+        opts.output,
+    )?
+    .unwrap_or_default();
+    merge_workspace_plugins(opts, &registry, &file_paths, &mut result)?;
+    Ok(Some(result))
+}
+
+fn run_package_plugins(
+    registry: &fallow_core::plugins::PluginRegistry,
+    package_path: &std::path::Path,
+    root: &std::path::Path,
+    file_paths: &[std::path::PathBuf],
+    output: OutputFormat,
+) -> Result<Option<fallow_core::plugins::AggregatedPluginResult>, ExitCode> {
+    let Ok(pkg) = fallow_config::PackageJson::load(package_path) else {
+        return Ok(None);
+    };
+    registry
+        .try_run(&pkg, root, file_paths)
+        .map(Some)
+        .map_err(|errors| {
+            let message = fallow_core::plugins::registry::format_plugin_regex_errors(&errors);
+            crate::error::emit_error(&message, 2, output)
+        })
+}
+
+fn merge_workspace_plugins(
+    opts: &ListOptions<'_>,
+    registry: &fallow_core::plugins::PluginRegistry,
+    file_paths: &[std::path::PathBuf],
+    result: &mut fallow_core::plugins::AggregatedPluginResult,
+) -> Result<(), ExitCode> {
+    for ws in &fallow_config::discover_workspaces(opts.root) {
+        let Some(ws_result) = run_package_plugins(
+            registry,
+            &ws.root.join("package.json"),
+            &ws.root,
+            file_paths,
+            opts.output,
+        )?
+        else {
+            continue;
+        };
+        for plugin_name in &ws_result.active_plugins {
+            if !result.active_plugins.contains(plugin_name) {
+                result.active_plugins.push(plugin_name.clone());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Print list results as JSON and return the appropriate exit code.

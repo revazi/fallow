@@ -329,21 +329,6 @@ fn execute_health_inner(
         file_paths,
     } = prepare_health_scope(opts, &config, &files)?;
 
-    let t = Instant::now();
-    let (findings, files_analyzed, total_functions) = collect_findings(
-        &modules,
-        &file_paths,
-        &config.root,
-        &ignore_set,
-        changed_files.as_ref(),
-        ws_roots.as_deref(),
-        max_cyclomatic,
-        max_cognitive,
-        opts.complexity_breakdown,
-    );
-    let mut findings = findings;
-    let complexity_ms = t.elapsed().as_secs_f64() * 1000.0;
-
     let HealthCoverageSettings {
         report_coverage_gaps,
         enforce_coverage_gaps,
@@ -375,45 +360,31 @@ fn execute_health_inner(
         .as_ref()
         .map_or(&[] as &[_], |o| o.scores.as_slice());
 
-    if enforce_crap && let Some(ref score_out) = analysis_data.score_output {
-        merge_crap_findings(
-            &mut findings,
-            &CrapFindingMergeInput {
-                modules: &modules,
-                file_paths: &file_paths,
-                config_root: &config.root,
-                ignore_set: &ignore_set,
-                changed_files: changed_files.as_ref(),
-                ws_roots: ws_roots.as_deref(),
-                per_function_crap: &score_out.per_function_crap,
-                template_inherit_provenance: &score_out.template_inherit_provenance,
-                max_crap,
-                max_cyclomatic,
-                max_cognitive,
-                complexity_breakdown: opts.complexity_breakdown,
-            },
-        );
-    }
-    let template_owner_lookup = analysis_data
-        .score_output
-        .as_ref()
-        .map(|o| &o.template_inherit_provenance);
-    append_component_rollup_findings(
-        &mut findings,
-        template_owner_lookup,
+    let HealthFindingsData {
+        findings,
+        files_analyzed,
+        total_functions,
+        complexity_ms,
+        total_above_threshold,
+        sev_critical,
+        sev_high,
+        sev_moderate,
+        loaded_baseline,
+    } = prepare_health_findings(
+        opts,
+        &config,
+        &modules,
+        &file_paths,
+        &ignore_set,
+        changed_files.as_ref(),
+        ws_roots.as_deref(),
+        diff_index,
         max_cyclomatic,
         max_cognitive,
-    );
-
-    if let Some(diff_index) = diff_index {
-        filter_complexity_findings_by_diff(&mut findings, diff_index, &config.root);
-    }
-
-    sort_findings(&mut findings, &opts.sort);
-    let total_above_threshold = findings.len();
-    let (sev_critical, sev_high, sev_moderate) = count_finding_severities(&findings);
-
-    let loaded_baseline = apply_health_baseline_and_top(opts, &config, &mut findings)?;
+        max_crap,
+        enforce_crap,
+        analysis_data.score_output.as_ref(),
+    )?;
 
     let candidate_paths = collect_candidate_paths(
         &files,
@@ -585,6 +556,18 @@ struct HealthCoverageSettings {
     istanbul_coverage: Option<scoring::IstanbulCoverage>,
 }
 
+struct HealthFindingsData {
+    findings: Vec<ComplexityViolation>,
+    files_analyzed: usize,
+    total_functions: usize,
+    complexity_ms: f64,
+    total_above_threshold: usize,
+    sev_critical: usize,
+    sev_high: usize,
+    sev_moderate: usize,
+    loaded_baseline: Option<HealthBaselineData>,
+}
+
 struct HealthTimingInput {
     config_ms: f64,
     discover_ms: f64,
@@ -598,6 +581,145 @@ struct HealthTimingInput {
     duplication_ms: f64,
     targets_ms: f64,
     shared_parse: bool,
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "finding preparation applies the active health scope and optional scoring data"
+)]
+fn prepare_health_findings(
+    opts: &HealthOptions<'_>,
+    config: &ResolvedConfig,
+    modules: &[fallow_core::extract::ModuleInfo],
+    file_paths: &rustc_hash::FxHashMap<fallow_core::discover::FileId, &std::path::PathBuf>,
+    ignore_set: &globset::GlobSet,
+    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&[std::path::PathBuf]>,
+    diff_index: Option<&crate::report::ci::diff_filter::DiffIndex>,
+    max_cyclomatic: u16,
+    max_cognitive: u16,
+    max_crap: f64,
+    enforce_crap: bool,
+    score_output: Option<&scoring::FileScoreOutput>,
+) -> Result<HealthFindingsData, ExitCode> {
+    let t = Instant::now();
+    let (mut findings, files_analyzed, total_functions) = collect_findings(
+        modules,
+        file_paths,
+        &config.root,
+        ignore_set,
+        changed_files,
+        ws_roots,
+        max_cyclomatic,
+        max_cognitive,
+        opts.complexity_breakdown,
+    );
+    let complexity_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+    apply_optional_crap_findings(
+        opts,
+        &mut findings,
+        &HealthCrapMergeContext {
+            modules,
+            file_paths,
+            ignore_set,
+            changed_files,
+            ws_roots,
+            max_cyclomatic,
+            max_cognitive,
+            max_crap,
+            enforce_crap,
+            score_output,
+            config_root: &config.root,
+        },
+    );
+    let (total_above_threshold, sev_critical, sev_high, sev_moderate, loaded_baseline) =
+        finalize_health_findings(opts, config, &mut findings, diff_index)?;
+
+    Ok(HealthFindingsData {
+        findings,
+        files_analyzed,
+        total_functions,
+        complexity_ms,
+        total_above_threshold,
+        sev_critical,
+        sev_high,
+        sev_moderate,
+        loaded_baseline,
+    })
+}
+
+struct HealthCrapMergeContext<'a> {
+    modules: &'a [fallow_core::extract::ModuleInfo],
+    file_paths: &'a rustc_hash::FxHashMap<fallow_core::discover::FileId, &'a std::path::PathBuf>,
+    ignore_set: &'a globset::GlobSet,
+    changed_files: Option<&'a rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&'a [std::path::PathBuf]>,
+    max_cyclomatic: u16,
+    max_cognitive: u16,
+    max_crap: f64,
+    enforce_crap: bool,
+    score_output: Option<&'a scoring::FileScoreOutput>,
+    config_root: &'a std::path::Path,
+}
+
+fn apply_optional_crap_findings(
+    opts: &HealthOptions<'_>,
+    findings: &mut Vec<ComplexityViolation>,
+    ctx: &HealthCrapMergeContext<'_>,
+) {
+    if ctx.enforce_crap
+        && let Some(score_out) = ctx.score_output
+    {
+        merge_crap_findings(
+            findings,
+            &CrapFindingMergeInput {
+                modules: ctx.modules,
+                file_paths: ctx.file_paths,
+                config_root: ctx.config_root,
+                ignore_set: ctx.ignore_set,
+                changed_files: ctx.changed_files,
+                ws_roots: ctx.ws_roots,
+                per_function_crap: &score_out.per_function_crap,
+                template_inherit_provenance: &score_out.template_inherit_provenance,
+                max_crap: ctx.max_crap,
+                max_cyclomatic: ctx.max_cyclomatic,
+                max_cognitive: ctx.max_cognitive,
+                complexity_breakdown: opts.complexity_breakdown,
+            },
+        );
+    }
+    append_component_rollup_findings(
+        findings,
+        ctx.score_output
+            .map(|output| &output.template_inherit_provenance),
+        ctx.max_cyclomatic,
+        ctx.max_cognitive,
+    );
+}
+
+type HealthFindingFinalizeResult = (usize, usize, usize, usize, Option<HealthBaselineData>);
+
+fn finalize_health_findings(
+    opts: &HealthOptions<'_>,
+    config: &ResolvedConfig,
+    findings: &mut Vec<ComplexityViolation>,
+    diff_index: Option<&crate::report::ci::diff_filter::DiffIndex>,
+) -> Result<HealthFindingFinalizeResult, ExitCode> {
+    if let Some(diff_index) = diff_index {
+        filter_complexity_findings_by_diff(findings, diff_index, &config.root);
+    }
+    sort_findings(findings, &opts.sort);
+    let total_above_threshold = findings.len();
+    let (sev_critical, sev_high, sev_moderate) = count_finding_severities(findings);
+    let loaded_baseline = apply_health_baseline_and_top(opts, config, findings)?;
+    Ok((
+        total_above_threshold,
+        sev_critical,
+        sev_high,
+        sev_moderate,
+        loaded_baseline,
+    ))
 }
 
 fn build_health_timings(

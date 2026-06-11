@@ -222,14 +222,62 @@ pub struct CheckResult {
     pub shared_parse: Option<crate::health::SharedParseData>,
 }
 
-/// Run analysis, filtering, and baseline handling. Returns results without printing.
-#[expect(
-    clippy::too_many_lines,
-    reason = "orchestration function: analysis + filtering + baseline + regression; split candidate"
-)]
-pub fn execute_check(opts: &CheckOptions<'_>) -> Result<CheckResult, ExitCode> {
-    let start = Instant::now();
+struct CheckAnalysisData {
+    results: AnalysisResults,
+    trace_graph: Option<fallow_core::graph::ModuleGraph>,
+    trace_timings: Option<fallow_core::trace::PipelineTimings>,
+    retained_modules: Option<Vec<fallow_core::extract::ModuleInfo>>,
+    retained_files: Option<Vec<fallow_core::discover::DiscoveredFile>>,
+    script_used_packages: rustc_hash::FxHashSet<String>,
+}
 
+#[expect(
+    deprecated,
+    reason = "ADR-008 deprecates fallow_core::analyze* externally; the CLI still uses the workspace path dependency"
+)]
+fn run_check_analysis(
+    opts: &CheckOptions<'_>,
+    config: &ResolvedConfig,
+) -> Result<CheckAnalysisData, ExitCode> {
+    if opts.retain_modules_for_health {
+        return fallow_core::analyze_retaining_modules(config, true, true)
+            .map(|output| CheckAnalysisData {
+                results: output.results,
+                trace_graph: output.graph,
+                trace_timings: output.timings,
+                retained_modules: output.modules,
+                retained_files: output.files,
+                script_used_packages: output.script_used_packages,
+            })
+            .map_err(|e| emit_error(&format!("Analysis error: {e}"), 2, opts.output));
+    }
+
+    if opts.trace_opts.any_active() {
+        return fallow_core::analyze_with_trace(config)
+            .map(|output| CheckAnalysisData {
+                results: output.results,
+                trace_graph: output.graph,
+                trace_timings: output.timings,
+                retained_modules: None,
+                retained_files: None,
+                script_used_packages: output.script_used_packages,
+            })
+            .map_err(|e| emit_error(&format!("Analysis error: {e}"), 2, opts.output));
+    }
+
+    fallow_core::analyze(config)
+        .map(|results| CheckAnalysisData {
+            results,
+            trace_graph: None,
+            trace_timings: None,
+            retained_modules: None,
+            retained_files: None,
+            script_used_packages: rustc_hash::FxHashSet::default(),
+        })
+        .map_err(|e| emit_error(&format!("Analysis error: {e}"), 2, opts.output))
+}
+
+fn prepare_check_config(opts: &CheckOptions<'_>) -> Result<ResolvedConfig, ExitCode> {
     let mut config = load_config_for_analysis(
         opts.root,
         opts.config_path,
@@ -241,12 +289,190 @@ pub fn execute_check(opts: &CheckOptions<'_>) -> Result<CheckResult, ExitCode> {
         opts.quiet,
         fallow_config::ProductionAnalysis::DeadCode,
     )?;
-
     if opts.include_entry_exports {
         config.include_entry_exports = true;
     }
-
     opts.filters.activate_explicit_opt_ins(&mut config.rules);
+    Ok(config)
+}
+
+fn handle_trace_side_effects(
+    opts: &CheckOptions<'_>,
+    config: &ResolvedConfig,
+    trace_graph: Option<&fallow_core::graph::ModuleGraph>,
+    trace_timings: Option<&fallow_core::trace::PipelineTimings>,
+    script_used_packages: &rustc_hash::FxHashSet<String>,
+) -> Result<(), ExitCode> {
+    if let Some(timings) = trace_timings
+        && opts.trace_opts.performance
+        && !opts.defer_performance
+    {
+        report::print_performance(timings, config.output);
+    }
+    if let Some(graph) = trace_graph {
+        crate::telemetry::note_graph_structure(graph);
+        if let Some(code) = output::handle_trace_output(
+            graph,
+            opts.trace_opts,
+            &config.root,
+            config.output,
+            script_used_packages,
+        ) {
+            return Err(code);
+        }
+    }
+    Ok(())
+}
+
+fn apply_scope_filters(
+    opts: &CheckOptions<'_>,
+    results: &mut AnalysisResults,
+    ws_roots: Option<&Vec<std::path::PathBuf>>,
+    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
+) {
+    if let Some(ws_roots) = ws_roots {
+        filtering::filter_to_workspaces(results, ws_roots);
+    }
+    if let Some(changed) = changed_files {
+        filtering::filter_changed_files(results, changed);
+    }
+    let diff_index = match opts.diff_index {
+        Some(index) => Some(index),
+        None if opts.use_shared_diff_index => crate::report::ci::diff_filter::shared_diff_index(),
+        None => None,
+    };
+    if let Some(diff_index) = diff_index {
+        filtering::filter_results_by_diff(results, diff_index, opts.root);
+    }
+}
+
+fn apply_rules_and_filters(
+    opts: &CheckOptions<'_>,
+    config: &ResolvedConfig,
+    results: &mut AnalysisResults,
+) {
+    rules::apply_rules(results, config);
+    if opts.fail_on_issues {
+        rules::promote_policy_finding_warns(results);
+    }
+    opts.filters.apply(results);
+}
+
+fn apply_file_filter(opts: &CheckOptions<'_>, results: &mut AnalysisResults) {
+    if opts.file.is_empty() {
+        return;
+    }
+    let file_set: rustc_hash::FxHashSet<std::path::PathBuf> = opts
+        .file
+        .iter()
+        .map(|path| {
+            if crate::path_util::is_absolute_path_any_platform(path) {
+                path.clone()
+            } else {
+                opts.root.join(path)
+            }
+        })
+        .collect();
+    for (original, resolved) in opts.file.iter().zip(file_set.iter()) {
+        if !resolved.exists() {
+            eprintln!(
+                "Warning: --file '{}' (resolved to '{}') was not found in the project",
+                original.display(),
+                resolved.display()
+            );
+        }
+    }
+    filtering::filter_changed_files(results, &file_set);
+    results.unused_dependencies.clear();
+    results.unused_dev_dependencies.clear();
+    results.unused_optional_dependencies.clear();
+    results.type_only_dependencies.clear();
+    results.test_only_dependencies.clear();
+}
+
+fn warn_scoped_regression_save(opts: &CheckOptions<'_>) {
+    if matches!(
+        opts.regression_opts.save_target,
+        regression::SaveRegressionTarget::None
+    ) || !opts.regression_opts.scoped
+    {
+        return;
+    }
+    eprintln!(
+        "Warning: saving regression baseline with --changed-since, --workspace, or \
+         --changed-workspaces active. The baseline will reflect only scoped results, \
+         not the full project."
+    );
+}
+
+fn save_check_regression_baseline(
+    opts: &CheckOptions<'_>,
+    results: &AnalysisResults,
+) -> Result<Option<regression::CheckCounts>, ExitCode> {
+    let counts = match opts.regression_opts.save_target {
+        regression::SaveRegressionTarget::None => return Ok(None),
+        regression::SaveRegressionTarget::File(save_path) => {
+            let counts = regression::CheckCounts::from_results(results);
+            regression::save_regression_baseline(
+                save_path,
+                opts.root,
+                Some(&counts),
+                None,
+                opts.output,
+            )?;
+            counts
+        }
+        regression::SaveRegressionTarget::Config => {
+            let counts = regression::CheckCounts::from_results(results);
+            let config_path = regression_config_path(opts);
+            regression::save_baseline_to_config(&config_path, &counts, opts.output)?;
+            counts
+        }
+    };
+    Ok(Some(counts))
+}
+
+fn regression_config_path(opts: &CheckOptions<'_>) -> std::path::PathBuf {
+    opts.config_path.as_ref().map_or_else(
+        || {
+            fallow_config::FallowConfig::find_config_path(opts.root)
+                .unwrap_or_else(|| opts.root.join(".fallowrc.json"))
+        },
+        Clone::clone,
+    )
+}
+
+fn build_shared_parse_data(
+    results: &AnalysisResults,
+    trace_graph: Option<fallow_core::graph::ModuleGraph>,
+    retained_modules: Option<Vec<fallow_core::extract::ModuleInfo>>,
+    retained_files: Option<Vec<fallow_core::discover::DiscoveredFile>>,
+    script_used_packages: &rustc_hash::FxHashSet<String>,
+) -> Option<crate::health::SharedParseData> {
+    let (Some(modules), Some(files)) = (retained_modules, retained_files) else {
+        return None;
+    };
+    let analysis_output = trace_graph.map(|graph| fallow_core::AnalysisOutput {
+        results: results.clone(),
+        timings: None,
+        graph: Some(graph),
+        modules: None,
+        files: None,
+        script_used_packages: script_used_packages.clone(),
+        file_hashes: rustc_hash::FxHashMap::default(),
+    });
+    Some(crate::health::SharedParseData {
+        files,
+        modules,
+        analysis_output,
+    })
+}
+
+/// Run analysis, filtering, and baseline handling. Returns results without printing.
+pub fn execute_check(opts: &CheckOptions<'_>) -> Result<CheckResult, ExitCode> {
+    let start = Instant::now();
+
+    let config = prepare_check_config(opts)?;
 
     let ws_roots = filtering::resolve_workspace_scope(
         opts.root,
@@ -259,131 +485,33 @@ pub fn execute_check(opts: &CheckOptions<'_>) -> Result<CheckResult, ExitCode> {
         .changed_since
         .and_then(|git_ref| filtering::get_changed_files(opts.root, git_ref));
 
-    let use_trace = opts.trace_opts.any_active();
-    #[expect(
-        deprecated,
-        reason = "ADR-008 deprecates fallow_core::analyze* externally; the CLI still uses the workspace path dependency"
-    )]
-    let (
+    let CheckAnalysisData {
         mut results,
         trace_graph,
         trace_timings,
         retained_modules,
         retained_files,
         script_used_packages,
-    ) = if opts.retain_modules_for_health {
-        match fallow_core::analyze_retaining_modules(&config, true, true) {
-            Ok(output) => (
-                output.results,
-                output.graph,
-                output.timings,
-                output.modules,
-                output.files,
-                output.script_used_packages,
-            ),
-            Err(e) => {
-                return Err(emit_error(&format!("Analysis error: {e}"), 2, opts.output));
-            }
-        }
-    } else if use_trace {
-        match fallow_core::analyze_with_trace(&config) {
-            Ok(output) => (
-                output.results,
-                output.graph,
-                output.timings,
-                None,
-                None,
-                output.script_used_packages,
-            ),
-            Err(e) => {
-                return Err(emit_error(&format!("Analysis error: {e}"), 2, opts.output));
-            }
-        }
-    } else {
-        match fallow_core::analyze(&config) {
-            Ok(r) => (r, None, None, None, None, rustc_hash::FxHashSet::default()),
-            Err(e) => {
-                return Err(emit_error(&format!("Analysis error: {e}"), 2, opts.output));
-            }
-        }
-    };
+    } = run_check_analysis(opts, &config)?;
     let elapsed = start.elapsed();
 
-    if let Some(ref timings) = trace_timings
-        && opts.trace_opts.performance
-        && !opts.defer_performance
-    {
-        report::print_performance(timings, config.output);
-    }
+    handle_trace_side_effects(
+        opts,
+        &config,
+        trace_graph.as_ref(),
+        trace_timings.as_ref(),
+        &script_used_packages,
+    )?;
 
-    if let Some(ref graph) = trace_graph {
-        crate::telemetry::note_graph_structure(graph);
-    }
+    apply_scope_filters(
+        opts,
+        &mut results,
+        ws_roots.as_ref(),
+        changed_files.as_ref(),
+    );
+    apply_file_filter(opts, &mut results);
 
-    if let Some(ref graph) = trace_graph
-        && let Some(code) = output::handle_trace_output(
-            graph,
-            opts.trace_opts,
-            &config.root,
-            config.output,
-            &script_used_packages,
-        )
-    {
-        return Err(code);
-    }
-
-    if let Some(ref ws_roots) = ws_roots {
-        filtering::filter_to_workspaces(&mut results, ws_roots);
-    }
-
-    if let Some(ref changed) = changed_files {
-        filtering::filter_changed_files(&mut results, changed);
-    }
-
-    if let Some(diff_index) = match opts.diff_index {
-        Some(index) => Some(index),
-        None if opts.use_shared_diff_index => crate::report::ci::diff_filter::shared_diff_index(),
-        None => None,
-    } {
-        filtering::filter_results_by_diff(&mut results, diff_index, opts.root);
-    }
-
-    if !opts.file.is_empty() {
-        let file_set: rustc_hash::FxHashSet<std::path::PathBuf> = opts
-            .file
-            .iter()
-            .map(|p| {
-                if crate::path_util::is_absolute_path_any_platform(p) {
-                    p.clone()
-                } else {
-                    opts.root.join(p)
-                }
-            })
-            .collect();
-        for (original, resolved) in opts.file.iter().zip(file_set.iter()) {
-            if !resolved.exists() {
-                eprintln!(
-                    "Warning: --file '{}' (resolved to '{}') was not found in the project",
-                    original.display(),
-                    resolved.display()
-                );
-            }
-        }
-        filtering::filter_changed_files(&mut results, &file_set);
-        results.unused_dependencies.clear();
-        results.unused_dev_dependencies.clear();
-        results.unused_optional_dependencies.clear();
-        results.type_only_dependencies.clear();
-        results.test_only_dependencies.clear();
-    }
-
-    rules::apply_rules(&mut results, &config);
-
-    if opts.fail_on_issues {
-        rules::promote_policy_finding_warns(&mut results);
-    }
-
-    opts.filters.apply(&mut results);
+    apply_rules_and_filters(opts, &config, &mut results);
 
     let baseline_matched = handle_baseline(
         &mut results,
@@ -394,44 +522,9 @@ pub fn execute_check(opts: &CheckOptions<'_>) -> Result<CheckResult, ExitCode> {
         opts.output,
     )?;
 
-    if !matches!(
-        opts.regression_opts.save_target,
-        regression::SaveRegressionTarget::None
-    ) && opts.regression_opts.scoped
-    {
-        eprintln!(
-            "Warning: saving regression baseline with --changed-since, --workspace, or \
-             --changed-workspaces active. The baseline will reflect only scoped results, \
-             not the full project."
-        );
-    }
+    warn_scoped_regression_save(opts);
 
-    let just_saved_baseline = match opts.regression_opts.save_target {
-        regression::SaveRegressionTarget::File(save_path) => {
-            let counts = regression::CheckCounts::from_results(&results);
-            regression::save_regression_baseline(
-                save_path,
-                opts.root,
-                Some(&counts),
-                None,
-                opts.output,
-            )?;
-            Some(counts)
-        }
-        regression::SaveRegressionTarget::Config => {
-            let counts = regression::CheckCounts::from_results(&results);
-            let config_path = opts.config_path.as_ref().map_or_else(
-                || {
-                    fallow_config::FallowConfig::find_config_path(opts.root)
-                        .unwrap_or_else(|| opts.root.join(".fallowrc.json"))
-                },
-                |explicit| explicit.clone(),
-            );
-            regression::save_baseline_to_config(&config_path, &counts, opts.output)?;
-            Some(counts)
-        }
-        regression::SaveRegressionTarget::None => None,
-    };
+    let just_saved_baseline = save_check_regression_baseline(opts, &results)?;
 
     let config_baseline_ref = just_saved_baseline
         .as_ref()
@@ -446,25 +539,13 @@ pub fn execute_check(opts: &CheckOptions<'_>) -> Result<CheckResult, ExitCode> {
         output::write_sarif_file(&results, &config, sarif_path, opts.quiet);
     }
 
-    let shared_parse = match (retained_modules, retained_files) {
-        (Some(modules), Some(files)) => {
-            let analysis_output = trace_graph.map(|graph| fallow_core::AnalysisOutput {
-                results: results.clone(),
-                timings: None,
-                graph: Some(graph),
-                modules: None,
-                files: None,
-                script_used_packages: script_used_packages.clone(),
-                file_hashes: rustc_hash::FxHashMap::default(),
-            });
-            Some(crate::health::SharedParseData {
-                files,
-                modules,
-                analysis_output,
-            })
-        }
-        _ => None,
-    };
+    let shared_parse = build_shared_parse_data(
+        &results,
+        trace_graph,
+        retained_modules,
+        retained_files,
+        &script_used_packages,
+    );
 
     let config_fixable = crate::fix::is_config_fixable(opts.root, opts.config_path.as_ref());
 
