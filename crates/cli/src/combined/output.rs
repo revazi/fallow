@@ -171,21 +171,6 @@ fn print_human_sections(
         }
     }
 
-    // First-contact setup hint: prose counterpart of the `setup` next-step.
-    // Deliberately NOT TTY-gated (agents reading piped human output are a
-    // primary audience); CI, pipeline redirection, quiet mode, configured
-    // projects, and a recorded decline all suppress it.
-    if show_headers
-        && has_any_findings
-        && !opts.quiet
-        && !crate::report::sink::is_redirected()
-        && crate::report::suggestions::suggestions_enabled()
-        && crate::report::suggestions::setup_pointer_applicable(opts.root)
-    {
-        println!("{}", crate::report::suggestions::SETUP_HINT.dimmed());
-        println!();
-    }
-
     if let Some(result) = check_result {
         if show_headers {
             eprintln!();
@@ -324,6 +309,19 @@ fn print_failure_summary(
             })
             .unwrap_or_default();
         eprintln!("\nFailed: {}{nudge}", parts.join(", "));
+
+        // First-contact setup hint: prose counterpart of the `setup`
+        // next-step, printed after the failure summary so it is the last
+        // thing a human reads on a big first run instead of scrolling away
+        // with the header. Deliberately not TTY-gated (agents reading piped
+        // human output are a primary audience); quiet is gated by the caller,
+        // and CI, configured projects, suggestions off, and a recorded
+        // decline (`fallow init --decline`) suppress it here.
+        if crate::report::suggestions::suggestions_enabled()
+            && crate::report::suggestions::setup_pointer_applicable(root)
+        {
+            eprintln!("{}", crate::report::suggestions::SETUP_HINT.dimmed());
+        }
     }
 }
 
