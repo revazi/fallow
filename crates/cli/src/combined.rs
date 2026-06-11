@@ -1021,18 +1021,73 @@ fn print_orientation_header(
     check: Option<&CheckResult>,
     root: &std::path::Path,
 ) {
-    let mut score_lines: Vec<String> = Vec::new();
-    report::render_health_score(&mut score_lines, &health.report);
-    report::render_health_trend(&mut score_lines, &health.report);
-    let rendered_score = !score_lines.is_empty();
-    for line in &score_lines {
-        eprintln!("{line}");
+    OrientationHeader {
+        health,
+        check,
+        root,
+    }
+    .print();
+}
+
+struct OrientationHeader<'a> {
+    health: &'a HealthResult,
+    check: Option<&'a CheckResult>,
+    root: &'a std::path::Path,
+}
+
+impl OrientationHeader<'_> {
+    fn print(&self) {
+        let rendered_score = self.print_score();
+        self.print_vital_signs(rendered_score);
+        self.print_scope();
+        if let Some(result) = self.check {
+            print_entry_point_summary(&result.results);
+        }
+        self.print_target_hint();
     }
 
-    if let Some(ref vs) = health.report.vital_signs
-        && health.report.health_trend.is_none()
-    {
+    fn print_score(&self) -> bool {
+        let mut score_lines: Vec<String> = Vec::new();
+        report::render_health_score(&mut score_lines, &self.health.report);
+        report::render_health_trend(&mut score_lines, &self.health.report);
+        let rendered_score = !score_lines.is_empty();
+        for line in &score_lines {
+            eprintln!("{line}");
+        }
+        rendered_score
+    }
+
+    fn print_vital_signs(&self, rendered_score: bool) {
+        let Some(ref vs) = self.health.report.vital_signs else {
+            return;
+        };
+        if self.health.report.health_trend.is_some() {
+            return;
+        }
+
+        let parts = Self::vital_sign_parts(vs);
+        if !parts.is_empty() {
+            if !rendered_score {
+                eprintln!();
+            }
+            eprintln!(
+                "{} {} {}",
+                "\u{25a0}".dimmed(),
+                "Metrics:".dimmed(),
+                parts.join(" \u{00b7} ").dimmed()
+            );
+        }
+    }
+
+    fn vital_sign_parts(vs: &crate::health_types::VitalSigns) -> Vec<String> {
         let mut parts = Vec::new();
+        Self::push_dead_code_parts(vs, &mut parts);
+        Self::push_maintainability_part(vs, &mut parts);
+        Self::push_risk_parts(vs, &mut parts);
+        parts
+    }
+
+    fn push_dead_code_parts(vs: &crate::health_types::VitalSigns, parts: &mut Vec<String>) {
         if let Some(dfp) = vs.dead_file_pct {
             if let Some(ref c) = vs.counts {
                 parts.push(format!(
@@ -1053,6 +1108,9 @@ fn print_orientation_header(
                 parts.push(format!("dead exports {dep:.1}%"));
             }
         }
+    }
+
+    fn push_maintainability_part(vs: &crate::health_types::VitalSigns, parts: &mut Vec<String>) {
         if let Some(mi) = vs.maintainability_avg {
             let label = if mi >= 85.0 {
                 "good"
@@ -1063,6 +1121,9 @@ fn print_orientation_header(
             };
             parts.push(format!("MI {mi:.1} ({label})"));
         }
+    }
+
+    fn push_risk_parts(vs: &crate::health_types::VitalSigns, parts: &mut Vec<String>) {
         if let Some(hc) = vs.hotspot_count
             && hc > 0
         {
@@ -1083,23 +1144,16 @@ fn print_orientation_header(
                 }
             ));
         }
-        if !parts.is_empty() {
-            if !rendered_score {
-                eprintln!();
-            }
-            eprintln!(
-                "{} {} {}",
-                "\u{25a0}".dimmed(),
-                "Metrics:".dimmed(),
-                parts.join(" \u{00b7} ").dimmed()
-            );
-        }
     }
 
-    let files = health.report.summary.files_analyzed;
-    let config = check.map_or(&health.config, |c| &c.config);
-    let plugin_count = config.external_plugins.len();
-    if files > 0 {
+    fn print_scope(&self) {
+        let files = self.health.report.summary.files_analyzed;
+        if files == 0 {
+            return;
+        }
+
+        let config = self.check.map_or(&self.health.config, |c| &c.config);
+        let plugin_count = config.external_plugins.len();
         use std::fmt::Write as _;
         let mut scope = format!("  {files} files analyzed");
         if plugin_count > 0 {
@@ -1122,14 +1176,13 @@ fn print_orientation_header(
         eprintln!("{}", scope.dimmed());
     }
 
-    if let Some(result) = check {
-        print_entry_point_summary(&result.results);
-    }
+    fn print_target_hint(&self) {
+        if self.health.report.targets.is_empty() {
+            return;
+        }
 
-    if !health.report.targets.is_empty() {
-        let target_count = health.report.targets.len();
-        let total_issues = check.map_or(0, |c| c.results.total_issues());
-
+        let target_count = self.health.report.targets.len();
+        let total_issues = self.check.map_or(0, |c| c.results.total_issues());
         if total_issues > 500 {
             eprintln!(
                 "{}",
@@ -1139,13 +1192,14 @@ fn print_orientation_header(
                 )
                 .dimmed()
             );
-        } else if let Some(top) = health
+        } else if let Some(top) = self
+            .health
             .report
             .targets
             .iter()
             .find(|t| !is_test_path(&t.path))
         {
-            let file_name = report::format_display_path(&top.path, root);
+            let file_name = report::format_display_path(&top.path, self.root);
             eprintln!(
                 "{}",
                 format!(
