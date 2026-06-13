@@ -67,7 +67,7 @@ Duplicate-code findings can span many lines and drown out TypeScript / ESLint di
 - The four commands above; bind a keyboard shortcut to `fallow.toggleMuteDuplicates` for one-keystroke noise control.
 - The Fallow language status item (right gutter of the status bar) appears with a yellow indicator whenever anything is muted; click it to open the manage picker.
 
-Mute state is stored in the workspace, so it survives reload but does not bleed across projects. Precedence: rules in your `fallow.config.json` and the `fallow.issueTypes` setting take effect server-side; muting is a **local view filter only**, applied client-side. CI and `fallow check` still report every finding.
+Mute state is stored in the workspace, so it survives reload but does not bleed across projects. Precedence: rules in your `fallow.config.json` and the `fallow.issueTypes` setting take effect server-side; muting is a **local view filter only**, applied client-side. CI and `fallow dead-code` still report every finding.
 
 ## Settings
 
