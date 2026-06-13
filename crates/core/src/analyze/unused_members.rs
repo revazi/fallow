@@ -1748,7 +1748,7 @@ pub fn find_unused_members(
     user_class_member_allowlist: &[UsedClassMemberRule],
     ignore_decorators: &[String],
 ) -> (Vec<UnusedMember>, Vec<UnusedMember>) {
-    find_unused_members_with_public_api_entry_points(
+    let results = find_unused_members_with_public_api_entry_points(
         graph,
         resolved_modules,
         modules,
@@ -1757,12 +1757,34 @@ pub fn find_unused_members(
         user_class_member_allowlist,
         ignore_decorators,
         &FxHashSet::default(),
-    )
+    );
+    (results.enum_members, results.class_members)
+}
+
+/// Cross-file member-usage detection results, split by member kind. Store
+/// members (Pinia `state` / `getters` / `actions` key, or a setup-store
+/// returned key) are reported separately from enum and class members because
+/// they default to `warn` (open declaration set) rather than `error`.
+#[expect(
+    clippy::struct_field_names,
+    reason = "the `_members` suffix names the member kind and reads clearly at call sites"
+)]
+pub struct UnusedMemberResults {
+    /// Unused TypeScript enum members.
+    pub enum_members: Vec<UnusedMember>,
+    /// Unused class methods / properties.
+    pub class_members: Vec<UnusedMember>,
+    /// Unused store members (Pinia stores).
+    pub store_members: Vec<UnusedMember>,
 }
 
 #[expect(
     clippy::too_many_arguments,
     reason = "member tracking requires many graph traversal steps; further splitting is possible but not yet a priority"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the per-module member scan is a single cohesive pass; the propagation setup above it dominates the line count"
 )]
 pub(super) fn find_unused_members_with_public_api_entry_points(
     graph: &ModuleGraph,
@@ -1773,9 +1795,10 @@ pub(super) fn find_unused_members_with_public_api_entry_points(
     user_class_member_allowlist: &[UsedClassMemberRule],
     ignore_decorators: &[String],
     public_api_entry_points: &FxHashSet<FileId>,
-) -> (Vec<UnusedMember>, Vec<UnusedMember>) {
+) -> UnusedMemberResults {
     let mut unused_enum_members = Vec::new();
     let mut unused_class_members = Vec::new();
+    let mut unused_store_members = Vec::new();
     let allowlist = ClassMemberAllowlist::from_rules(user_class_member_allowlist);
     let ignore_decorators = IgnoreDecoratorSet::from_config(ignore_decorators);
 
@@ -1837,19 +1860,42 @@ pub(super) fn find_unused_members_with_public_api_entry_points(
         &heritage_context.class_heritage_by_export,
     );
 
-    let member_results: Vec<(Vec<UnusedMember>, Vec<UnusedMember>)> = graph
+    let member_results: Vec<(Vec<UnusedMember>, Vec<UnusedMember>, Vec<UnusedMember>)> = graph
         .modules
         .par_iter()
         .map(|module| {
             let mut unused_enum_members = Vec::new();
             let mut unused_class_members = Vec::new();
+            let mut unused_store_members = Vec::new();
 
-            if !module.is_reachable() || module.is_entry_point() {
-                return (unused_enum_members, unused_class_members);
+            if !module.is_reachable() {
+                return (
+                    unused_enum_members,
+                    unused_class_members,
+                    unused_store_members,
+                );
             }
+            // Entry-point modules skip enum/class member detection (their
+            // exports are public API), but a Pinia store member is dead when no
+            // CONSUMER accesses it regardless of the module's entry-point status:
+            // a monorepo shared-store package (`packages/stores`) is an entry
+            // boundary yet its members are app-internal, not a published API.
+            // So scan such modules in STORE-ONLY mode (consumers across the
+            // project still credit used members; a member consumed only outside
+            // the analyzed scope is the rare published-store-library case, gated
+            // by the pinia dependency and reported at `warn`).
+            let store_only_scan = module.is_entry_point();
 
             for export in &module.exports {
                 if should_skip_export_member_scan(graph, module, export) {
+                    continue;
+                }
+                if store_only_scan
+                    && !export
+                        .members
+                        .iter()
+                        .any(|m| m.kind == MemberKind::StoreMember)
+                {
                     continue;
                 }
 
@@ -1877,6 +1923,11 @@ pub(super) fn find_unused_members_with_public_api_entry_points(
                 let file_self_accesses = self_accessed_members.get(&module.file_id);
 
                 for member in &export.members {
+                    // In an entry-point module, only store members are scanned;
+                    // enum/class members keep their public-API skip.
+                    if store_only_scan && member.kind != MemberKind::StoreMember {
+                        continue;
+                    }
                     if should_skip_member_for_unused_report(
                         member,
                         &MemberSkipContext {
@@ -1910,24 +1961,34 @@ pub(super) fn find_unused_members_with_public_api_entry_points(
                         MemberKind::ClassMethod | MemberKind::ClassProperty => {
                             unused_class_members.push(unused);
                         }
+                        MemberKind::StoreMember => unused_store_members.push(unused),
                         MemberKind::NamespaceMember => unreachable!(),
                     }
                 }
             }
 
-            (unused_enum_members, unused_class_members)
+            (
+                unused_enum_members,
+                unused_class_members,
+                unused_store_members,
+            )
         })
         .collect();
 
-    for (enum_members, class_members) in member_results {
+    for (enum_members, class_members, store_members) in member_results {
         unused_enum_members.extend(enum_members);
         unused_class_members.extend(class_members);
+        unused_store_members.extend(store_members);
     }
 
     allowlist.warn_unmatched_patterns();
     ignore_decorators.warn_unmatched();
 
-    (unused_enum_members, unused_class_members)
+    UnusedMemberResults {
+        enum_members: unused_enum_members,
+        class_members: unused_class_members,
+        store_members: unused_store_members,
+    }
 }
 
 fn should_skip_export_member_scan(
@@ -1953,6 +2014,7 @@ fn build_unsuppressed_unused_member(
     let issue_kind = match member.kind {
         MemberKind::EnumMember => IssueKind::UnusedEnumMember,
         MemberKind::ClassMethod | MemberKind::ClassProperty => IssueKind::UnusedClassMember,
+        MemberKind::StoreMember => IssueKind::UnusedStoreMember,
         MemberKind::NamespaceMember => unreachable!(),
     };
     if suppressions.is_suppressed(file_id, line, issue_kind) {
@@ -1986,7 +2048,13 @@ fn should_skip_member_for_unused_report(member: &MemberInfo, ctx: &MemberSkipCon
         return true;
     }
 
-    if is_class_member_kind(member.kind)
+    // Intra-store self-access credit: an option-store getter/action consumed
+    // only by a sibling getter/action via `this.<member>` lands in the file's
+    // self-access set. Without this, a store member used solely inside its own
+    // store would be falsely flagged. Class members already credit this way;
+    // store members must too. (Setup stores do not use `this`; a returned key
+    // used only internally is a genuinely dead PUBLIC member.)
+    if (is_class_member_kind(member.kind) || matches!(member.kind, MemberKind::StoreMember))
         && ctx
             .file_self_accesses
             .is_some_and(|accesses| accesses.contains(&member.name))

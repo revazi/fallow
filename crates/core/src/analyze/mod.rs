@@ -45,7 +45,8 @@ use fallow_types::output_dead_code::{
     UnlistedDependencyFinding, UnresolvedCatalogReferenceFinding, UnresolvedImportFinding,
     UnusedCatalogEntryFinding, UnusedClassMemberFinding, UnusedDependencyFinding,
     UnusedDependencyOverrideFinding, UnusedDevDependencyFinding, UnusedEnumMemberFinding,
-    UnusedExportFinding, UnusedFileFinding, UnusedOptionalDependencyFinding, UnusedTypeFinding,
+    UnusedExportFinding, UnusedFileFinding, UnusedOptionalDependencyFinding,
+    UnusedStoreMemberFinding, UnusedTypeFinding,
 };
 
 use crate::results::{AnalysisResults, CircularDependency, CircularDependencyEdge};
@@ -658,6 +659,8 @@ pub fn find_dead_code_full(
         })
         .unwrap_or_default();
 
+    let declared_deps = collect_declared_dependency_names(config, pkg.as_ref(), workspaces);
+
     let mut results = run_parallel_dead_code_detectors(DeadCodeDetectorInput {
         graph,
         config,
@@ -673,12 +676,12 @@ pub fn find_dead_code_full(
         virtual_prefixes: &virtual_prefixes,
         generated_patterns: &generated_patterns,
         generated_type_prefixes: &generated_type_prefixes,
+        declared_deps: &declared_deps,
         collect_usages,
     });
 
     filter_public_workspace_results(config, workspaces, &mut results);
 
-    let declared_deps = collect_declared_dependency_names(config, pkg.as_ref(), workspaces);
     let request_receivers = config
         .security
         .request_receivers
@@ -846,6 +849,7 @@ struct DeadCodeDetectorInput<'a> {
     virtual_prefixes: &'a [&'a str],
     generated_patterns: &'a [&'a str],
     generated_type_prefixes: &'a [&'a str],
+    declared_deps: &'a FxHashSet<String>,
     collect_usages: bool,
 }
 
@@ -891,6 +895,7 @@ fn run_parallel_dead_code_detectors(input: DeadCodeDetectorInput<'_>) -> Analysi
         stale_suppressions: export_results.stale_suppressions,
         unused_enum_members: member_results.unused_enum_members,
         unused_class_members: member_results.unused_class_members,
+        unused_store_members: member_results.unused_store_members,
         unused_dependencies: dependency_results.unused_dependencies,
         unused_dev_dependencies: dependency_results.unused_dev_dependencies,
         unused_optional_dependencies: dependency_results.unused_optional_dependencies,
@@ -942,6 +947,7 @@ fn run_member_and_dependency_detectors(
                 input.line_offsets_by_file,
                 input.user_class_members,
                 input.public_api_entry_points,
+                input.declared_deps,
             )
         },
         || {
@@ -1421,15 +1427,23 @@ fn run_member_detectors(
     line_offsets_by_file: &LineOffsetsMap<'_>,
     user_class_members: &[fallow_config::UsedClassMemberRule],
     public_api_entry_points: &FxHashSet<FileId>,
+    declared_deps: &FxHashSet<String>,
 ) -> AnalysisResults {
     let mut results = AnalysisResults::default();
+    // Store-member detection activates only when Pinia is a declared dependency,
+    // so an unrelated user `defineStore`-named helper in a non-Pinia project
+    // never fires. The harvest is intentionally loose at extraction time; this
+    // is the activation boundary.
+    let store_members_active = config.rules.unused_store_members != Severity::Off
+        && (declared_deps.contains("pinia") || declared_deps.contains("@pinia/nuxt"));
     if config.rules.unused_enum_members == Severity::Off
         && config.rules.unused_class_members == Severity::Off
+        && !store_members_active
     {
         return results;
     }
 
-    let (enum_members, class_members) = find_unused_members_with_public_api_entry_points(
+    let member_results = find_unused_members_with_public_api_entry_points(
         graph,
         resolved_modules,
         modules,
@@ -1440,15 +1454,24 @@ fn run_member_detectors(
         public_api_entry_points,
     );
     if config.rules.unused_enum_members != Severity::Off {
-        results.unused_enum_members = enum_members
+        results.unused_enum_members = member_results
+            .enum_members
             .into_iter()
             .map(UnusedEnumMemberFinding::with_actions)
             .collect();
     }
     if config.rules.unused_class_members != Severity::Off {
-        results.unused_class_members = class_members
+        results.unused_class_members = member_results
+            .class_members
             .into_iter()
             .map(UnusedClassMemberFinding::with_actions)
+            .collect();
+    }
+    if store_members_active {
+        results.unused_store_members = member_results
+            .store_members
+            .into_iter()
+            .map(UnusedStoreMemberFinding::with_actions)
             .collect();
     }
     results
@@ -1732,6 +1755,7 @@ mod tests {
                 unused_optional_dependencies: Severity::Off,
                 unused_enum_members: Severity::Off,
                 unused_class_members: Severity::Off,
+                unused_store_members: Severity::Off,
                 unresolved_imports: Severity::Off,
                 unlisted_dependencies: Severity::Off,
                 duplicate_exports: Severity::Off,
