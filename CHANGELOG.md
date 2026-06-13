@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.96.0] - 2026-06-13
+
 ### Changed
 
 - **`fallow dupes` now ignores import declarations by default.** Token-identical sorted import blocks are a structural property of well-formatted code, not copy-paste, so they no longer surface as clone groups. `ignoreImports` (shipped opt-in in 2.33.0) now defaults to `true`. Opt out with `"ignoreImports": false` in config, `--no-ignore-imports` on `fallow dupes`, or `--dupes-no-ignore-imports` on bare `fallow`; the MCP `find_dupes` / `trace_clone` tools accept `ignore_imports: false`, and the VS Code `fallow.duplication.ignoreImports` setting now controls both directions. Scope: ES `import` declarations only; CommonJS `require()` calls and `export ... from` re-export blocks are still counted (extending coverage to those is queued as [#1225](https://github.com/fallow-rs/fallow/issues/1225)).
@@ -3017,7 +3019,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.95.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.96.0...HEAD
+[2.96.0]: https://github.com/fallow-rs/fallow/compare/v2.95.0...v2.96.0
 [2.95.0]: https://github.com/fallow-rs/fallow/compare/v2.94.0...v2.95.0
 [2.94.0]: https://github.com/fallow-rs/fallow/compare/v2.93.0...v2.94.0
 [2.93.0]: https://github.com/fallow-rs/fallow/compare/v2.92.1...v2.93.0
