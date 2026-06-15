@@ -545,6 +545,11 @@ struct CssTokenSets {
     populated_layers: rustc_hash::FxHashSet<String>,
     property_registrars: rustc_hash::FxHashMap<String, String>,
     layer_declarers: rustc_hash::FxHashMap<String, String>,
+    /// `@font-face`-declared families + referenced font families for cross-file
+    /// dead-web-font detection, with the first declaring file per family.
+    defined_font_faces: rustc_hash::FxHashSet<String>,
+    referenced_font_families: rustc_hash::FxHashSet<String>,
+    font_face_definers: rustc_hash::FxHashMap<String, String>,
 }
 
 impl CssTokenSets {
@@ -636,6 +641,15 @@ impl CssTokenSets {
             self.registered_custom_props.insert(name.clone());
             self.property_registrars
                 .entry(name.clone())
+                .or_insert_with(|| rel.to_owned());
+        }
+        for family in &analytics.referenced_font_families {
+            self.referenced_font_families.insert(family.clone());
+        }
+        for family in &analytics.defined_font_faces {
+            self.defined_font_faces.insert(family.clone());
+            self.font_face_definers
+                .entry(family.clone())
                 .or_insert_with(|| rel.to_owned());
         }
         for name in &analytics.populated_layers {
@@ -767,6 +781,135 @@ impl CssTokenSets {
         .collect();
         (unreferenced_keyframes, undefined_keyframes)
     }
+
+    /// `@font-face`-declared families referenced by no `font-family` anywhere in
+    /// the project: a dead web-font payload. Located at the declaring stylesheet,
+    /// set the summary count.
+    fn unused_font_faces(
+        &self,
+        summary: &mut crate::health_types::CssAnalyticsSummary,
+    ) -> Vec<crate::health_types::UnusedFontFace> {
+        use crate::health_types::{CssCandidateAction, UnusedFontFace};
+        // CSS font-family names are case-insensitive (CSS Fonts Level 4 4.2.1),
+        // unlike `@keyframes` custom-ident names (case-sensitive, via
+        // `locate_keyframe_diff`), so match case-insensitively while keeping the
+        // declared casing for both display and the verify command.
+        let referenced_lower: rustc_hash::FxHashSet<String> = self
+            .referenced_font_families
+            .iter()
+            .map(|family| family.to_ascii_lowercase())
+            .collect();
+        let mut out: Vec<UnusedFontFace> = self
+            .defined_font_faces
+            .iter()
+            .filter(|family| !referenced_lower.contains(&family.to_ascii_lowercase()))
+            .map(|family| UnusedFontFace {
+                actions: vec![CssCandidateAction::verify_unused_font_face(family)],
+                path: self
+                    .font_face_definers
+                    .get(family)
+                    .cloned()
+                    .unwrap_or_default(),
+                family: family.clone(),
+            })
+            .collect();
+        out.sort_by(|a, b| (&a.path, &a.family).cmp(&(&b.path, &b.family)));
+        summary.unused_font_faces = saturate_len(out.len());
+        out
+    }
+
+    /// Group the distinct `font-size` values by length unit (`px`/`rem`/`em`/`%`/
+    /// `pt`/other), set the `font_size_units_used` count, and, when the project
+    /// mixes two or more units across enough distinct sizes, return a
+    /// consistency candidate (mixing `px` and `rem` for type works against
+    /// user-zoom accessibility). Advisory only, never gated.
+    fn font_size_unit_mix(
+        &self,
+        summary: &mut crate::health_types::CssAnalyticsSummary,
+    ) -> Option<crate::health_types::CssNotationConsistency> {
+        use crate::health_types::{CssCandidateAction, CssNotationConsistency, CssNotationCount};
+
+        let mut counts: rustc_hash::FxHashMap<&'static str, u32> = rustc_hash::FxHashMap::default();
+        for value in &self.font_sizes {
+            if let Some(unit) = classify_font_size_unit(value) {
+                *counts.entry(unit).or_insert(0) += 1;
+            }
+        }
+        summary.font_size_units_used = saturate_len(counts.len());
+
+        // Conservative floor: at least two distinct units AND enough classified
+        // sizes that the project plainly has a type scale (so a tiny stylesheet
+        // with one px and one rem does not trip it). Smoke-tunable.
+        let total: u32 = counts.values().copied().sum();
+        if counts.len() < 2 || total < MIN_FONT_SIZE_UNIT_MIX {
+            return None;
+        }
+        let mut notations: Vec<CssNotationCount> = counts
+            .into_iter()
+            .map(|(notation, count)| CssNotationCount {
+                notation: notation.to_owned(),
+                count,
+            })
+            .collect();
+        // Dominant unit first; tie-break on the unit name for deterministic output.
+        notations.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| a.notation.cmp(&b.notation))
+        });
+        // Safe: the floor guard above guarantees at least two notations.
+        let dominant = notations[0].notation.clone();
+        Some(CssNotationConsistency {
+            actions: vec![CssCandidateAction::standardize_notation(
+                "Font sizes",
+                &dominant,
+            )],
+            axis: "Font sizes".to_owned(),
+            notations,
+        })
+    }
+}
+
+/// Fewest distinct unit-classified `font-size` values before a unit-mix candidate
+/// is worth surfacing. Below this the project does not yet have a type scale, so
+/// a px/rem split is noise rather than an inconsistency.
+const MIN_FONT_SIZE_UNIT_MIX: u32 = 6;
+
+/// Classify a `font-size` value's length unit for the unit-consistency
+/// candidate. Returns `None` for function values (`clamp()` / `calc()` /
+/// `min()` / `max()` / `var()`) and bare keywords (`medium`, `larger`,
+/// `inherit`), which carry no single comparable unit. Unit names are lowercased;
+/// recognized type units map to a stable label, anything else to `"other"`.
+fn classify_font_size_unit(value: &str) -> Option<&'static str> {
+    let v = value.trim();
+    if v.is_empty() || v.contains('(') {
+        return None;
+    }
+    if let Some(stripped) = v.strip_suffix('%') {
+        // A bare `%` font-size is `<number>%`; reject anything else (defensive).
+        return stripped
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.')
+            .then_some("%");
+    }
+    let unit_start = v.find(|c: char| c.is_ascii_alphabetic())?;
+    let (number, unit) = v.split_at(unit_start);
+    // A dimension is `<number><unit>`; a leading non-numeric prefix means a
+    // keyword (e.g. `medium`), which has no unit.
+    if number.is_empty()
+        || !number
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == '+')
+    {
+        return None;
+    }
+    match unit.to_ascii_lowercase().as_str() {
+        "px" => Some("px"),
+        "rem" => Some("rem"),
+        "em" => Some("em"),
+        "pt" => Some("pt"),
+        _ => Some("other"),
+    }
 }
 
 /// Build the sorted `(name, path)` set difference `present - absent`, locating
@@ -897,6 +1040,870 @@ fn scan_markup_tailwind_arbitrary_values(
     out
 }
 
+/// True for a byte that can appear inside a Tailwind class token (used to anchor
+/// the `animate-` prefix at a token boundary so `xanimate-` does not match).
+fn is_tailwind_class_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
+}
+
+/// Extract `@keyframes` names applied via Tailwind from one source string: the
+/// custom-ident after `animate-[<name>_...]` (arbitrary value, up to the first
+/// `_`/`]`) and after a bare `animate-<name>` utility. The `animate-` prefix must
+/// sit at a token boundary. Names are collected raw; the caller filters them to
+/// actually-defined keyframes.
+fn collect_animate_keyframe_names(source: &str, out: &mut rustc_hash::FxHashSet<String>) {
+    let bytes = source.as_bytes();
+    const PREFIX: &str = "animate-";
+    let mut search = 0;
+    while let Some(rel) = source[search..].find(PREFIX) {
+        let start = search + rel;
+        search = start + PREFIX.len();
+        // The prefix must start at a token boundary (`hover:animate-x` is fine,
+        // `myanimate-x` is not).
+        if start > 0 && is_tailwind_class_byte(bytes[start - 1]) {
+            continue;
+        }
+        let after = start + PREFIX.len();
+        if after >= bytes.len() {
+            continue;
+        }
+        if bytes[after] == b'[' {
+            // Arbitrary value: `animate-[badge-pop_0.5s_...]` -> `badge-pop`.
+            let name_start = after + 1;
+            let mut j = name_start;
+            while j < bytes.len() {
+                let c = bytes[j];
+                if c == b'-' || c.is_ascii_alphanumeric() {
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+            if j > name_start {
+                out.insert(source[name_start..j].to_owned());
+            }
+        } else {
+            // Named utility: `animate-bar-fill` -> `bar-fill`.
+            let mut j = after;
+            while j < bytes.len() {
+                let c = bytes[j];
+                if c == b'-' || c.is_ascii_lowercase() || c.is_ascii_digit() {
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+            let name = source[after..j].trim_end_matches('-');
+            if !name.is_empty() {
+                out.insert(name.to_owned());
+            }
+        }
+    }
+}
+
+/// Collect `@keyframes` names applied via Tailwind markup utilities
+/// (`animate-[name_...]` / `animate-name`) across the project's markup and JS,
+/// so a keyframe used only that way (never via a CSS `animation:` declaration)
+/// is not wrongly flagged `unreferenced`. Not gated on the Tailwind dependency:
+/// the `animate-[...]` / `animate-<name>` shapes are distinctive, the caller
+/// filters the result to actually-defined keyframes, and a project can apply
+/// Tailwind utilities without declaring the npm dep at the scanned root
+/// (CDN / PostCSS / monorepo subpackage).
+fn collect_markup_keyframe_references(
+    files: &[fallow_types::discover::DiscoveredFile],
+    config: &ResolvedConfig,
+    ignore_set: &globset::GlobSet,
+) -> rustc_hash::FxHashSet<String> {
+    let mut out: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
+    for file in files {
+        let path = &file.path;
+        let extension = path.extension().and_then(|ext| ext.to_str());
+        if !matches!(
+            extension,
+            Some("jsx" | "tsx" | "html" | "astro" | "vue" | "svelte" | "js" | "ts" | "mjs" | "cjs")
+        ) {
+            continue;
+        }
+        let relative = path.strip_prefix(&config.root).unwrap_or(path);
+        if ignore_set.is_match(relative) {
+            continue;
+        }
+        if let Ok(source) = std::fs::read_to_string(path) {
+            collect_animate_keyframe_names(&source, &mut out);
+            // Also a keyframe named in a JS inline-style `animation:` /
+            // `animationName:` string (`animation: 'progress-indeterminate 1.5s'`)
+            // appears as a dashed token in a quoted string; the caller filters
+            // these to actually-defined keyframes, so an unrelated dashed token
+            // can never manufacture a reference. `require_dash: false` so a
+            // single-word keyframe name (`spin`, `jsanim`) is credited too.
+            collect_quoted_class_tokens(&source, &mut out, false);
+        }
+    }
+    out
+}
+
+/// Shortest authored CSS class that can be a credible typo target. Below this a
+/// one-edit near miss is too likely to be a coincidental collision between two
+/// short real words (`catch` vs `match`, `list` vs `last`) rather than a typo.
+/// Real component-class typos are compound / hyphenated and comfortably longer.
+/// (Real-world smoke on Svelte: `catch` vs `match` in test fixtures.)
+const MIN_DEFINED_CLASS_LEN: usize = 6;
+/// Shortest markup token worth typo-checking, for the same reason. One below the
+/// defined floor, since a one-edit pair differs in length by at most one.
+const MIN_TOKEN_LEN: usize = 5;
+
+/// Count plain-CSS vs preprocessor (`.scss`/`.sass`/`.less`) stylesheet files in
+/// the project (ignore-filtered). Used to abstain from class-typo detection when
+/// preprocessors dominate, because the parser cannot expand their loops/mixins,
+/// so the defined-class set is unreliable.
+fn count_stylesheet_kinds(
+    files: &[fallow_types::discover::DiscoveredFile],
+    config: &ResolvedConfig,
+    ignore_set: &globset::GlobSet,
+) -> (usize, usize) {
+    let mut css = 0usize;
+    let mut preprocessor = 0usize;
+    for file in files {
+        let path = &file.path;
+        let kind = match path.extension().and_then(|ext| ext.to_str()) {
+            Some("css") => &mut css,
+            Some("scss" | "sass" | "less") => &mut preprocessor,
+            _ => continue,
+        };
+        let relative = path.strip_prefix(&config.root).unwrap_or(path);
+        if ignore_set.is_match(relative) {
+            continue;
+        }
+        *kind += 1;
+    }
+    (css, preprocessor)
+}
+
+/// Collect every authored CSS class name defined anywhere in the project (plain
+/// and module `.css`/`.scss`, plus SFC `<style>` blocks of any scoping). The set
+/// is the typo-suggestion target for [`scan_unresolved_class_references`], so it
+/// is NOT narrowed by `changed_files` / `ws_roots`: a class defined in an
+/// unchanged file must still count as defined, or a markup token referencing it
+/// would false-positive as unresolved. Only the ignore filter applies.
+fn collect_defined_css_classes(
+    files: &[fallow_types::discover::DiscoveredFile],
+    config: &ResolvedConfig,
+    ignore_set: &globset::GlobSet,
+) -> rustc_hash::FxHashSet<String> {
+    use fallow_types::extract::ExportName;
+    let mut defined: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
+    for file in files {
+        let path = &file.path;
+        let extension = path.extension().and_then(|ext| ext.to_str());
+        let is_scss = extension == Some("scss");
+        let is_css = extension == Some("css") || is_scss;
+        let is_sfc = matches!(extension, Some("vue") | Some("svelte"));
+        if !is_css && !is_sfc {
+            continue;
+        }
+        let relative = path.strip_prefix(&config.root).unwrap_or(path);
+        if ignore_set.is_match(relative) {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let css_source = if is_sfc {
+            match fallow_core::extract::sfc_virtual_stylesheet(&source) {
+                Some(virtual_css) => std::borrow::Cow::Owned(virtual_css),
+                None => continue,
+            }
+        } else {
+            std::borrow::Cow::Borrowed(source.as_str())
+        };
+        for export in fallow_core::extract::extract_css_module_exports(&css_source, is_scss) {
+            if let ExportName::Named(name) = export.name {
+                defined.insert(name);
+            }
+        }
+    }
+    defined
+}
+
+/// Find the best one-edit typo suggestion for a markup token among the defined
+/// classes, using a length-bucketed index so only classes of length `len-1`,
+/// `len`, `len+1` are compared. Returns the lexicographically smallest defined
+/// class at edit distance one (deterministic), or `None`.
+fn best_class_suggestion<'a>(
+    token: &str,
+    by_len: &'a rustc_hash::FxHashMap<usize, Vec<&'a str>>,
+) -> Option<&'a str> {
+    let len = token.len();
+    let mut best: Option<&str> = None;
+    for candidate_len in [len.wrapping_sub(1), len, len + 1] {
+        let Some(bucket) = by_len.get(&candidate_len) else {
+            continue;
+        };
+        for &defined in bucket {
+            if defined.len() < MIN_DEFINED_CLASS_LEN {
+                continue;
+            }
+            if fallow_core::extract::is_typo_edit(token, defined)
+                && best.is_none_or(|current| defined < current)
+            {
+                best = Some(defined);
+            }
+        }
+    }
+    best
+}
+
+/// True when a markup class token is Tailwind-flavored (a variant prefix `:`,
+/// an opacity `/`, or an arbitrary-value bracket), so it is not an authored CSS
+/// class and never a typo candidate.
+fn is_tailwind_shaped(token: &str) -> bool {
+    token.contains([':', '/', '[', ']'])
+}
+
+/// Scan markup for static `class` / `className` tokens that match no defined CSS
+/// class but are one edit from a defined class (a likely typo / stale rename).
+/// The defined set is the full project; markup honors the ignore / changed /
+/// workspace filters (a typo is local). Near-zero false-positive by the near-miss
+/// restriction: Tailwind utilities and third-party classes are not one edit from
+/// an authored class. Candidates, never gated.
+fn scan_unresolved_class_references(
+    files: &[fallow_types::discover::DiscoveredFile],
+    config: &ResolvedConfig,
+    ignore_set: &globset::GlobSet,
+    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&[std::path::PathBuf]>,
+    summary: &mut crate::health_types::CssAnalyticsSummary,
+) -> Vec<crate::health_types::UnresolvedClassReference> {
+    use crate::health_types::{CssCandidateAction, UnresolvedClassReference};
+
+    // Abstain on preprocessor-dominant projects. lightningcss parses `.scss` /
+    // `.sass` / `.less` source textually but cannot expand loops / mixins, so a
+    // generated class (`.bg-#{$color}`, `.col-#{$i}`) is invisible to the defined
+    // set. On a SCSS framework like Bootstrap that makes a real, used class
+    // (`bg-white`) look unresolved and false-positive as a typo of a parsed
+    // sibling. When preprocessor stylesheets outnumber plain CSS, the defined set
+    // is too incomplete to trust, so emit nothing (real-world smoke: Bootstrap).
+    let (css_files, preprocessor_files) = count_stylesheet_kinds(files, config, ignore_set);
+    if preprocessor_files > css_files {
+        return Vec::new();
+    }
+
+    let defined = collect_defined_css_classes(files, config, ignore_set);
+    if defined.is_empty() {
+        return Vec::new();
+    }
+    // Length-bucketed index over the typo-target classes for O(1)-ish near-miss.
+    // Drop names ending in `-` / `_`: those are SCSS interpolation artifacts
+    // (`.display-#{$i}` parsed by lightningcss as a partial `display-`), never a
+    // real typo target.
+    let mut by_len: rustc_hash::FxHashMap<usize, Vec<&str>> = rustc_hash::FxHashMap::default();
+    for class in &defined {
+        if class.len() >= MIN_DEFINED_CLASS_LEN && !class.ends_with('-') && !class.ends_with('_') {
+            by_len.entry(class.len()).or_default().push(class.as_str());
+        }
+    }
+
+    let mut out: Vec<UnresolvedClassReference> = Vec::new();
+    let mut seen: rustc_hash::FxHashSet<(String, u32, String)> = rustc_hash::FxHashSet::default();
+    for file in files {
+        let path = &file.path;
+        let extension = path.extension().and_then(|ext| ext.to_str());
+        if !matches!(
+            extension,
+            Some("jsx" | "tsx" | "html" | "astro" | "vue" | "svelte")
+        ) {
+            continue;
+        }
+        let relative = path.strip_prefix(&config.root).unwrap_or(path);
+        if ignore_set.is_match(relative) {
+            continue;
+        }
+        if let Some(changed) = changed_files
+            && !changed.contains(path)
+        {
+            continue;
+        }
+        if let Some(roots) = ws_roots
+            && !roots.iter().any(|root| path.starts_with(root))
+        {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let rel = relative.to_string_lossy().replace('\\', "/");
+        for token in fallow_core::extract::scan_markup_class_tokens(&source).static_tokens {
+            if token.value.len() < MIN_TOKEN_LEN
+                || is_tailwind_shaped(&token.value)
+                || defined.contains(&token.value)
+            {
+                continue;
+            }
+            let Some(suggestion) = best_class_suggestion(&token.value, &by_len) else {
+                continue;
+            };
+            let key = (rel.clone(), token.line, token.value.clone());
+            if !seen.insert(key) {
+                continue;
+            }
+            out.push(UnresolvedClassReference {
+                actions: vec![CssCandidateAction::verify_unresolved_class(
+                    &token.value,
+                    suggestion,
+                )],
+                class: token.value,
+                suggestion: suggestion.to_owned(),
+                path: rel.clone(),
+                line: token.line,
+            });
+        }
+    }
+
+    out.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| a.class.cmp(&b.class))
+    });
+    summary.unresolved_class_references = saturate_len(out.len());
+    out
+}
+
+/// Blank every `@font-face { ... }` block in a (lowercased) source so a declared
+/// family's own `font-family:` inside its definition does not self-credit when
+/// the source is scanned for OTHER references to that family. The `@font-face`,
+/// `{`, and `}` boundaries are ASCII, so replacing the whole block range with
+/// spaces preserves UTF-8 validity (any multi-byte family name inside the block
+/// is fully within the replaced range).
+fn mask_font_face_blocks(lower_source: &str) -> String {
+    if !lower_source.contains("@font-face") {
+        return lower_source.to_owned();
+    }
+    let mut bytes = lower_source.as_bytes().to_vec();
+    let sb = lower_source.as_bytes();
+    let mut search = 0;
+    while let Some(rel) = lower_source[search..].find("@font-face") {
+        let start = search + rel;
+        let Some(brace_rel) = lower_source[start..].find('{') else {
+            break;
+        };
+        let mut depth = 0usize;
+        let mut j = start + brace_rel;
+        while j < sb.len() {
+            match sb[j] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        let end = (j + 1).min(bytes.len());
+        for b in &mut bytes[start..end] {
+            *b = b' ';
+        }
+        search = end;
+    }
+    String::from_utf8(bytes).unwrap_or_else(|_| lower_source.to_owned())
+}
+
+/// Of the candidate unused `@font-face` families, the subset whose name appears
+/// as a substring in some other source file (`.css`/`.scss`/`.sass`/`.less`,
+/// JS/TS, or markup), OUTSIDE its own `@font-face` block. Such a family is
+/// applied somewhere the structural `font-family` reference set cannot see (a
+/// Tailwind v4 `--font-*` theme token in a `@theme` block lightningcss skips, a
+/// `.scss` theme, a canvas/JS `fontFamily` assignment, an inline style), so it
+/// is NOT dead.
+fn font_families_referenced_in_source(
+    candidates: &[crate::health_types::UnusedFontFace],
+    files: &[fallow_types::discover::DiscoveredFile],
+    config: &ResolvedConfig,
+    ignore_set: &globset::GlobSet,
+) -> rustc_hash::FxHashSet<String> {
+    // `(original-case family, lowercase family)`; the lowercase form drives the
+    // substring test because CSS font-family names are case-insensitive, while the
+    // original case is what gets returned for the caller's retain.
+    let mut pending: Vec<(String, String)> = candidates
+        .iter()
+        .map(|c| (c.family.clone(), c.family.to_ascii_lowercase()))
+        .collect();
+    let mut found: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
+    for file in files {
+        if pending.is_empty() {
+            break;
+        }
+        let path = &file.path;
+        let extension = path.extension().and_then(|ext| ext.to_str());
+        if !matches!(
+            extension,
+            Some(
+                "css"
+                    | "scss"
+                    | "sass"
+                    | "less"
+                    | "js"
+                    | "jsx"
+                    | "ts"
+                    | "tsx"
+                    | "mjs"
+                    | "cjs"
+                    | "vue"
+                    | "svelte"
+                    | "astro"
+                    | "html"
+                    | "mdx"
+            )
+        ) {
+            continue;
+        }
+        let relative = path.strip_prefix(&config.root).unwrap_or(path);
+        if ignore_set.is_match(relative) {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        // `.css` is scanned too: a family can be referenced via a custom-property
+        // value (a Tailwind v4 `--font-*` theme token, which lives inside a
+        // `@theme` block that lightningcss skips, so the structural reference set
+        // never sees it). The family's OWN `@font-face` definition is masked so it
+        // does not self-credit (every declared family appears in its own block).
+        let source_lower = mask_font_face_blocks(&source.to_ascii_lowercase());
+        pending.retain(|(family, family_lower)| {
+            if source_lower.contains(family_lower.as_str()) {
+                found.insert(family.clone());
+                false
+            } else {
+                true
+            }
+        });
+    }
+    found
+}
+
+/// Shortest global class worth reporting as unreferenced. Shorter names are
+/// substring-prone (their literal appears inside many longer strings, so the
+/// substring reference check already keeps them safe) and low-signal.
+const MIN_UNREF_CLASS_LEN: usize = 5;
+
+/// Shortest a dependency's normalized name may be to serve as a third-party
+/// class-prefix abstain key. Below this a short package name (`vue`, `css`)
+/// would swallow too many real authored classes.
+const MIN_DEP_PREFIX_LEN: usize = 6;
+
+/// Normalize an identifier to a run of lowercase ASCII alphanumerics (drop
+/// scopes, hyphens, dots): `maplibre-gl` -> `maplibregl`, `@scope/pkg` keeps
+/// only `pkg` because the caller de-scopes first.
+fn normalize_dep_token(name: &str) -> String {
+    name.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// Normalized names of the project's declared dependencies (length-floored),
+/// used to abstain on third-party CSS classes a library applies to its own
+/// runtime-created DOM (e.g. a `.maplibregl-*` rule that styles the
+/// `maplibre-gl` library). Scoped packages are de-scoped to the bare name.
+fn dependency_class_prefixes(config: &ResolvedConfig) -> rustc_hash::FxHashSet<String> {
+    let mut prefixes: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
+    let Ok(text) = std::fs::read_to_string(config.root.join("package.json")) else {
+        return prefixes;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return prefixes;
+    };
+    for key in ["dependencies", "devDependencies", "peerDependencies"] {
+        if let Some(deps) = json.get(key).and_then(serde_json::Value::as_object) {
+            for name in deps.keys() {
+                // De-scope `@scope/pkg` -> `pkg` so the prefix is the package's
+                // own name, not the scope.
+                let bare = name.rsplit('/').next().unwrap_or(name);
+                let normalized = normalize_dep_token(bare);
+                if normalized.len() >= MIN_DEP_PREFIX_LEN {
+                    prefixes.insert(normalized);
+                }
+            }
+        }
+    }
+    prefixes
+}
+
+/// True when a CSS class is a third-party library's class: its normalized form
+/// starts with a declared dependency's normalized name. `maplibregl-popup-content`
+/// -> `maplibreglpopupcontent` starts with `maplibregl`. Conservative
+/// (abstain-leaning): a third-party class wrongly flagged dead is a far worse
+/// candidate than a missed authored dead class.
+fn class_matches_dependency_prefix(
+    class: &str,
+    dependency_prefixes: &rustc_hash::FxHashSet<String>,
+) -> bool {
+    if dependency_prefixes.is_empty() {
+        return false;
+    }
+    let normalized = normalize_dep_token(class);
+    dependency_prefixes
+        .iter()
+        .any(|prefix| normalized.starts_with(prefix.as_str()))
+}
+
+/// Extract class-shaped tokens from quoted string literals (`'...'` / `"..."` /
+/// `` `...` ``) in a source string and add them to `out`, crediting a name
+/// applied outside a `class=` / `className=` attribute (a config-object
+/// `className: 'leveret-toast'`, a helper `return "x-y"`, a JS inline-style
+/// `animation: 'progress-indeterminate 1s'`).
+///
+/// `require_dash` controls strictness. For CLASS crediting it is `true`: only
+/// compound (dash-bearing) tokens are taken, so a generic single word never
+/// coincidentally credits a class and breaks the whole-sheet abstain that
+/// protects classes used in a surface fallow cannot read (Phoenix `.heex`). For
+/// KEYFRAME crediting it is `false` (the caller filters to actually-defined
+/// keyframes, so over-extraction is inert), letting a single-word keyframe name
+/// (`spin`, `jsanim`) be credited from a JS `animation:` string too.
+fn collect_quoted_class_tokens(
+    source: &str,
+    out: &mut rustc_hash::FxHashSet<String>,
+    require_dash: bool,
+) {
+    let bytes = source.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let quote = bytes[i];
+        if quote == b'"' || quote == b'\'' || quote == b'`' {
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() && bytes[j] != quote {
+                j += 1;
+            }
+            if let Some(content) = source.get(start..j) {
+                for token in content
+                    .split(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+                {
+                    let shaped = token.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+                        && !token.ends_with('-')
+                        && (if require_dash {
+                            token.contains('-')
+                        } else {
+                            token.len() >= 3
+                        });
+                    if shaped {
+                        out.insert(token.to_owned());
+                    }
+                }
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// Class names wrapped in a CSS Modules `:global(...)` selector. Such a class is
+/// applied by code OUTSIDE this stylesheet, most often a third-party library's
+/// runtime DOM that the module styles via an escape hatch (an antd
+/// `.validatiemeldingenModal :global(.ant-modal-header)` override). The project's
+/// own markup never writes that class, so it can never be credited and would
+/// always surface as a (false) unreferenced-class candidate. `:global` is the
+/// author's explicit "not locally scoped, applied elsewhere" marker, so excluding
+/// these from the candidate set is semantically correct, not a heuristic guess.
+fn collect_global_scoped_classes(source: &str, out: &mut rustc_hash::FxHashSet<String>) {
+    let bytes = source.as_bytes();
+    let mut i = 0;
+    while let Some(rel) = source[i..].find(":global(") {
+        let open = i + rel + ":global(".len();
+        // Balance parentheses so a `:global(:is(.a, .b))` still closes correctly.
+        let mut depth = 1usize;
+        let mut j = open;
+        while j < bytes.len() && depth > 0 {
+            match bytes[j] {
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ => {}
+            }
+            j += 1;
+        }
+        let inner_end = j.saturating_sub(1).max(open);
+        if let Some(inner) = source.get(open..inner_end) {
+            extract_dotted_class_names(inner, out);
+        }
+        i = j.max(open + 1);
+    }
+}
+
+/// Push every `.class` token in a CSS selector fragment (the bare name, no dot)
+/// into `out`. A class name is a dot followed by `[A-Za-z_-]` then any run of
+/// `[A-Za-z0-9_-]`.
+fn extract_dotted_class_names(selector: &str, out: &mut rustc_hash::FxHashSet<String>) {
+    let bytes = selector.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'.' {
+            let start = i + 1;
+            if start < bytes.len()
+                && (bytes[start].is_ascii_alphabetic() || matches!(bytes[start], b'_' | b'-'))
+            {
+                let mut j = start;
+                while j < bytes.len()
+                    && (bytes[j].is_ascii_alphanumeric() || matches!(bytes[j], b'_' | b'-'))
+                {
+                    j += 1;
+                }
+                if let Some(name) = selector.get(start..j) {
+                    out.insert(name.to_owned());
+                }
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+}
+
+/// Per-stylesheet located class definitions from STANDALONE `.css`/`.scss` files
+/// (not SFC `<style>` blocks, which are component-scoped and covered by the
+/// scoped-unused check). Returns `(rel_path, [(class, 1-based line)])`, each
+/// class deduped to its first definition. The defined surface for the
+/// unreferenced-global-class candidate. Classes wrapped in `:global(...)` are
+/// dropped: they target externally-applied DOM and are never authored in markup.
+fn collect_defined_css_classes_located(
+    files: &[fallow_types::discover::DiscoveredFile],
+    config: &ResolvedConfig,
+    ignore_set: &globset::GlobSet,
+) -> Vec<(String, Vec<(String, u32)>)> {
+    use fallow_types::extract::ExportName;
+    let mut out: Vec<(String, Vec<(String, u32)>)> = Vec::new();
+    for file in files {
+        let path = &file.path;
+        let extension = path.extension().and_then(|ext| ext.to_str());
+        let is_scss = extension == Some("scss");
+        if extension != Some("css") && !is_scss {
+            continue;
+        }
+        let relative = path.strip_prefix(&config.root).unwrap_or(path);
+        if ignore_set.is_match(relative) {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let mut global_scoped: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
+        collect_global_scoped_classes(&source, &mut global_scoped);
+        let mut seen: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
+        let mut classes: Vec<(String, u32)> = Vec::new();
+        for export in fallow_core::extract::extract_css_module_exports(&source, is_scss) {
+            let ExportName::Named(name) = export.name else {
+                continue;
+            };
+            // A `:global(.foo)` override targets DOM applied outside this module
+            // (a third-party library's runtime markup), so it is never authored in
+            // project markup and must not be an unreferenced-class candidate.
+            if global_scoped.contains(&name) {
+                continue;
+            }
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let start = export.span.start as usize;
+            let line = 1 + source
+                .get(..start)
+                .map_or(0, |s| s.bytes().filter(|&b| b == b'\n').count());
+            classes.push((name, u32::try_from(line).unwrap_or(u32::MAX)));
+        }
+        if !classes.is_empty() {
+            out.push((relative.to_string_lossy().replace('\\', "/"), classes));
+        }
+    }
+    out
+}
+
+/// Project-root-relative CSS/SCSS paths published as a package entry
+/// (`style` / `main` / `sass` / `module`, or any string ending in `.css`/`.scss`
+/// anywhere in `exports`). A stylesheet on this list is a public surface
+/// consumed by OTHER repos, so its classes are referenced externally and must
+/// never be flagged unreferenced.
+fn published_css_paths(config: &ResolvedConfig) -> rustc_hash::FxHashSet<String> {
+    let mut published: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
+    let Ok(text) = std::fs::read_to_string(config.root.join("package.json")) else {
+        return published;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return published;
+    };
+    let normalize = |s: &str| s.trim_start_matches("./").replace('\\', "/");
+    let is_css = |s: &str| {
+        matches!(
+            std::path::Path::new(s)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("css" | "scss")
+        )
+    };
+    for key in ["style", "main", "sass", "module"] {
+        if let Some(s) = json.get(key).and_then(serde_json::Value::as_str)
+            && is_css(s)
+        {
+            published.insert(normalize(s));
+        }
+    }
+    // Walk `exports` (arbitrarily nested) collecting every CSS string value.
+    let mut stack = vec![
+        json.get("exports")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    ];
+    while let Some(node) = stack.pop() {
+        match node {
+            serde_json::Value::String(s) if is_css(&s) => {
+                published.insert(normalize(&s));
+            }
+            serde_json::Value::Array(items) => stack.extend(items),
+            serde_json::Value::Object(map) => stack.extend(map.into_values()),
+            _ => {}
+        }
+    }
+    published
+}
+
+/// Scan for global CSS classes referenced by NO in-project markup (the CSS
+/// analogue of an unused export). Heavily gated to stay near-zero-false-positive:
+///
+/// - **Partial scope** (`changed_files` / `ws_roots`): abstain. A partial markup
+///   view cannot prove a global class dead.
+/// - **Preprocessor-dominant** (`.scss`/`.sass`/`.less` outnumber plain `.css`):
+///   abstain. The parser cannot expand loops/mixins, so the markup-vs-CSS join
+///   is unreliable.
+/// - **Published surface**: a stylesheet reachable from `package.json` entries,
+///   or whose classes are referenced by zero in-project markup (a design system
+///   consumed elsewhere), abstains entirely.
+/// - **Reference test** (panel gate 1): a class is referenced if it is a whole
+///   static markup token OR a substring of any dynamic-class source, so a class
+///   assembled from a `${...}` / `clsx(...)` fragment is never flagged.
+fn scan_unreferenced_css_classes(
+    files: &[fallow_types::discover::DiscoveredFile],
+    config: &ResolvedConfig,
+    ignore_set: &globset::GlobSet,
+    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&[std::path::PathBuf]>,
+    summary: &mut crate::health_types::CssAnalyticsSummary,
+) -> Vec<crate::health_types::UnreferencedCssClass> {
+    use crate::health_types::{CssCandidateAction, UnreferencedCssClass};
+
+    // Partial scope cannot prove a global class dead.
+    if changed_files.is_some() || ws_roots.is_some() {
+        return Vec::new();
+    }
+    // Preprocessor-dominant projects have an unreliable defined/used join.
+    let (css_files, preprocessor_files) = count_stylesheet_kinds(files, config, ignore_set);
+    if preprocessor_files > css_files {
+        return Vec::new();
+    }
+
+    // Build the in-project markup reference surface: every whole static class
+    // token, plus the raw source of files that construct classes dynamically
+    // (for the substring abstain).
+    let mut static_tokens: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
+    let mut dynamic_corpus = String::new();
+    for file in files {
+        let path = &file.path;
+        let extension = path.extension().and_then(|ext| ext.to_str());
+        if !matches!(
+            extension,
+            Some("jsx" | "tsx" | "html" | "astro" | "vue" | "svelte")
+        ) {
+            continue;
+        }
+        let relative = path.strip_prefix(&config.root).unwrap_or(path);
+        if ignore_set.is_match(relative) {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let scan = fallow_core::extract::scan_markup_class_tokens(&source);
+        for token in scan.static_tokens {
+            static_tokens.insert(token.value);
+        }
+        // Also credit a DASHED (compound) class applied outside a `class=` /
+        // `className=` attribute: a config-object `className: 'leveret-toast'`, a
+        // helper `return "today-highlight"`. Only dashed tokens from quoted
+        // strings are taken (not single words), so a generic word never breaks
+        // the whole-sheet abstain that protects classes used in a surface fallow
+        // cannot read (Phoenix `.heex`, server templates).
+        collect_quoted_class_tokens(&source, &mut static_tokens, true);
+        if scan.has_dynamic {
+            dynamic_corpus.push_str(&source);
+            dynamic_corpus.push('\n');
+        }
+    }
+
+    // A class assembled dynamically as `prefix-${...}` (e.g. `stagger-${i}`
+    // backing `.stagger-1`..`.stagger-6`) never appears as a full literal in the
+    // dynamic corpus, so credit it when its dash-prefix is immediately followed
+    // by an interpolation / concatenation boundary in a dynamic file. The dash
+    // AND the marker are both required, so `stagger` appearing in `add-stagger`
+    // does not credit `.stagger-1`.
+    let dynamic_prefix_referenced = |class: &str| -> bool {
+        let Some(dash) = class.rfind('-') else {
+            return false;
+        };
+        let head = &class[..=dash];
+        const INTERP_MARKERS: [&str; 6] = ["${", "' +", "'+", "\" +", "\"+", "` +"];
+        INTERP_MARKERS
+            .iter()
+            .any(|marker| dynamic_corpus.contains(&format!("{head}{marker}")))
+    };
+    let referenced = |class: &str| -> bool {
+        static_tokens.contains(class)
+            || dynamic_corpus.contains(class)
+            || dynamic_prefix_referenced(class)
+    };
+
+    let published = published_css_paths(config);
+    let dependency_prefixes = dependency_class_prefixes(config);
+    let located = collect_defined_css_classes_located(files, config, ignore_set);
+
+    let mut out: Vec<UnreferencedCssClass> = Vec::new();
+    for (rel, classes) in located {
+        if published.contains(&rel) {
+            continue;
+        }
+        // In-project-consumption gate: a stylesheet none of whose classes are
+        // referenced locally is a published / external surface, not a pile of
+        // dead classes. Abstain for the whole sheet.
+        if !classes.iter().any(|(c, _)| referenced(c)) {
+            continue;
+        }
+        for (class, line) in classes {
+            if class.len() >= MIN_UNREF_CLASS_LEN
+                && !referenced(&class)
+                && !class_matches_dependency_prefix(&class, &dependency_prefixes)
+            {
+                out.push(UnreferencedCssClass {
+                    actions: vec![CssCandidateAction::verify_unreferenced_class(&class)],
+                    class,
+                    path: rel.clone(),
+                    line,
+                });
+            }
+        }
+    }
+
+    out.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| a.class.cmp(&b.class))
+    });
+    summary.unreferenced_css_classes = saturate_len(out.len());
+    out
+}
+
 fn compute_css_analytics_report(
     files: &[fallow_types::discover::DiscoveredFile],
     config: &ResolvedConfig,
@@ -998,11 +2005,52 @@ fn compute_css_analytics_report(
         }
     }
 
+    // Credit @keyframes applied via Tailwind markup (`animate-[name_...]` /
+    // `animate-name`), not just CSS `animation:` declarations, before the
+    // unreferenced diff. Filtered to actually-defined keyframes so a stray
+    // `animate-*` suffix never manufactures a false `undefined_keyframes`.
+    for name in collect_markup_keyframe_references(files, config, ignore_set) {
+        if tokens.defined_keyframes.contains(&name) {
+            tokens.referenced_keyframes.insert(name);
+        }
+    }
+
     let (unreferenced_keyframes, undefined_keyframes) = tokens.finalize(&mut summary);
     let duplicate_declaration_blocks = tokens.group_duplicate_blocks(&mut summary);
     let unused_at_rules = tokens.group_unused_at_rules(&mut summary);
+    let font_size_unit_mix = tokens.font_size_unit_mix(&mut summary);
+    let mut unused_font_faces = tokens.unused_font_faces(&mut summary);
+    // The CSS-only set difference cannot see a font family applied from
+    // JavaScript / canvas (Excalidraw) or referenced from a `.scss`/`.sass`
+    // theme the parser never reads (reveal.js). Drop any candidate whose family
+    // name appears as a substring in ANY non-CSS source file, so only a font
+    // declared and used nowhere at all survives. (Real-world smoke.)
+    if !unused_font_faces.is_empty() {
+        let referenced =
+            font_families_referenced_in_source(&unused_font_faces, files, config, ignore_set);
+        unused_font_faces.retain(|ff| !referenced.contains(&ff.family));
+        summary.unused_font_faces = saturate_len(unused_font_faces.len());
+    }
     // Markup arbitrary-value scan (gated on the project using Tailwind).
     let tailwind_arbitrary_values = scan_markup_tailwind_arbitrary_values(
+        files,
+        config,
+        ignore_set,
+        changed_files,
+        ws_roots,
+        &mut summary,
+    );
+    // Static markup class tokens one edit from a defined class (likely typos).
+    let unresolved_class_references = scan_unresolved_class_references(
+        files,
+        config,
+        ignore_set,
+        changed_files,
+        ws_roots,
+        &mut summary,
+    );
+    // Global classes referenced by no in-project markup (heavily gated).
+    let unreferenced_css_classes = scan_unreferenced_css_classes(
         files,
         config,
         ignore_set,
@@ -1014,6 +2062,9 @@ fn compute_css_analytics_report(
     if summary.files_analyzed == 0
         && scoped_unused.is_empty()
         && tailwind_arbitrary_values.is_empty()
+        && unresolved_class_references.is_empty()
+        && unreferenced_css_classes.is_empty()
+        && unused_font_faces.is_empty()
     {
         return None;
     }
@@ -1027,6 +2078,10 @@ fn compute_css_analytics_report(
         duplicate_declaration_blocks,
         tailwind_arbitrary_values,
         unused_at_rules,
+        unresolved_class_references,
+        unreferenced_css_classes,
+        unused_font_faces,
+        font_size_unit_mix,
     })
 }
 

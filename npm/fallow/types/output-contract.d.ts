@@ -566,7 +566,7 @@ export type TrendDirection = ("improving" | "declining" | "stable")
 /**
  * Discriminant for [`CssCandidateAction::kind`].
  */
-export type CssCandidateActionType = ("verify-unused" | "verify-undefined" | "consolidate" | "replace-with-token")
+export type CssCandidateActionType = ("verify-unused" | "verify-undefined" | "consolidate" | "replace-with-token" | "standardize")
 /**
  * Discriminant for [`UnusedAtRule::kind`].
  */
@@ -5090,6 +5090,50 @@ tailwind_arbitrary_values?: TailwindArbitraryValue[]
  * can be populated via `@import layer()`). Located by first definition.
  */
 unused_at_rules?: UnusedAtRule[]
+/**
+ * Static `class` / `className` tokens in markup that match no CSS class
+ * defined anywhere in the project AND are one edit away from a class that
+ * IS defined (a likely typo or stale rename, with the suggested class). The
+ * CSS analogue of an unresolved import; the near-miss restriction keeps it
+ * near-zero false-positive (Tailwind utilities and third-party classes are
+ * not one edit from an authored class). Candidates, never gated: the token
+ * could be defined in CSS-in-JS or an external stylesheet the parser never
+ * sees. Sorted by `(path, line, class)`.
+ */
+unresolved_class_references?: UnresolvedClassReference[]
+/**
+ * Global CSS classes (defined in a plain `.css`/`.scss` rule) whose literal
+ * name is referenced by NO in-project markup, static or dynamic (the CSS
+ * analogue of an unused export). Heavily gated to stay near-zero-false-
+ * positive: emitted only when the project is plain-CSS-dominant, the
+ * stylesheet is locally consumed (not a published design-system surface),
+ * and the whole project is in scope. Candidates, never gated findings: the
+ * class may be used by an HTML email, server template, CMS, or Markdown the
+ * parser never scans. Sorted by `(path, line, class)`.
+ */
+unreferenced_css_classes?: UnreferencedCssClass[]
+/**
+ * `@font-face` families declared in a stylesheet but referenced by no
+ * `font-family` anywhere in the project: a dead web-font payload (the font
+ * file is downloaded but never applied). Located at the declaring
+ * stylesheet. Cleanup candidates: the family could be applied from inline
+ * styles or set via JavaScript. Sorted by `(path, family)`.
+ */
+unused_font_faces?: UnusedFontFace[]
+/**
+ * The project authors `font-size` values in several units (`px`, `rem`,
+ * `em`, `%`), with a per-unit distinct-value count: a type-scale
+ * inconsistency smell (mixing `px` and `rem` for type works against
+ * user-zoom accessibility). Present only above a conservative floor.
+ * Advisory candidate, never gated: the spread can be intentional (fixed
+ * chrome in `px`, body type in `rem`).
+ *
+ * Color-notation mixing (hex vs rgb vs hsl) is deliberately NOT surfaced:
+ * the CSS parser canonicalizes every legacy sRGB notation to hex before
+ * fallow sees the value, so the authored distinction is already gone and
+ * cannot be recovered without a separate raw-token pass.
+ */
+font_size_unit_mix?: (CssNotationConsistency | null)
 }
 /**
  * Per-stylesheet CSS analytics.
@@ -5140,9 +5184,12 @@ notable_rules: CssRuleMetric[]
  */
 notable_truncated: boolean
 /**
- * Distinct color values in the stylesheet, in their authored form, sorted.
- * Distinct notations of the same color (`red` vs `#f00`) count separately,
- * since inconsistent notation is itself a design-token-sprawl signal.
+ * Distinct color VALUES in the stylesheet, sorted (a palette-size /
+ * design-token-sprawl signal). The parser canonicalizes notation, so the
+ * authored format is NOT preserved: `red`, `#f00`, `#ff0000`, and
+ * `rgb(255,0,0)` all collapse to one entry, and every legacy sRGB notation
+ * renders as hex. Notation-MIXING (hex vs rgb vs hsl) is therefore not
+ * detectable from this set; it would need a separate raw-token pass.
  */
 colors: string[]
 /**
@@ -5197,6 +5244,17 @@ declared_layers: string[]
  * cleanup candidate.
  */
 populated_layers: string[]
+/**
+ * Distinct font families DECLARED by an `@font-face` rule in the stylesheet,
+ * sorted. A declared family referenced by no `font-family` anywhere is a
+ * dead web-font payload (cleanup candidate).
+ */
+defined_font_faces: string[]
+/**
+ * Distinct font families REFERENCED via `font-family` / `font` in the
+ * stylesheet, sorted (generic keywords like `serif` excluded).
+ */
+referenced_font_families: string[]
 }
 /**
  * Structural CSS metrics for a single style rule, computed from the parsed CSS
@@ -5374,6 +5432,29 @@ unused_property_registrations: number
  * `unused_at_rules`). Cleanup candidates.
  */
 unused_layers: number
+/**
+ * Static markup class tokens that match no defined CSS class but are one
+ * edit from a defined class (likely typos / stale renames). Located in
+ * `unresolved_class_references`. Candidates, never gated.
+ */
+unresolved_class_references: number
+/**
+ * Global CSS classes defined in a stylesheet but referenced by no in-project
+ * markup (located in `unreferenced_css_classes`). Heavily gated cleanup
+ * candidates; zero on preprocessor-dominant or partial-scope runs.
+ */
+unreferenced_css_classes: number
+/**
+ * `@font-face` families declared but referenced by no `font-family` anywhere
+ * (located in `unused_font_faces`). Dead web-font cleanup candidates.
+ */
+unused_font_faces: number
+/**
+ * Number of distinct `font-size` units (`px` / `rem` / `em` / `%`) authored
+ * across the codebase. Mixing units is a type-scale consistency smell,
+ * broken out in `font_size_unit_mix`.
+ */
+font_size_units_used: number
 /**
  * Number of analyzed stylesheets whose per-rule `notable_rules` list was
  * truncated at the per-file cap, so a consumer knows the per-rule detail is
@@ -5565,6 +5646,120 @@ path: string
  * Read-only verification step(s) before removal (parity with other findings).
  */
 actions: CssCandidateAction[]
+}
+/**
+ * A static `class` / `className` token in markup that matches no CSS class
+ * defined anywhere in the project but is one edit away from a class that IS
+ * defined (a likely typo or stale rename). The CSS analogue of an unresolved
+ * import. A candidate, never a gated finding: the token could be defined in
+ * CSS-in-JS or an external stylesheet the parser never sees.
+ */
+export interface UnresolvedClassReference {
+/**
+ * The static class token referenced in markup (no dot).
+ */
+class: string
+/**
+ * The defined CSS class one edit away: the likely intended class.
+ */
+suggestion: string
+/**
+ * Project-root-relative, forward-slash path to the markup file.
+ */
+path: string
+/**
+ * 1-based line of the `class` / `className` attribute.
+ */
+line: number
+/**
+ * Read-only verification step(s) before fixing the reference. Always at
+ * least one entry, so consumers can iterate `actions` uniformly across
+ * every finding type.
+ */
+actions: CssCandidateAction[]
+}
+/**
+ * A global CSS class defined in a plain `.css`/`.scss` rule whose literal name
+ * is referenced by no in-project markup (the CSS analogue of an unused export).
+ * A heavily-gated candidate, never a gated finding: the class may be applied
+ * from an HTML email, server template, CMS, or Markdown the parser never sees.
+ */
+export interface UnreferencedCssClass {
+/**
+ * The class name (no dot).
+ */
+class: string
+/**
+ * Project-root-relative, forward-slash path to the defining stylesheet.
+ */
+path: string
+/**
+ * 1-based line of the class's first definition.
+ */
+line: number
+/**
+ * Read-only verification step(s) before removing. Always at least one entry,
+ * so consumers can iterate `actions` uniformly across every finding type.
+ */
+actions: CssCandidateAction[]
+}
+/**
+ * An `@font-face` family declared in a stylesheet but referenced by no
+ * `font-family` anywhere in the project: a dead web-font payload. A cleanup
+ * candidate (the family could be applied from inline styles or JavaScript).
+ */
+export interface UnusedFontFace {
+/**
+ * The declared font family name (quotes stripped).
+ */
+family: string
+/**
+ * Project-root-relative, forward-slash path to the declaring stylesheet.
+ */
+path: string
+/**
+ * Read-only verification step(s) before removing. Always at least one entry,
+ * so consumers can iterate `actions` uniformly across every finding type.
+ */
+actions: CssCandidateAction[]
+}
+/**
+ * A design-token notation-consistency candidate: the distinct notations used
+ * across the codebase for one value axis (today, length units on `font-size`),
+ * with a per-notation distinct-value count. Emitted only above a floor, since
+ * mixing notations for one axis is a "no single source of truth" smell.
+ * Advisory: the action is "standardize on one notation", not a single search.
+ */
+export interface CssNotationConsistency {
+/**
+ * The value axis these notations describe, e.g. `"Colors"` or
+ * `"Font sizes"`.
+ */
+axis: string
+/**
+ * Per-notation distinct-value counts, sorted by count descending then
+ * notation name (so the dominant notation is first and ties are stable).
+ */
+notations: CssNotationCount[]
+/**
+ * Read-only guidance step(s), so consumers can iterate `actions` uniformly
+ * across every candidate type. Always at least one entry.
+ */
+actions: CssCandidateAction[]
+}
+/**
+ * One notation bucket and the count of distinct values authored in it.
+ */
+export interface CssNotationCount {
+/**
+ * The notation family, e.g. `"hex"`, `"rgb"`, `"hsl"`, `"modern"`, `"px"`,
+ * `"rem"`, `"em"`, `"%"`.
+ */
+notation: string
+/**
+ * Distinct values authored in this notation across the codebase.
+ */
+count: number
 }
 /**
  * Envelope emitted by `fallow explain <issue-type> --format json`.

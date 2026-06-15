@@ -853,9 +853,12 @@ pub struct CssAnalytics {
     /// retains (compiled utility CSS can emit thousands of `!important` rules),
     /// so consumers can note that per-rule findings were capped.
     pub notable_truncated: bool,
-    /// Distinct color values in the stylesheet, in their authored form, sorted.
-    /// Distinct notations of the same color (`red` vs `#f00`) count separately,
-    /// since inconsistent notation is itself a design-token-sprawl signal.
+    /// Distinct color VALUES in the stylesheet, sorted (a palette-size /
+    /// design-token-sprawl signal). The parser canonicalizes notation, so the
+    /// authored format is NOT preserved: `red`, `#f00`, `#ff0000`, and
+    /// `rgb(255,0,0)` all collapse to one entry, and every legacy sRGB notation
+    /// renders as hex. Notation-MIXING (hex vs rgb vs hsl) is therefore not
+    /// detectable from this set; it would need a separate raw-token pass.
     pub colors: Vec<String>,
     /// Distinct `font-size` declaration values in the stylesheet, sorted.
     pub font_sizes: Vec<String>,
@@ -885,6 +888,13 @@ pub struct CssAnalytics {
     /// A layer declared but never populated (and not imported into) is a
     /// cleanup candidate.
     pub populated_layers: Vec<String>,
+    /// Distinct font families DECLARED by an `@font-face` rule in the stylesheet,
+    /// sorted. A declared family referenced by no `font-family` anywhere is a
+    /// dead web-font payload (cleanup candidate).
+    pub defined_font_faces: Vec<String>,
+    /// Distinct font families REFERENCED via `font-family` / `font` in the
+    /// stylesheet, sorted (generic keywords like `serif` excluded).
+    pub referenced_font_families: Vec<String>,
     /// Per-rule declaration-block fingerprints for rules at or above the minimum
     /// block size, used to detect duplicate declaration blocks across the
     /// project. Internal staging consumed by the health layer; never serialized

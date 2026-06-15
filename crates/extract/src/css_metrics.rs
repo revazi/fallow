@@ -12,8 +12,10 @@
 use lightningcss::printer::PrinterOptions;
 use lightningcss::properties::Property;
 use lightningcss::properties::animation::AnimationName;
-use lightningcss::properties::custom::{CustomPropertyName, Variable};
+use lightningcss::properties::custom::{CustomPropertyName, Token, TokenOrValue, Variable};
+use lightningcss::properties::font::FontFamily;
 use lightningcss::rules::CssRule;
+use lightningcss::rules::font_face::FontFaceProperty;
 use lightningcss::rules::keyframes::KeyframesName;
 use lightningcss::rules::style::StyleRule;
 use lightningcss::selector::{Component, Selector};
@@ -91,6 +93,8 @@ pub fn compute_css_analytics(source: &str) -> Option<CssAnalytics> {
     analytics.registered_custom_properties = sorted_vec(acc.registered_custom_properties);
     analytics.declared_layers = sorted_vec(acc.declared_layers);
     analytics.populated_layers = sorted_vec(acc.populated_layers);
+    analytics.defined_font_faces = sorted_vec(acc.defined_font_faces);
+    analytics.referenced_font_families = sorted_vec(acc.referenced_font_families);
     Some(analytics)
 }
 
@@ -110,6 +114,24 @@ struct Accumulator {
     registered_custom_properties: FxHashSet<String>,
     declared_layers: FxHashSet<String>,
     populated_layers: FxHashSet<String>,
+    defined_font_faces: FxHashSet<String>,
+    referenced_font_families: FxHashSet<String>,
+}
+
+/// The concrete family name of a `font-family` value, or `None` for a generic
+/// keyword (`serif`, `sans-serif`, `monospace`, ...), which is never an authored
+/// `@font-face`.
+fn font_family_name(family: &FontFamily<'_>) -> Option<String> {
+    match family {
+        // Render the family via ToCss and strip surrounding quotes so a declared
+        // `font-family: "Inter"` and a referenced `font-family: Inter` normalize
+        // to the same key.
+        FontFamily::FamilyName(_) => family
+            .to_css_string(PrinterOptions::default())
+            .ok()
+            .map(|s| s.trim_matches(['"', '\'']).to_string()),
+        FontFamily::Generic(_) => None,
+    }
 }
 
 /// Collects value-level design tokens via the lightningcss visitor: every
@@ -181,6 +203,15 @@ fn walk_rules(rules: &[CssRule<'_>], depth: u8, acc: &mut Accumulator) {
             CssRule::Property(prop) => {
                 acc.registered_custom_properties
                     .insert(prop.name.0.to_string());
+            }
+            CssRule::FontFace(font_face) => {
+                for property in &font_face.properties {
+                    if let FontFaceProperty::FontFamily(family) = property
+                        && let Some(name) = font_family_name(family)
+                    {
+                        acc.defined_font_faces.insert(name);
+                    }
+                }
             }
             CssRule::MozDocument(rule) => walk_rules(&rule.rules.0, depth, acc),
             CssRule::StartingStyle(rule) => walk_rules(&rule.rules.0, depth, acc),
@@ -318,6 +349,21 @@ fn record_style_rule(style: &StyleRule<'_>, depth: u8, acc: &mut Accumulator) {
                 if let CustomPropertyName::Custom(name) = &custom.name {
                     acc.defined_custom_properties.insert(name.0.to_string());
                 }
+                // A custom-property value can REFERENCE a font family without a
+                // `font-family:` declaration: a Tailwind v4 `--font-*` theme token
+                // (`--font-display: "Departure Mono", monospace`) is the canonical
+                // case. lightningcss's `Property::FontFamily` / `Property::Font`
+                // arms above never see this (a `--*:` declaration is an opaque
+                // token stream), so scan the raw tokens for string / ident values
+                // and credit them as referenced families. Generic keywords
+                // (`serif`, `monospace`) never appear in `defined_font_faces`, so
+                // crediting them here is inert; the `unused_font_faces`
+                // set-difference only ever drops a genuinely-declared family.
+                for token in &custom.value.0 {
+                    if let TokenOrValue::Token(Token::String(value) | Token::Ident(value)) = token {
+                        acc.referenced_font_families.insert(value.to_string());
+                    }
+                }
             }
             Property::AnimationName(names, _) => {
                 for name in names {
@@ -327,6 +373,20 @@ fn record_style_rule(style: &StyleRule<'_>, depth: u8, acc: &mut Accumulator) {
             Property::Animation(animations, _) => {
                 for animation in animations {
                     collect_animation_name(&animation.name, &mut acc.referenced_keyframes);
+                }
+            }
+            Property::FontFamily(families) => {
+                for family in families {
+                    if let Some(name) = font_family_name(family) {
+                        acc.referenced_font_families.insert(name);
+                    }
+                }
+            }
+            Property::Font(font) => {
+                for family in &font.family {
+                    if let Some(name) = font_family_name(family) {
+                        acc.referenced_font_families.insert(name);
+                    }
                 }
             }
             _ => {}

@@ -2956,6 +2956,671 @@ fn health_css_undefined_keyframe_renders_in_human() {
     );
 }
 
+/// Helper: run `fallow health --css --format json` and return the parsed
+/// `css_analytics.unreferenced_css_classes` array (empty when absent).
+fn unreferenced_classes(root: &std::path::Path) -> Vec<serde_json::Value> {
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&out);
+    json.get("css_analytics")
+        .and_then(|c| c.get("unreferenced_css_classes"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Names in a `css_analytics` list field for a `fallow health --css` run.
+fn css_list_names(root: &std::path::Path, field: &str, name_key: &str) -> Vec<String> {
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let mut names: Vec<String> = parse_json(&out)
+        .get("css_analytics")
+        .and_then(|c| c.get(field))
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.get(name_key).and_then(|s| s.as_str()).map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+#[test]
+fn health_css_keyframe_credited_by_tailwind_animate_and_js() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(&root.join("package.json"), r#"{"name":"kf"}"#);
+    // `arb` applied via an `animate-[arb_...]` arbitrary value, `util` via an
+    // `animate-util` named utility, `jsanim` via a JS inline-style `animation:`
+    // string. Only `dead` (referenced by nothing) is flagged.
+    write_file(
+        &root.join("src/anim.css"),
+        "@keyframes arb{from{opacity:0}to{opacity:1}}\n@keyframes util{from{}to{}}\n@keyframes jsanim{from{}to{}}\n@keyframes dead{from{}to{}}\n",
+    );
+    write_file(
+        &root.join("src/App.tsx"),
+        "export const A = () => (<div className=\"animate-[arb_0.5s_ease] animate-util\" style={{ animation: 'jsanim 1s linear' }} />);\n",
+    );
+
+    assert_eq!(
+        css_list_names(root, "unreferenced_keyframes", "name"),
+        vec!["dead".to_string()],
+        "only the genuinely-dead keyframe is flagged"
+    );
+}
+
+#[test]
+fn health_css_unreferenced_class_credits_dynamic_string_and_dependency() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"cls","dependencies":{"maplibre-gl":"^4.0.0"}}"#,
+    );
+    // `.stagger-1` applied dynamically (`stagger-${i}`), `.toast-skin` via a
+    // config-object string (`className: 'toast-skin'`), `.maplibregl-popup`
+    // styles a third-party library applied at runtime. Only `.really-dead-class`
+    // (referenced by nothing) is flagged.
+    write_file(
+        &root.join("src/g.css"),
+        ".stagger-1{}\n.toast-skin{}\n.maplibregl-popup{}\n.really-dead-class{}\n",
+    );
+    write_file(
+        &root.join("src/App.tsx"),
+        "export const A = ({ i }: { i: number }) => { const cfg = { className: 'toast-skin' }; return <div className={`stagger-${i}`} data-cfg={cfg.className} />; };\n",
+    );
+
+    assert_eq!(
+        css_list_names(root, "unreferenced_css_classes", "class"),
+        vec!["really-dead-class".to_string()],
+        "dynamic / string-literal / third-party classes are credited"
+    );
+}
+
+#[test]
+fn health_css_font_face_credited_by_custom_property_value() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(&root.join("package.json"), r#"{"name":"ff"}"#);
+    // `LiveFont` is referenced only via a `--font-display` custom property inside
+    // a `@theme` block (which lightningcss skips); `GhostFont` is referenced by
+    // nothing. Only `GhostFont` is flagged. The fonts' own `@font-face` blocks are
+    // masked so they do not self-credit.
+    write_file(
+        &root.join("src/fonts.css"),
+        "@font-face{font-family:\"LiveFont\";src:url(/l.woff2)}\n@font-face{font-family:\"GhostFont\";src:url(/g.woff2)}\n@theme{--font-display:\"LiveFont\",sans-serif}\n.x{font-family:var(--font-display)}\n",
+    );
+    write_file(&root.join("src/App.tsx"), "export const A = () => null;\n");
+
+    assert_eq!(
+        css_list_names(root, "unused_font_faces", "family"),
+        vec!["GhostFont".to_string()],
+        "a font referenced via a --font-* custom property is not flagged"
+    );
+}
+
+#[test]
+fn health_css_global_override_class_not_unreferenced_candidate() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"mod","dependencies":{"antd":"^5.0.0"}}"#,
+    );
+    // A CSS Module that styles an antd modal: `.dialog` is the local class (applied
+    // via `styles.dialog`), `:global(.ant-modal-header)` is antd's runtime DOM the
+    // module overrides, and `.dead-local` is a genuinely-unused local class. Only
+    // `dead-local` is flagged: the `:global(...)` override is never an unreferenced
+    // candidate (the project markup never authors it; antd applies it at runtime),
+    // even though `antd` normalizes too short for the dependency-prefix abstain.
+    write_file(
+        &root.join("src/Dialog.module.css"),
+        ".dialog :global(.ant-modal-header) { color: red; }\n.dialog { padding: 1rem; }\n.dead-local { display: none; }\n",
+    );
+    write_file(
+        &root.join("src/Dialog.tsx"),
+        "import styles from './Dialog.module.css';\nexport const D = () => <div className={styles.dialog} />;\n",
+    );
+
+    assert_eq!(
+        css_list_names(root, "unreferenced_css_classes", "class"),
+        vec!["dead-local".to_string()],
+        "a :global(...) override is not an unreferenced-class candidate"
+    );
+}
+
+#[test]
+fn health_css_flags_unreferenced_global_class() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"unref","version":"1.0.0"}"#,
+    );
+    // The sheet is locally consumed (3 of 4 classes used in markup), so it is not
+    // a published surface; `.legacy-promo-banner` is referenced nowhere.
+    write_file(
+        &root.join("src/app.css"),
+        ".app-header { color: red; }\n.profile-card { padding: 1rem; }\n.nav-link { color: blue; }\n.legacy-promo-banner { display: none; }\n",
+    );
+    write_file(
+        &root.join("src/App.jsx"),
+        "export const C = () => (<div className=\"app-header\"><span className=\"profile-card\"><a className=\"nav-link\">x</a></span></div>);\n",
+    );
+
+    let refs = unreferenced_classes(root);
+    assert_eq!(refs.len(), 1, "only the dead class is flagged: {refs:#?}");
+    assert_eq!(refs[0]["class"], "legacy-promo-banner");
+    assert_eq!(refs[0]["path"], "src/app.css");
+    assert_eq!(refs[0]["line"], 4);
+    let action = &refs[0]["actions"][0];
+    assert_eq!(action["type"], "verify-unused");
+    assert!(
+        action["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("CMS") && d.contains("server")),
+        "verify action names the unscanned surfaces: {action:#?}"
+    );
+}
+
+#[test]
+fn health_css_unreferenced_abstains_on_preprocessor_dominant() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(&root.join("package.json"), r#"{"name":"scssheavy"}"#);
+    write_file(&root.join("src/app.css"), ".used { color: red; }\n");
+    write_file(&root.join("src/a.scss"), ".dead-banner { color: blue; }\n");
+    write_file(&root.join("src/b.scss"), ".other-dead { color: green; }\n");
+    write_file(
+        &root.join("src/App.jsx"),
+        "export const C = () => <div className=\"used\">x</div>;\n",
+    );
+    // 2 scss vs 1 css -> preprocessor-dominant -> abstain entirely.
+    assert!(unreferenced_classes(root).is_empty());
+}
+
+#[test]
+fn health_css_unreferenced_abstains_published_and_dynamic() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    // `dist/lib.css` is a published entry (package.json `style`), so its classes
+    // are consumed externally and must not be flagged.
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"pub","style":"dist/lib.css"}"#,
+    );
+    write_file(
+        &root.join("dist/lib.css"),
+        ".lib-button { color: red; }\n.lib-unused-public { color: blue; }\n",
+    );
+    // `app.css` is locally consumed; `.feature-modal` is only ever assembled
+    // dynamically (substring of a clsx call), so it must NOT be flagged.
+    write_file(
+        &root.join("src/app.css"),
+        ".sidebar { color: red; }\n.feature-modal { color: blue; }\n",
+    );
+    write_file(
+        &root.join("src/App.jsx"),
+        "export const C = ({on}) => <div className={clsx(\"sidebar\", on && \"feature-modal\")}>x</div>;\n",
+    );
+    let refs = unreferenced_classes(root);
+    assert!(
+        !refs.iter().any(|r| r["class"] == "lib-unused-public"),
+        "published-surface class must not be flagged: {refs:#?}"
+    );
+    assert!(
+        !refs.iter().any(|r| r["class"] == "feature-modal"),
+        "dynamically-assembled class (substring of clsx arg) must not be flagged: {refs:#?}"
+    );
+}
+
+#[test]
+fn health_css_unreferenced_renders_in_human() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(&root.join("package.json"), r#"{"name":"unrefhuman"}"#);
+    write_file(
+        &root.join("src/app.css"),
+        ".header-bar { color: red; }\n.orphaned-widget { display: none; }\n",
+    );
+    write_file(
+        &root.join("src/App.jsx"),
+        "export const C = () => <div className=\"header-bar\">x</div>;\n",
+    );
+    let out = run_fallow_in_root("health", root, &["--css", "--max-crap", "10000", "--quiet"]);
+    assert!(
+        out.stdout.contains("referenced by no in-project markup")
+            && out.stdout.contains("orphaned-widget")
+            && out.stdout.contains("CMS"),
+        "human output renders the unreferenced class with the unscanned-surface disclosure: stdout={:?}",
+        out.stdout
+    );
+}
+
+#[test]
+fn health_css_flags_unused_font_face() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(&root.join("package.json"), r#"{"name":"deadfont"}"#);
+    // `DeadFont` is declared + downloaded but applied by nothing; `LiveFont` is
+    // declared AND applied via `.title`.
+    write_file(
+        &root.join("src/fonts.css"),
+        "@font-face { font-family: \"DeadFont\"; src: url(./dead.woff2); }\n@font-face { font-family: \"LiveFont\"; src: url(./live.woff2); }\n.title { font-family: LiveFont, sans-serif; }\n",
+    );
+    write_file(
+        &root.join("src/App.jsx"),
+        "export const C = () => <h1 className=\"title\">x</h1>;\n",
+    );
+
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&out);
+    let css = json
+        .get("css_analytics")
+        .expect("css_analytics present with --css");
+    assert_eq!(css["summary"]["unused_font_faces"], 1);
+    let ff = css["unused_font_faces"]
+        .as_array()
+        .expect("unused_font_faces located list");
+    assert_eq!(ff.len(), 1, "only the dead font is flagged: {ff:#?}");
+    assert_eq!(ff[0]["family"], "DeadFont");
+    assert_eq!(ff[0]["path"], "src/fonts.css");
+    assert!(
+        !ff.iter().any(|f| f["family"] == "LiveFont"),
+        "an applied @font-face must not be flagged: {ff:#?}"
+    );
+    assert_eq!(ff[0]["actions"][0]["type"], "verify-unused");
+}
+
+#[test]
+fn health_css_unused_font_face_abstains_when_used_outside_css() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(&root.join("package.json"), r#"{"name":"jsfont"}"#);
+    // `CanvasFont` is declared in CSS but applied only from JavaScript (a canvas
+    // `fontFamily` assignment), which the CSS-only scan cannot see. The source
+    // substring check must keep it out of the dead set.
+    write_file(
+        &root.join("src/fonts.css"),
+        "@font-face { font-family: \"CanvasFont\"; src: url(./c.woff2); }\n.x { color: red; }\n",
+    );
+    write_file(
+        &root.join("src/canvas.ts"),
+        "export const setup = (ctx: CanvasRenderingContext2D) => { ctx.font = '16px CanvasFont'; };\n",
+    );
+    write_file(&root.join("src/App.jsx"), "export const C = () => null;\n");
+
+    let css = parse_json(&run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    ));
+    let count = css
+        .get("css_analytics")
+        .and_then(|c| c.get("summary"))
+        .and_then(|s| s.get("unused_font_faces"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    assert_eq!(
+        count, 0,
+        "a font applied from JS must not be flagged: {css}"
+    );
+}
+
+#[test]
+fn health_css_unused_font_face_matches_family_case_insensitively() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(&root.join("package.json"), r#"{"name":"casefont"}"#);
+    // CSS font-family names are case-insensitive: `BrandFont` declared with one
+    // casing and applied with another (`brandfont`) is LIVE and must not flag.
+    // The declared casing is preserved for display, so only the genuinely-dead
+    // `GhostFont` (no reference at any casing) is reported.
+    write_file(
+        &root.join("src/fonts.css"),
+        "@font-face { font-family: \"BrandFont\"; src: url(./b.woff2); }\n@font-face { font-family: \"GhostFont\"; src: url(./g.woff2); }\n.title { font-family: brandfont, sans-serif; }\n",
+    );
+    write_file(
+        &root.join("src/App.jsx"),
+        "export const C = () => <h1 className=\"title\">x</h1>;\n",
+    );
+
+    let css = parse_json(&run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    ));
+    let analytics = css
+        .get("css_analytics")
+        .expect("css_analytics present with --css");
+    assert_eq!(analytics["summary"]["unused_font_faces"], 1);
+    let ff = analytics["unused_font_faces"]
+        .as_array()
+        .expect("unused_font_faces located list");
+    assert_eq!(ff.len(), 1, "only the truly dead font is flagged: {ff:#?}");
+    assert_eq!(ff[0]["family"], "GhostFont");
+    assert!(
+        !ff.iter().any(|f| f["family"] == "BrandFont"),
+        "a font applied with different casing must not be flagged: {ff:#?}"
+    );
+}
+
+#[test]
+fn health_css_flags_font_size_unit_mix_above_floor() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(&root.join("package.json"), r#"{"name":"unitmix"}"#);
+    // A type scale split across px and rem, above the floor (>= 6 distinct sizes,
+    // 2 units): the unit-mix candidate fires with a per-unit breakdown.
+    write_file(
+        &root.join("src/type.css"),
+        ".a{font-size:12px}.b{font-size:14px}.c{font-size:16px}.d{font-size:1rem}.e{font-size:1.25rem}.f{font-size:1.5rem}\n",
+    );
+    write_file(&root.join("src/App.jsx"), "export const C = () => null;\n");
+
+    let css = parse_json(&run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    ));
+    let analytics = css
+        .get("css_analytics")
+        .expect("css_analytics present with --css");
+    assert_eq!(analytics["summary"]["font_size_units_used"], 2);
+    let mix = analytics
+        .get("font_size_unit_mix")
+        .expect("font_size_unit_mix candidate present above the floor");
+    let notations = mix["notations"].as_array().expect("notations array");
+    assert_eq!(notations.len(), 2, "px + rem: {mix:#?}");
+    let units: Vec<&str> = notations
+        .iter()
+        .filter_map(|n| n["notation"].as_str())
+        .collect();
+    assert!(units.contains(&"px") && units.contains(&"rem"), "{units:?}");
+    assert_eq!(mix["actions"][0]["type"], "standardize");
+}
+
+#[test]
+fn health_css_font_size_unit_mix_abstains_below_floor() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(&root.join("package.json"), r#"{"name":"smallscale"}"#);
+    // Two units but only three distinct sizes: below the floor, so no candidate
+    // (a tiny stylesheet is not yet a type scale).
+    write_file(
+        &root.join("src/type.css"),
+        ".a{font-size:12px}.b{font-size:1rem}.c{font-size:1.5rem}\n",
+    );
+    write_file(&root.join("src/App.jsx"), "export const C = () => null;\n");
+
+    let css = parse_json(&run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    ));
+    let analytics = css
+        .get("css_analytics")
+        .expect("css_analytics present with --css");
+    assert!(
+        analytics.get("font_size_unit_mix").is_none(),
+        "below floor: no unit-mix candidate: {analytics}"
+    );
+}
+
+#[test]
+fn health_css_flags_unresolved_class_typo() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"css-class-typo","version":"1.0.0"}"#,
+    );
+    // `card-title` and `btn-primary` are authored CSS classes.
+    write_file(
+        &root.join("src/styles.css"),
+        ".card-title { color: red; }\n.btn-primary { color: blue; }\n",
+    );
+    // `card-tite` is a one-edit typo of `card-title` (flag + suggest).
+    // `btn-primary` matches a definition (NOT flagged).
+    // `flex` is a Tailwind utility, not one edit from any class (NOT flagged).
+    // `xy` is too short to typo-check (NOT flagged).
+    write_file(
+        &root.join("src/App.jsx"),
+        "export const C = () => (\n  <div className=\"card-tite flex\">\n    <span className=\"btn-primary xy\">ok</span>\n  </div>\n);\n",
+    );
+
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&out);
+    let css = json
+        .get("css_analytics")
+        .expect("css_analytics present with --css");
+    assert_eq!(css["summary"]["unresolved_class_references"], 1);
+
+    let refs = css["unresolved_class_references"]
+        .as_array()
+        .expect("unresolved_class_references located list");
+    assert_eq!(refs.len(), 1, "only the typo is flagged: {refs:#?}");
+    assert_eq!(refs[0]["class"], "card-tite");
+    assert_eq!(refs[0]["suggestion"], "card-title");
+    assert_eq!(refs[0]["path"], "src/App.jsx");
+    assert!(
+        !refs.iter().any(|r| r["class"] == "btn-primary"),
+        "a correctly-spelled class must not be flagged: {refs:#?}"
+    );
+    assert!(
+        !refs
+            .iter()
+            .any(|r| r["class"] == "flex" || r["class"] == "xy"),
+        "Tailwind utilities and short tokens must not be flagged: {refs:#?}"
+    );
+
+    let actions = refs[0]["actions"]
+        .as_array()
+        .expect("unresolved class actions array");
+    assert_eq!(actions[0]["type"], "verify-undefined");
+    assert_eq!(actions[0]["auto_fixable"], false);
+    assert!(
+        actions[0]["command"]
+            .as_str()
+            .is_some_and(|c| c.contains("card-tite")),
+        "verify action carries a read-only token search: {actions:#?}"
+    );
+}
+
+#[test]
+fn health_css_no_unresolved_class_without_authored_css() {
+    // A project with no authored CSS classes (Tailwind-only) emits no typo
+    // candidates: with an empty target set every token would look unresolved,
+    // so the feature abstains entirely.
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"tw-only","version":"1.0.0","dependencies":{"tailwindcss":"4"}}"#,
+    );
+    write_file(
+        &root.join("src/App.jsx"),
+        "export const C = () => <div className=\"flex items-center gap-4\">x</div>;\n",
+    );
+
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&out);
+    if let Some(css) = json.get("css_analytics") {
+        assert_eq!(
+            css["summary"]["unresolved_class_references"], 0,
+            "no authored CSS -> no typo candidates: {css}"
+        );
+        assert!(
+            css.get("unresolved_class_references").is_none()
+                || css["unresolved_class_references"]
+                    .as_array()
+                    .is_some_and(std::vec::Vec::is_empty),
+            "no authored CSS -> empty list"
+        );
+    }
+}
+
+#[test]
+fn health_css_unresolved_abstains_on_preprocessor_dominant() {
+    // When .scss/.sass/.less files outnumber plain .css, the parser cannot
+    // expand preprocessor loops/mixins, so the defined-class set is unreliable
+    // (a generated class looks unresolved). The feature abstains entirely, even
+    // when a token would otherwise be a near-miss. Caught by real-world smoke on
+    // Bootstrap (a SCSS framework), where the bare near-miss produced 117 FPs.
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"scss-heavy","version":"1.0.0"}"#,
+    );
+    write_file(&root.join("src/a.css"), ".sidebar-nav { color: red; }\n");
+    write_file(
+        &root.join("src/b.scss"),
+        "$x: 1;\n.thing { color: blue; }\n",
+    );
+    write_file(
+        &root.join("src/c.scss"),
+        "$y: 2;\n.other { color: green; }\n",
+    );
+    // `sidebar-nev` is one edit from the defined `.sidebar-nav`, but the project
+    // is preprocessor-dominant (2 scss vs 1 css), so nothing is flagged.
+    write_file(
+        &root.join("src/App.jsx"),
+        "export const C = () => <nav className=\"sidebar-nev\">x</nav>;\n",
+    );
+
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&out);
+    if let Some(css) = json.get("css_analytics") {
+        assert_eq!(
+            css["summary"]["unresolved_class_references"], 0,
+            "preprocessor-dominant project must abstain: {css}"
+        );
+    }
+}
+
+#[test]
+fn health_css_unresolved_class_renders_in_human() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"css-class-typo-human","version":"1.0.0"}"#,
+    );
+    write_file(
+        &root.join("src/styles.css"),
+        ".sidebar-nav { color: red; }\n",
+    );
+    write_file(
+        &root.join("src/App.jsx"),
+        "export const C = () => <nav className=\"sidebar-nev\">x</nav>;\n",
+    );
+
+    let out = run_fallow_in_root("health", root, &["--css", "--max-crap", "10000", "--quiet"]);
+    assert!(
+        out.stdout.contains("likely class typo")
+            && out.stdout.contains("sidebar-nev")
+            && out.stdout.contains("did you mean")
+            && out.stdout.contains("sidebar-nav"),
+        "human output renders the typo with a suggestion: stdout={:?}",
+        out.stdout
+    );
+}
+
 #[test]
 fn health_css_flags_duplicate_declaration_blocks() {
     let dir = tempdir().unwrap();

@@ -1010,7 +1010,7 @@ fn write_css_analytics_section(out: &mut String, report: &crate::health_types::H
     );
     let _ = writeln!(
         out,
-        "- Candidates: {} unreferenced + {} undefined @keyframes | {} duplicate blocks | {} scoped-unused classes | {} Tailwind arbitrary values | {} unused @property | {} unused @layer",
+        "- Candidates: {} unreferenced + {} undefined @keyframes | {} duplicate blocks | {} scoped-unused classes | {} Tailwind arbitrary values | {} unused @property | {} unused @layer | {} likely class typos | {} unreferenced classes | {} unused @font-face",
         s.keyframes_unreferenced,
         s.keyframes_undefined,
         s.duplicate_declaration_blocks,
@@ -1018,6 +1018,9 @@ fn write_css_analytics_section(out: &mut String, report: &crate::health_types::H
         s.tailwind_arbitrary_values,
         s.unused_property_registrations,
         s.unused_layers,
+        s.unresolved_class_references,
+        s.unreferenced_css_classes,
+        s.unused_font_faces,
     );
     if !css.undefined_keyframes.is_empty() {
         let named: Vec<String> = css
@@ -1040,6 +1043,63 @@ fn write_css_analytics_section(out: &mut String, report: &crate::health_types::H
             .map(|a| format!("`{}` ({}x)", a.value, a.count))
             .collect();
         let _ = writeln!(out, "- Top Tailwind arbitrary values: {}", named.join(", "));
+    }
+    if !css.unresolved_class_references.is_empty() {
+        let named: Vec<String> = css
+            .unresolved_class_references
+            .iter()
+            .take(5)
+            .map(|u| {
+                format!(
+                    "`{}` -> `{}` ({}:{})",
+                    u.class, u.suggestion, u.path, u.line
+                )
+            })
+            .collect();
+        let _ = writeln!(
+            out,
+            "- Likely class typos (candidates; verify, may be CSS-in-JS or external): {}",
+            named.join(", "),
+        );
+    }
+    if !css.unreferenced_css_classes.is_empty() {
+        let named: Vec<String> = css
+            .unreferenced_css_classes
+            .iter()
+            .take(5)
+            .map(|u| format!("`.{}` ({}:{})", u.class, u.path, u.line))
+            .collect();
+        let _ = writeln!(
+            out,
+            "- Unreferenced global classes (candidates; verify no email / server / CMS / Markdown applies them): {}",
+            named.join(", "),
+        );
+    }
+    if !css.unused_font_faces.is_empty() {
+        let named: Vec<String> = css
+            .unused_font_faces
+            .iter()
+            .take(5)
+            .map(|u| format!("`{}` ({})", u.family, u.path))
+            .collect();
+        let _ = writeln!(
+            out,
+            "- Unused @font-face (dead web-font; candidates, may be set from JS/inline): {}",
+            named.join(", "),
+        );
+    }
+    if let Some(mix) = &css.font_size_unit_mix {
+        let breakdown: Vec<String> = mix
+            .notations
+            .iter()
+            .map(|n| format!("{} {}", n.count, n.notation))
+            .collect();
+        let _ = writeln!(
+            out,
+            "- Font sizes mix {} units (candidate, standardize unless intentional): {}",
+            mix.notations.len(),
+            breakdown.join(", "),
+        );
     }
     out.push('\n');
 }

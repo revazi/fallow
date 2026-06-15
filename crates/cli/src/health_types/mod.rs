@@ -125,6 +125,76 @@ pub struct CssAnalyticsReport {
     /// can be populated via `@import layer()`). Located by first definition.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unused_at_rules: Vec<UnusedAtRule>,
+    /// Static `class` / `className` tokens in markup that match no CSS class
+    /// defined anywhere in the project AND are one edit away from a class that
+    /// IS defined (a likely typo or stale rename, with the suggested class). The
+    /// CSS analogue of an unresolved import; the near-miss restriction keeps it
+    /// near-zero false-positive (Tailwind utilities and third-party classes are
+    /// not one edit from an authored class). Candidates, never gated: the token
+    /// could be defined in CSS-in-JS or an external stylesheet the parser never
+    /// sees. Sorted by `(path, line, class)`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unresolved_class_references: Vec<UnresolvedClassReference>,
+    /// Global CSS classes (defined in a plain `.css`/`.scss` rule) whose literal
+    /// name is referenced by NO in-project markup, static or dynamic (the CSS
+    /// analogue of an unused export). Heavily gated to stay near-zero-false-
+    /// positive: emitted only when the project is plain-CSS-dominant, the
+    /// stylesheet is locally consumed (not a published design-system surface),
+    /// and the whole project is in scope. Candidates, never gated findings: the
+    /// class may be used by an HTML email, server template, CMS, or Markdown the
+    /// parser never scans. Sorted by `(path, line, class)`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unreferenced_css_classes: Vec<UnreferencedCssClass>,
+    /// `@font-face` families declared in a stylesheet but referenced by no
+    /// `font-family` anywhere in the project: a dead web-font payload (the font
+    /// file is downloaded but never applied). Located at the declaring
+    /// stylesheet. Cleanup candidates: the family could be applied from inline
+    /// styles or set via JavaScript. Sorted by `(path, family)`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unused_font_faces: Vec<UnusedFontFace>,
+    /// The project authors `font-size` values in several units (`px`, `rem`,
+    /// `em`, `%`), with a per-unit distinct-value count: a type-scale
+    /// inconsistency smell (mixing `px` and `rem` for type works against
+    /// user-zoom accessibility). Present only above a conservative floor.
+    /// Advisory candidate, never gated: the spread can be intentional (fixed
+    /// chrome in `px`, body type in `rem`).
+    ///
+    /// Color-notation mixing (hex vs rgb vs hsl) is deliberately NOT surfaced:
+    /// the CSS parser canonicalizes every legacy sRGB notation to hex before
+    /// fallow sees the value, so the authored distinction is already gone and
+    /// cannot be recovered without a separate raw-token pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_size_unit_mix: Option<CssNotationConsistency>,
+}
+
+/// A design-token notation-consistency candidate: the distinct notations used
+/// across the codebase for one value axis (today, length units on `font-size`),
+/// with a per-notation distinct-value count. Emitted only above a floor, since
+/// mixing notations for one axis is a "no single source of truth" smell.
+/// Advisory: the action is "standardize on one notation", not a single search.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CssNotationConsistency {
+    /// The value axis these notations describe, e.g. `"Colors"` or
+    /// `"Font sizes"`.
+    pub axis: String,
+    /// Per-notation distinct-value counts, sorted by count descending then
+    /// notation name (so the dominant notation is first and ties are stable).
+    pub notations: Vec<CssNotationCount>,
+    /// Read-only guidance step(s), so consumers can iterate `actions` uniformly
+    /// across every candidate type. Always at least one entry.
+    pub actions: Vec<CssCandidateAction>,
+}
+
+/// One notation bucket and the count of distinct values authored in it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CssNotationCount {
+    /// The notation family, e.g. `"hex"`, `"rgb"`, `"hsl"`, `"modern"`, `"px"`,
+    /// `"rem"`, `"em"`, `"%"`.
+    pub notation: String,
+    /// Distinct values authored in this notation across the codebase.
+    pub count: u32,
 }
 
 /// An unused CSS at-rule entity (an `@property` registration with no `var()`
@@ -224,6 +294,39 @@ pub struct UnreferencedKeyframes {
     pub actions: Vec<CssCandidateAction>,
 }
 
+/// An `@font-face` family declared in a stylesheet but referenced by no
+/// `font-family` anywhere in the project: a dead web-font payload. A cleanup
+/// candidate (the family could be applied from inline styles or JavaScript).
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UnusedFontFace {
+    /// The declared font family name (quotes stripped).
+    pub family: String,
+    /// Project-root-relative, forward-slash path to the declaring stylesheet.
+    pub path: String,
+    /// Read-only verification step(s) before removing. Always at least one entry,
+    /// so consumers can iterate `actions` uniformly across every finding type.
+    pub actions: Vec<CssCandidateAction>,
+}
+
+/// A global CSS class defined in a plain `.css`/`.scss` rule whose literal name
+/// is referenced by no in-project markup (the CSS analogue of an unused export).
+/// A heavily-gated candidate, never a gated finding: the class may be applied
+/// from an HTML email, server template, CMS, or Markdown the parser never sees.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UnreferencedCssClass {
+    /// The class name (no dot).
+    pub class: String,
+    /// Project-root-relative, forward-slash path to the defining stylesheet.
+    pub path: String,
+    /// 1-based line of the class's first definition.
+    pub line: u32,
+    /// Read-only verification step(s) before removing. Always at least one entry,
+    /// so consumers can iterate `actions` uniformly across every finding type.
+    pub actions: Vec<CssCandidateAction>,
+}
+
 /// An animation reference (`animation` / `animation-name`) to a `@keyframes`
 /// name that is defined in no stylesheet anywhere in the project (the
 /// "used-but-undefined" direction). Usually a typo or a removed animation;
@@ -239,6 +342,28 @@ pub struct UndefinedKeyframes {
     /// Read-only verification step(s) an agent can run before fixing the
     /// reference. Always at least one entry, so consumers can iterate `actions`
     /// uniformly across every finding type.
+    pub actions: Vec<CssCandidateAction>,
+}
+
+/// A static `class` / `className` token in markup that matches no CSS class
+/// defined anywhere in the project but is one edit away from a class that IS
+/// defined (a likely typo or stale rename). The CSS analogue of an unresolved
+/// import. A candidate, never a gated finding: the token could be defined in
+/// CSS-in-JS or an external stylesheet the parser never sees.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UnresolvedClassReference {
+    /// The static class token referenced in markup (no dot).
+    pub class: String,
+    /// The defined CSS class one edit away: the likely intended class.
+    pub suggestion: String,
+    /// Project-root-relative, forward-slash path to the markup file.
+    pub path: String,
+    /// 1-based line of the `class` / `className` attribute.
+    pub line: u32,
+    /// Read-only verification step(s) before fixing the reference. Always at
+    /// least one entry, so consumers can iterate `actions` uniformly across
+    /// every finding type.
     pub actions: Vec<CssCandidateAction>,
 }
 
@@ -302,9 +427,42 @@ pub enum CssCandidateActionType {
     /// Replace a Tailwind arbitrary value with a configured scale token, or
     /// confirm the one-off is intentional (the arbitrary-value candidates).
     ReplaceWithToken,
+    /// Standardize an inconsistent value axis on a single notation (the
+    /// color-format / length-unit mixing candidates).
+    Standardize,
 }
 
 impl CssCandidateAction {
+    /// Verify action for an unused `@font-face` family: a read-only token search
+    /// for any inline-style or JavaScript application of the family before
+    /// removing the dead web-font.
+    #[must_use]
+    pub fn verify_unused_font_face(family: &str) -> Self {
+        Self {
+            kind: CssCandidateActionType::VerifyUnused,
+            auto_fixable: false,
+            description: format!(
+                "Confirm the \"{family}\" font family is not applied from an inline style or JavaScript before removing the @font-face and its font files."
+            ),
+            command: safe_token_search(family),
+        }
+    }
+
+    /// Verify action for an unreferenced global CSS class: name the surfaces the
+    /// in-project scan does NOT cover (the class could be applied from there) and
+    /// ship a read-only token search to double-check before removing.
+    #[must_use]
+    pub fn verify_unreferenced_class(name: &str) -> Self {
+        Self {
+            kind: CssCandidateActionType::VerifyUnused,
+            auto_fixable: false,
+            description: format!(
+                "Confirm no HTML email, server-rendered template, CMS content, or Markdown applies the \"{name}\" class before removing it (fallow scanned only in-project JS/TS/HTML/Vue/Svelte/Astro markup)."
+            ),
+            command: safe_token_search(name),
+        }
+    }
+
     /// Verify action for an unreferenced `@keyframes`: a read-only token search
     /// for any JavaScript or template reference that applies the animation
     /// (which the CSS-only scan cannot see).
@@ -333,6 +491,23 @@ impl CssCandidateAction {
                 "Confirm \"{name}\" is not a @keyframes defined in CSS-in-JS (styled-components, Emotion, vanilla-extract) before treating the animation reference as a typo."
             ),
             command: safe_token_search(name),
+        }
+    }
+
+    /// Guidance action for a mixed value axis (colors authored in several
+    /// notations, or font sizes in several units): standardize on the single
+    /// dominant notation. No command (this is a project-wide refactor, and the
+    /// per-notation breakdown already quantifies the spread); the residual
+    /// judgment is whether the spread is an intentional migration in progress.
+    #[must_use]
+    pub fn standardize_notation(axis: &str, dominant: &str) -> Self {
+        Self {
+            kind: CssCandidateActionType::Standardize,
+            auto_fixable: false,
+            description: format!(
+                "{axis} are authored in several notations; standardize on one ({dominant} is the most common) so the scale is a single source of truth, unless this is an intentional migration in progress."
+            ),
+            command: None,
         }
     }
 
@@ -392,6 +567,22 @@ impl CssCandidateAction {
             auto_fixable: false,
             description,
             command: safe_token_search(name),
+        }
+    }
+
+    /// Verify action for a markup class token that matches no defined CSS class
+    /// but is one edit from a class that is defined: surface the suggestion and a
+    /// read-only token search so the residual risk (a class defined in CSS-in-JS
+    /// or an external stylesheet) can be ruled out before fixing the typo.
+    #[must_use]
+    pub fn verify_unresolved_class(class: &str, suggestion: &str) -> Self {
+        Self {
+            kind: CssCandidateActionType::VerifyUndefined,
+            auto_fixable: false,
+            description: format!(
+                "\"{class}\" matches no CSS class; did you mean \"{suggestion}\"? Confirm \"{class}\" is not defined in CSS-in-JS or an external stylesheet before fixing the reference."
+            ),
+            command: safe_token_search(class),
         }
     }
 
@@ -516,6 +707,21 @@ pub struct CssAnalyticsSummary {
     /// Cascade layers declared but never populated by a block (located in
     /// `unused_at_rules`). Cleanup candidates.
     pub unused_layers: u32,
+    /// Static markup class tokens that match no defined CSS class but are one
+    /// edit from a defined class (likely typos / stale renames). Located in
+    /// `unresolved_class_references`. Candidates, never gated.
+    pub unresolved_class_references: u32,
+    /// Global CSS classes defined in a stylesheet but referenced by no in-project
+    /// markup (located in `unreferenced_css_classes`). Heavily gated cleanup
+    /// candidates; zero on preprocessor-dominant or partial-scope runs.
+    pub unreferenced_css_classes: u32,
+    /// `@font-face` families declared but referenced by no `font-family` anywhere
+    /// (located in `unused_font_faces`). Dead web-font cleanup candidates.
+    pub unused_font_faces: u32,
+    /// Number of distinct `font-size` units (`px` / `rem` / `em` / `%`) authored
+    /// across the codebase. Mixing units is a type-scale consistency smell,
+    /// broken out in `font_size_unit_mix`.
+    pub font_size_units_used: u32,
     /// Number of analyzed stylesheets whose per-rule `notable_rules` list was
     /// truncated at the per-file cap, so a consumer knows the per-rule detail is
     /// incomplete without walking every file.

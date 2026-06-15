@@ -256,6 +256,10 @@ fn render_css_analytics(lines: &mut Vec<String>, report: &crate::health_types::H
     }
     render_css_duplicate_blocks(lines, css);
     render_css_tailwind_arbitrary(lines, css);
+    render_css_unresolved_classes(lines, css);
+    render_css_unreferenced_classes(lines, css);
+    render_css_unused_font_faces(lines, css);
+    render_css_font_size_unit_mix(lines, css);
 
     let mut notable: Vec<(&str, &fallow_types::extract::CssRuleMetric)> = css
         .files
@@ -396,6 +400,112 @@ fn render_css_unused_at_rules(
         "unused @layer",
         "declared but never populated",
     );
+}
+
+/// Render likely class-name typos: static markup class tokens one edit from a
+/// defined CSS class, with the suggested class. Up to 5 located entries.
+fn render_css_unresolved_classes(
+    lines: &mut Vec<String>,
+    css: &crate::health_types::CssAnalyticsReport,
+) {
+    if css.unresolved_class_references.is_empty() {
+        return;
+    }
+    let total = css.unresolved_class_references.len();
+    lines.push(format!(
+        "  {total} likely class typo{} (candidates; verify, may be defined in CSS-in-JS or an external stylesheet):",
+        plural(total),
+    ));
+    for entry in css.unresolved_class_references.iter().take(5) {
+        lines.push(format!(
+            "  {}:{}: \"{}\" -> did you mean \"{}\"?",
+            entry.path, entry.line, entry.class, entry.suggestion,
+        ));
+    }
+    if total > 5 {
+        let more = total - 5;
+        lines.push(
+            format!("  ... and {more} more (--format json for full list)")
+                .dimmed()
+                .to_string(),
+        );
+    }
+}
+
+/// Render global CSS classes referenced by no in-project markup, with the
+/// "we did not scan emails / server templates / CMS" disclosure. Up to 5 located.
+fn render_css_unreferenced_classes(
+    lines: &mut Vec<String>,
+    css: &crate::health_types::CssAnalyticsReport,
+) {
+    if css.unreferenced_css_classes.is_empty() {
+        return;
+    }
+    let total = css.unreferenced_css_classes.len();
+    lines.push(format!(
+        "  {total} global CSS class{} referenced by no in-project markup (candidates; verify no email / server template / CMS / Markdown applies them):",
+        if total == 1 { "" } else { "es" },
+    ));
+    for entry in css.unreferenced_css_classes.iter().take(5) {
+        lines.push(format!("  {}:{}: .{}", entry.path, entry.line, entry.class));
+    }
+    if total > 5 {
+        let more = total - 5;
+        lines.push(
+            format!("  ... and {more} more (--format json for full list)")
+                .dimmed()
+                .to_string(),
+        );
+    }
+}
+
+/// Render `@font-face` families declared but never applied (dead web-font
+/// payload), with the residual inline-style / JS caveat. Up to 5 located.
+fn render_css_unused_font_faces(
+    lines: &mut Vec<String>,
+    css: &crate::health_types::CssAnalyticsReport,
+) {
+    if css.unused_font_faces.is_empty() {
+        return;
+    }
+    let total = css.unused_font_faces.len();
+    lines.push(format!(
+        "  {total} unused @font-face{} (declared but applied by no font-family; candidates, may be set from JS/inline):",
+        plural(total),
+    ));
+    for entry in css.unused_font_faces.iter().take(5) {
+        lines.push(format!("  {}: {}", entry.path, entry.family));
+    }
+    if total > 5 {
+        let more = total - 5;
+        lines.push(
+            format!("  ... and {more} more (--format json for full list)")
+                .dimmed()
+                .to_string(),
+        );
+    }
+}
+
+/// Render the font-size unit-mix candidate: the project authors its type scale
+/// in several length units (a px/rem accessibility smell), with the per-unit
+/// distinct-value breakdown. Advisory; one line plus the breakdown.
+fn render_css_font_size_unit_mix(
+    lines: &mut Vec<String>,
+    css: &crate::health_types::CssAnalyticsReport,
+) {
+    let Some(mix) = &css.font_size_unit_mix else {
+        return;
+    };
+    let breakdown = mix
+        .notations
+        .iter()
+        .map(|n| format!("{} {}", n.count, n.notation))
+        .collect::<Vec<_>>()
+        .join(", ");
+    lines.push(format!(
+        "  font sizes mix {} units ({breakdown}; candidate, standardize unless intentional)",
+        mix.notations.len(),
+    ));
 }
 
 /// Render the value-sprawl lines: colors / font-sizes / z-indexes always, plus a
