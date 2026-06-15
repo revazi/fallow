@@ -285,12 +285,15 @@ fn execute_dupes_inner(
     let config = load_config_for_analysis(
         opts.root,
         opts.config_path,
-        opts.output,
-        opts.no_cache,
-        opts.threads,
-        opts.production_override
-            .or_else(|| opts.production.then_some(true)),
-        opts.quiet,
+        crate::ConfigLoadOptions {
+            output: opts.output,
+            no_cache: opts.no_cache,
+            threads: opts.threads,
+            production_override: opts
+                .production_override
+                .or_else(|| opts.production.then_some(true)),
+            quiet: opts.quiet,
+        },
         fallow_config::ProductionAnalysis::Dupes,
     )?;
 

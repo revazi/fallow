@@ -349,11 +349,13 @@ fn build_static_index(ctx: &RunContext<'_>, production: bool) -> Result<StaticIn
     let config = crate::load_config_for_analysis(
         ctx.root,
         ctx.config_path,
-        ctx.output,
-        ctx.no_cache,
-        ctx.threads,
-        Some(production),
-        ctx.quiet,
+        crate::ConfigLoadOptions {
+            output: ctx.output,
+            no_cache: ctx.no_cache,
+            threads: ctx.threads,
+            production_override: Some(production),
+            quiet: ctx.quiet,
+        },
         fallow_config::ProductionAnalysis::Health,
     )?;
     let files = fallow_core::discover::discover_files_with_plugin_scopes(&config);

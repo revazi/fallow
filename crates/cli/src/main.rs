@@ -66,7 +66,9 @@ use error::emit_error;
 use health::{HealthOptions, SortBy};
 use list::ListOptions;
 pub use runtime_support::{AnalysisKind, GroupBy};
-pub(crate) use runtime_support::{build_ownership_resolver, load_config, load_config_for_analysis};
+pub(crate) use runtime_support::{
+    ConfigLoadOptions, build_ownership_resolver, load_config, load_config_for_analysis,
+};
 
 const SECURITY_UNSUPPORTED_GLOBAL_LONGS: &[&str] = &[
     "baseline",
