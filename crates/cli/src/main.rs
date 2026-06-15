@@ -863,6 +863,12 @@ enum Command {
         #[arg(long)]
         targets: bool,
 
+        /// Add structural CSS analytics: specificity hotspots, !important density,
+        /// over-complex selectors, and deep nesting. Reads and parses every
+        /// project stylesheet (standard CSS; SCSS is skipped).
+        #[arg(long)]
+        css: bool,
+
         /// Filter refactoring targets by effort level (low, medium, high).
         /// Implies --targets.
         #[arg(long, value_enum)]
@@ -3502,6 +3508,7 @@ fn dispatch_health_command(command: Command, dispatch: &DispatchContext<'_>) -> 
         ownership,
         ownership_emails,
         targets,
+        css,
         effort,
         score,
         min_score,
@@ -3540,6 +3547,7 @@ fn dispatch_health_command(command: Command, dispatch: &DispatchContext<'_>) -> 
             ownership,
             ownership_emails: ownership_emails.map(EmailModeArg::to_config),
             targets,
+            css,
             effort,
             score,
             min_score,
@@ -4561,6 +4569,7 @@ struct HealthDispatchArgs<'a> {
     ownership: bool,
     ownership_emails: Option<fallow_config::EmailMode>,
     targets: bool,
+    css: bool,
     effort: Option<EffortFilter>,
     score: bool,
     min_score: Option<f64>,
@@ -4654,6 +4663,7 @@ fn dispatch_health(dispatch: &DispatchContext<'_>, args: HealthDispatchArgs<'_>)
         ownership,
         ownership_emails,
         targets,
+        css,
         effort,
         score,
         min_score,
@@ -4687,6 +4697,7 @@ fn dispatch_health(dispatch: &DispatchContext<'_>, args: HealthDispatchArgs<'_>)
         coverage_gaps,
         hotspots,
         targets,
+        css,
         score,
         min_score,
         save_snapshot,
@@ -4744,6 +4755,7 @@ fn dispatch_health(dispatch: &DispatchContext<'_>, args: HealthDispatchArgs<'_>)
         ownership: ownership && sections.hotspots,
         ownership_emails,
         targets: sections.targets,
+        css: sections.css,
         force_full: sections.force_full,
         score_only_output: sections.score_only_output,
         enforce_coverage_gap_gate: true,
@@ -4774,6 +4786,7 @@ struct EffectiveHealthSectionInput<'a> {
     coverage_gaps: bool,
     hotspots: bool,
     targets: bool,
+    css: bool,
     score: bool,
     min_score: Option<f64>,
     save_snapshot: Option<&'a Option<String>>,
@@ -4787,6 +4800,7 @@ struct EffectiveHealthSections {
     coverage_gaps: bool,
     hotspots: bool,
     targets: bool,
+    css: bool,
     score: bool,
     force_full: bool,
     score_only_output: bool,
@@ -4819,6 +4833,7 @@ fn effective_health_sections(input: &EffectiveHealthSectionInput<'_>) -> Effecti
             || snapshot_requested
             || input.trend,
         targets: if any_section { input.targets } else { true },
+        css: input.css,
         score: eff_score,
         force_full,
         score_only_output: is_health_score_only_output(input, score),

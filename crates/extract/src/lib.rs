@@ -20,6 +20,7 @@ pub mod astro;
 pub mod cache;
 pub(crate) mod complexity;
 pub mod css;
+pub mod css_metrics;
 pub mod flags;
 pub mod glimmer;
 pub mod graphql;
@@ -29,10 +30,13 @@ pub mod inventory;
 pub mod mdx;
 mod parse;
 pub mod sfc;
+pub mod sfc_css;
 mod sfc_props;
 mod sfc_template;
 mod source_map;
 pub mod suppress;
+/// Tailwind CSS arbitrary-value detection.
+pub mod tailwind;
 pub(crate) mod template_complexity;
 mod template_usage;
 /// Visitor utilities for AST extraction.
@@ -54,10 +58,13 @@ pub use fallow_types::extract::{
 
 pub use astro::extract_astro_frontmatter;
 pub use css::extract_css_module_exports;
+pub use css_metrics::compute_css_analytics;
 pub use glimmer::{is_glimmer_file, strip_glimmer_templates};
 pub use mdx::extract_mdx_statements;
 pub use sfc::{extract_sfc_scripts, is_sfc_file};
+pub use sfc_css::{scoped_unused_classes, sfc_virtual_stylesheet};
 pub use sfc_template::angular::ANGULAR_TPL_SENTINEL;
+pub use tailwind::{TailwindArbitraryUse, scan_tailwind_arbitrary_values};
 
 #[expect(
     clippy::expect_used,

@@ -783,6 +783,117 @@ pub struct FunctionComplexity {
     pub contributions: Vec<ComplexityContribution>,
 }
 
+/// Structural CSS metrics for a single style rule, computed from the parsed CSS
+/// syntax tree. A rule is recorded only when it crosses a structural floor (an
+/// id selector, a complex selector, a `!important` declaration, or deep
+/// nesting), so the vector stays bounded on normal stylesheets.
+///
+/// Not persisted in the extraction cache: `fallow health` computes these
+/// on demand from the CSS source, so there is no `bitcode` derive.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CssRuleMetric {
+    /// 1-based line of the rule's first selector.
+    pub line: u32,
+    /// 1-based column of the rule's first selector.
+    pub col: u32,
+    /// Specificity component `a` (id selectors), max across the rule's selectors.
+    pub specificity_a: u16,
+    /// Specificity component `b` (class / attribute / pseudo-class selectors).
+    pub specificity_b: u16,
+    /// Specificity component `c` (type / pseudo-element selectors).
+    pub specificity_c: u16,
+    /// Largest selector component count across the rule's selector list.
+    pub complexity: u16,
+    /// Declaration count in the rule (normal plus `!important`).
+    pub declaration_count: u16,
+    /// `!important` declaration count in the rule.
+    pub important_count: u16,
+    /// Style-rule nesting depth (0 = top level).
+    pub nesting_depth: u8,
+}
+
+/// A style rule's declaration-block fingerprint and location, for cross-file
+/// duplicate-block detection. Only rules with a meaningful number of
+/// declarations are recorded (small blocks repeat legitimately). Internal
+/// staging only: this is consumed in-process by the health layer to build the
+/// grouped `duplicate_declaration_blocks` output and is never serialized.
+#[derive(Debug, Clone)]
+pub struct CssDeclarationBlock {
+    /// xxh3 fingerprint over the rule's normalized (sorted, `!important`-tagged)
+    /// declaration set.
+    pub fingerprint: u64,
+    /// 1-based line of the rule's first selector.
+    pub line: u32,
+    /// Declaration count in the rule (normal plus `!important`).
+    pub declaration_count: u16,
+}
+
+/// Stylesheet-level structural CSS analytics, computed from the parsed CSS
+/// syntax tree. Feeds `fallow health` penalty weights and located findings,
+/// never a standalone CSS score.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CssAnalytics {
+    /// Total declarations across every style rule (normal plus `!important`).
+    pub total_declarations: u32,
+    /// Total `!important` declarations across every style rule.
+    pub important_declarations: u32,
+    /// Number of style rules.
+    pub rule_count: u32,
+    /// Number of style rules with no declarations.
+    pub empty_rule_count: u32,
+    /// Deepest style-rule nesting depth observed (0 = no nesting).
+    pub max_nesting_depth: u8,
+    /// Rules that crossed the structural floor, in source order. Bounded; see
+    /// [`Self::notable_truncated`]. The scalar aggregates above always reflect
+    /// the full stylesheet regardless of truncation.
+    pub notable_rules: Vec<CssRuleMetric>,
+    /// `true` when more rules crossed the structural floor than `notable_rules`
+    /// retains (compiled utility CSS can emit thousands of `!important` rules),
+    /// so consumers can note that per-rule findings were capped.
+    pub notable_truncated: bool,
+    /// Distinct color values in the stylesheet, in their authored form, sorted.
+    /// Distinct notations of the same color (`red` vs `#f00`) count separately,
+    /// since inconsistent notation is itself a design-token-sprawl signal.
+    pub colors: Vec<String>,
+    /// Distinct `font-size` declaration values in the stylesheet, sorted.
+    pub font_sizes: Vec<String>,
+    /// Distinct `z-index` declaration values in the stylesheet, sorted.
+    pub z_indexes: Vec<String>,
+    /// Distinct `box-shadow` declaration values in the stylesheet, sorted. A
+    /// high count signals an uncontrolled shadow scale (design-token sprawl).
+    pub box_shadows: Vec<String>,
+    /// Distinct `border-radius` declaration values in the stylesheet, sorted.
+    pub border_radii: Vec<String>,
+    /// Distinct `line-height` declaration values in the stylesheet, sorted.
+    pub line_heights: Vec<String>,
+    /// Distinct custom properties (`--x`) DEFINED in the stylesheet, sorted.
+    pub defined_custom_properties: Vec<String>,
+    /// Distinct custom properties REFERENCED via `var()` in the stylesheet.
+    pub referenced_custom_properties: Vec<String>,
+    /// Distinct `@keyframes` names DEFINED in the stylesheet, sorted.
+    pub defined_keyframes: Vec<String>,
+    /// Distinct `@keyframes` names REFERENCED via `animation` / `animation-name`.
+    pub referenced_keyframes: Vec<String>,
+    /// Distinct custom properties REGISTERED via an `@property` rule, sorted.
+    pub registered_custom_properties: Vec<String>,
+    /// Distinct cascade layers DECLARED (via `@layer a, b;` statements or named
+    /// `@layer a { }` blocks), sorted.
+    pub declared_layers: Vec<String>,
+    /// Distinct cascade layers POPULATED by a named `@layer a { }` block, sorted.
+    /// A layer declared but never populated (and not imported into) is a
+    /// cleanup candidate.
+    pub populated_layers: Vec<String>,
+    /// Per-rule declaration-block fingerprints for rules at or above the minimum
+    /// block size, used to detect duplicate declaration blocks across the
+    /// project. Internal staging consumed by the health layer; never serialized
+    /// (the public output is the grouped `duplicate_declaration_blocks`).
+    #[serde(skip)]
+    #[cfg_attr(feature = "schema", schemars(skip))]
+    pub declaration_blocks: Vec<CssDeclarationBlock>,
+}
+
 /// Which complexity metric a [`ComplexityContribution`] adds to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, bitcode::Encode, bitcode::Decode)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

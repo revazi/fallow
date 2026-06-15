@@ -101,6 +101,10 @@ pub struct HealthOptions<'a> {
     pub ownership: bool,
     pub ownership_emails: Option<fallow_config::EmailMode>,
     pub targets: bool,
+    /// Compute structural CSS analytics (`--css`): specificity hotspots,
+    /// `!important` density, over-complex selectors, deep nesting. Opt-in
+    /// because it reads and parses every project stylesheet.
+    pub css: bool,
     /// Run the full health pipeline even if some sections are hidden, so score
     /// and snapshot outputs stay accurate.
     pub force_full: bool,
@@ -439,7 +443,7 @@ fn execute_health_inner(
     })?;
 
     let HealthOutputParts {
-        report,
+        mut report,
         grouping,
         timings,
         coverage_gaps_has_findings,
@@ -482,6 +486,16 @@ fn execute_health_inner(
         },
     );
 
+    if opts.css {
+        report.css_analytics = compute_css_analytics_report(
+            &files,
+            &config,
+            &ignore_set,
+            changed_files.as_ref(),
+            ws_roots.as_deref(),
+        );
+    }
+
     record_health_telemetry(&report, coverage_gaps_has_findings);
 
     Ok(build_health_result(HealthResultInput {
@@ -494,6 +508,526 @@ fn execute_health_inner(
         coverage_gaps_has_findings,
         should_fail_on_coverage_gaps: enforce_coverage_gaps,
     }))
+}
+
+/// Compute structural CSS analytics for the project's standard-CSS stylesheets,
+/// honoring the same ignore / changed-since / workspace filters as the rest of
+/// `fallow health`. SCSS is skipped because lightningcss parses standard CSS,
+/// not Sass. Only stylesheets with a structurally notable rule are listed
+/// individually; the summary aggregates every analyzed stylesheet. Returns
+/// `None` when no stylesheet was analyzed.
+/// Project-wide CSS token accumulator: distinct design-token values plus the
+/// custom-property / `@keyframes` definition and reference sets, with the first
+/// stylesheet that defines/references each keyframe name so a candidate can be
+/// located. Populated per stylesheet during the discovery walk, then finalized
+/// into the summary counts and the two located keyframe candidate lists.
+#[derive(Default)]
+struct CssTokenSets {
+    colors: rustc_hash::FxHashSet<String>,
+    font_sizes: rustc_hash::FxHashSet<String>,
+    z_indexes: rustc_hash::FxHashSet<String>,
+    box_shadows: rustc_hash::FxHashSet<String>,
+    border_radii: rustc_hash::FxHashSet<String>,
+    line_heights: rustc_hash::FxHashSet<String>,
+    defined_custom_props: rustc_hash::FxHashSet<String>,
+    referenced_custom_props: rustc_hash::FxHashSet<String>,
+    defined_keyframes: rustc_hash::FxHashSet<String>,
+    referenced_keyframes: rustc_hash::FxHashSet<String>,
+    keyframes_definers: rustc_hash::FxHashMap<String, String>,
+    keyframe_referencers: rustc_hash::FxHashMap<String, String>,
+    /// Declaration-block fingerprint -> (declaration count, occurrences as
+    /// `(path, line)`), for cross-file duplicate-block detection.
+    declaration_blocks: rustc_hash::FxHashMap<u64, (u16, Vec<(String, u32)>)>,
+    /// `@property` registrations + cascade-layer declarations / populations for
+    /// cross-file unused-at-rule detection, with the first defining file per name.
+    registered_custom_props: rustc_hash::FxHashSet<String>,
+    declared_layers: rustc_hash::FxHashSet<String>,
+    populated_layers: rustc_hash::FxHashSet<String>,
+    property_registrars: rustc_hash::FxHashMap<String, String>,
+    layer_declarers: rustc_hash::FxHashMap<String, String>,
+}
+
+impl CssTokenSets {
+    /// Group declaration-block fingerprints seen in 2+ rules into located
+    /// duplicate-block candidates, set the summary counts, and sort by estimated
+    /// savings descending (then first occurrence path).
+    fn group_duplicate_blocks(
+        &self,
+        summary: &mut crate::health_types::CssAnalyticsSummary,
+    ) -> Vec<crate::health_types::CssDuplicateBlock> {
+        use crate::health_types::{CssBlockOccurrence, CssCandidateAction, CssDuplicateBlock};
+
+        let mut groups: Vec<CssDuplicateBlock> = self
+            .declaration_blocks
+            .values()
+            .filter(|(_, occurrences)| occurrences.len() >= 2)
+            .map(|(declaration_count, occurrences)| {
+                let occurrence_count = saturate_len(occurrences.len());
+                let estimated_savings = occurrence_count
+                    .saturating_sub(1)
+                    .saturating_mul(u32::from(*declaration_count));
+                let mut occ: Vec<CssBlockOccurrence> = occurrences
+                    .iter()
+                    .map(|(path, line)| CssBlockOccurrence {
+                        path: path.clone(),
+                        line: *line,
+                    })
+                    .collect();
+                occ.sort_by(|a, b| (&a.path, a.line).cmp(&(&b.path, b.line)));
+                CssDuplicateBlock {
+                    declaration_count: *declaration_count,
+                    occurrence_count,
+                    estimated_savings,
+                    occurrences: occ,
+                    actions: vec![CssCandidateAction::consolidate_block(occurrence_count)],
+                }
+            })
+            .collect();
+        // Highest-savings groups first; tie-break on the first occurrence path for
+        // deterministic output.
+        groups.sort_by(|a, b| {
+            b.estimated_savings
+                .cmp(&a.estimated_savings)
+                .then_with(|| occurrence_sort_key(a).cmp(&occurrence_sort_key(b)))
+        });
+        summary.duplicate_declaration_blocks = saturate_len(groups.len());
+        summary.duplicate_declarations_total = groups
+            .iter()
+            .fold(0u32, |acc, g| acc.saturating_add(g.estimated_savings));
+        groups
+    }
+
+    /// Fold one stylesheet's analytics into the project-wide token sets,
+    /// recording the first-defining file (`rel`) per located name.
+    fn record(&mut self, analytics: &fallow_types::extract::CssAnalytics, rel: &str) {
+        self.colors.extend(analytics.colors.iter().cloned());
+        self.font_sizes.extend(analytics.font_sizes.iter().cloned());
+        self.z_indexes.extend(analytics.z_indexes.iter().cloned());
+        self.box_shadows
+            .extend(analytics.box_shadows.iter().cloned());
+        self.border_radii
+            .extend(analytics.border_radii.iter().cloned());
+        self.line_heights
+            .extend(analytics.line_heights.iter().cloned());
+        self.defined_custom_props
+            .extend(analytics.defined_custom_properties.iter().cloned());
+        self.referenced_custom_props
+            .extend(analytics.referenced_custom_properties.iter().cloned());
+        for keyframes in &analytics.referenced_keyframes {
+            self.referenced_keyframes.insert(keyframes.clone());
+            self.keyframe_referencers
+                .entry(keyframes.clone())
+                .or_insert_with(|| rel.to_owned());
+        }
+        for keyframes in &analytics.defined_keyframes {
+            self.defined_keyframes.insert(keyframes.clone());
+            self.keyframes_definers
+                .entry(keyframes.clone())
+                .or_insert_with(|| rel.to_owned());
+        }
+        for block in &analytics.declaration_blocks {
+            self.declaration_blocks
+                .entry(block.fingerprint)
+                .or_insert_with(|| (block.declaration_count, Vec::new()))
+                .1
+                .push((rel.to_owned(), block.line));
+        }
+        for name in &analytics.registered_custom_properties {
+            self.registered_custom_props.insert(name.clone());
+            self.property_registrars
+                .entry(name.clone())
+                .or_insert_with(|| rel.to_owned());
+        }
+        for name in &analytics.populated_layers {
+            self.populated_layers.insert(name.clone());
+        }
+        for name in &analytics.declared_layers {
+            self.declared_layers.insert(name.clone());
+            self.layer_declarers
+                .entry(name.clone())
+                .or_insert_with(|| rel.to_owned());
+        }
+    }
+
+    /// Group unused CSS at-rule entities: `@property` registrations never read
+    /// via `var()`, and cascade layers declared but never populated. Sets the
+    /// summary counts and returns the located list sorted by (kind, path, name).
+    fn group_unused_at_rules(
+        &self,
+        summary: &mut crate::health_types::CssAnalyticsSummary,
+    ) -> Vec<crate::health_types::UnusedAtRule> {
+        use crate::health_types::{CssCandidateAction, UnusedAtRule, UnusedAtRuleKind};
+
+        let mut out: Vec<UnusedAtRule> = Vec::new();
+        for name in self
+            .registered_custom_props
+            .difference(&self.referenced_custom_props)
+        {
+            out.push(UnusedAtRule {
+                kind: UnusedAtRuleKind::PropertyRegistration,
+                name: name.clone(),
+                path: self
+                    .property_registrars
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_default(),
+                actions: vec![CssCandidateAction::verify_unused_at_rule(
+                    UnusedAtRuleKind::PropertyRegistration,
+                    name,
+                )],
+            });
+        }
+        summary.unused_property_registrations = saturate_len(out.len());
+        let property_count = out.len();
+        for name in self.declared_layers.difference(&self.populated_layers) {
+            out.push(UnusedAtRule {
+                kind: UnusedAtRuleKind::Layer,
+                name: name.clone(),
+                path: self.layer_declarers.get(name).cloned().unwrap_or_default(),
+                actions: vec![CssCandidateAction::verify_unused_at_rule(
+                    UnusedAtRuleKind::Layer,
+                    name,
+                )],
+            });
+        }
+        summary.unused_layers = saturate_len(out.len() - property_count);
+        out.sort_by(|a, b| (a.kind as u8, &a.path, &a.name).cmp(&(b.kind as u8, &b.path, &b.name)));
+        out
+    }
+
+    /// Fill the summary token counts and return the two located keyframe
+    /// candidate lists: defined-but-unused (`unreferenced`) and used-but-
+    /// undefined (`undefined`).
+    fn finalize(
+        &self,
+        summary: &mut crate::health_types::CssAnalyticsSummary,
+    ) -> (
+        Vec<crate::health_types::UnreferencedKeyframes>,
+        Vec<crate::health_types::UndefinedKeyframes>,
+    ) {
+        use crate::health_types::{CssCandidateAction, UndefinedKeyframes, UnreferencedKeyframes};
+
+        summary.unique_colors = saturate_len(self.colors.len());
+        summary.unique_font_sizes = saturate_len(self.font_sizes.len());
+        summary.unique_z_indexes = saturate_len(self.z_indexes.len());
+        summary.unique_box_shadows = saturate_len(self.box_shadows.len());
+        summary.unique_border_radii = saturate_len(self.border_radii.len());
+        summary.unique_line_heights = saturate_len(self.line_heights.len());
+        summary.custom_properties_defined = saturate_len(self.defined_custom_props.len());
+        summary.custom_properties_unreferenced = saturate_len(
+            self.defined_custom_props
+                .difference(&self.referenced_custom_props)
+                .count(),
+        );
+        // Count-only (per panel review): a var() referenced but defined in no
+        // stylesheet is dominated by JS-set design tokens, so locating these
+        // would be net-noise. The count is an architecture signal.
+        summary.custom_properties_undefined = saturate_len(
+            self.referenced_custom_props
+                .difference(&self.defined_custom_props)
+                .count(),
+        );
+        summary.keyframes_defined = saturate_len(self.defined_keyframes.len());
+        summary.keyframes_unreferenced = saturate_len(
+            self.defined_keyframes
+                .difference(&self.referenced_keyframes)
+                .count(),
+        );
+        summary.keyframes_undefined = saturate_len(
+            self.referenced_keyframes
+                .difference(&self.defined_keyframes)
+                .count(),
+        );
+
+        // @keyframes are low-cardinality, so BOTH directions are located (not
+        // just counted): defined-but-unused, and used-but-defined-nowhere.
+        let unreferenced_keyframes = locate_keyframe_diff(
+            &self.defined_keyframes,
+            &self.referenced_keyframes,
+            &self.keyframes_definers,
+        )
+        .into_iter()
+        .map(|(name, path)| UnreferencedKeyframes {
+            actions: vec![CssCandidateAction::verify_keyframe(&name)],
+            name,
+            path,
+        })
+        .collect();
+        let undefined_keyframes = locate_keyframe_diff(
+            &self.referenced_keyframes,
+            &self.defined_keyframes,
+            &self.keyframe_referencers,
+        )
+        .into_iter()
+        .map(|(name, path)| UndefinedKeyframes {
+            actions: vec![CssCandidateAction::verify_undefined_keyframe(&name)],
+            name,
+            path,
+        })
+        .collect();
+        (unreferenced_keyframes, undefined_keyframes)
+    }
+}
+
+/// Build the sorted `(name, path)` set difference `present - absent`, locating
+/// each surviving name via `locator` (empty path when absent). Sorted by
+/// `(path, name)` for deterministic output.
+fn locate_keyframe_diff(
+    present: &rustc_hash::FxHashSet<String>,
+    absent: &rustc_hash::FxHashSet<String>,
+    locator: &rustc_hash::FxHashMap<String, String>,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = present
+        .difference(absent)
+        .map(|name| (name.clone(), locator.get(name).cloned().unwrap_or_default()))
+        .collect();
+    out.sort_by(|a, b| (&a.1, &a.0).cmp(&(&b.1, &b.0)));
+    out
+}
+
+/// Saturating `usize -> u32` for token counts.
+fn saturate_len(len: usize) -> u32 {
+    u32::try_from(len).unwrap_or(u32::MAX)
+}
+
+/// `(first path, first line)` sort key for a duplicate block; occurrences are
+/// pre-sorted, so the first is the lexicographic minimum.
+fn occurrence_sort_key(block: &crate::health_types::CssDuplicateBlock) -> (&str, u32) {
+    block
+        .occurrences
+        .first()
+        .map_or(("", 0), |occ| (occ.path.as_str(), occ.line))
+}
+
+/// Returns `true` when the project's root `package.json` declares a Tailwind
+/// dependency (`tailwindcss` or any `@tailwindcss/*`), used to gate the
+/// arbitrary-value markup scan: the `prefix-[value]` token shape is Tailwind-
+/// specific in practice but not formally exclusive.
+fn project_uses_tailwind(root: &std::path::Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(root.join("package.json")) else {
+        return false;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    ["dependencies", "devDependencies", "peerDependencies"]
+        .iter()
+        .any(|key| {
+            json.get(key)
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|deps| {
+                    deps.keys()
+                        .any(|k| k == "tailwindcss" || k.starts_with("@tailwindcss/"))
+                })
+        })
+}
+
+/// Scan the project's markup (`.jsx` / `.tsx` / `.html` / `.astro` / `.vue` /
+/// `.svelte`) for Tailwind arbitrary-value utility tokens, honoring the same
+/// ignore / changed / workspace filters as the CSS scan. Aggregates by token
+/// (total count + first location), sets the summary counts, and returns the
+/// located list sorted by use count descending.
+fn scan_markup_tailwind_arbitrary_values(
+    files: &[fallow_types::discover::DiscoveredFile],
+    config: &ResolvedConfig,
+    ignore_set: &globset::GlobSet,
+    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&[std::path::PathBuf]>,
+    summary: &mut crate::health_types::CssAnalyticsSummary,
+) -> Vec<crate::health_types::TailwindArbitraryValue> {
+    use crate::health_types::TailwindArbitraryValue;
+
+    if !project_uses_tailwind(&config.root) {
+        return Vec::new();
+    }
+    // token -> (total count, first path, first line). First-seen wins for the
+    // location; files are path-sorted, so the first occurrence is deterministic.
+    let mut agg: rustc_hash::FxHashMap<String, (u32, String, u32)> =
+        rustc_hash::FxHashMap::default();
+    let mut total_uses: u32 = 0;
+    for file in files {
+        let path = &file.path;
+        let extension = path.extension().and_then(|ext| ext.to_str());
+        if !matches!(
+            extension,
+            Some("jsx" | "tsx" | "html" | "astro" | "vue" | "svelte")
+        ) {
+            continue;
+        }
+        let relative = path.strip_prefix(&config.root).unwrap_or(path);
+        if ignore_set.is_match(relative) {
+            continue;
+        }
+        if let Some(changed) = changed_files
+            && !changed.contains(path)
+        {
+            continue;
+        }
+        if let Some(roots) = ws_roots
+            && !roots.iter().any(|root| path.starts_with(root))
+        {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let rel = relative.to_string_lossy().replace('\\', "/");
+        for arb in fallow_core::extract::scan_tailwind_arbitrary_values(&source) {
+            total_uses = total_uses.saturating_add(1);
+            let entry = agg
+                .entry(arb.value)
+                .or_insert_with(|| (0, rel.clone(), arb.line));
+            entry.0 = entry.0.saturating_add(1);
+        }
+    }
+
+    summary.tailwind_arbitrary_values = saturate_len(agg.len());
+    summary.tailwind_arbitrary_value_uses = total_uses;
+    let mut out: Vec<TailwindArbitraryValue> = agg
+        .into_iter()
+        .map(|(value, (count, path, line))| TailwindArbitraryValue {
+            actions: vec![crate::health_types::CssCandidateAction::replace_arbitrary_value(&value)],
+            value,
+            count,
+            path,
+            line,
+        })
+        .collect();
+    out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.value.cmp(&b.value)));
+    out
+}
+
+fn compute_css_analytics_report(
+    files: &[fallow_types::discover::DiscoveredFile],
+    config: &ResolvedConfig,
+    ignore_set: &globset::GlobSet,
+    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&[std::path::PathBuf]>,
+) -> Option<crate::health_types::CssAnalyticsReport> {
+    use crate::health_types::{
+        CssAnalyticsReport, CssAnalyticsSummary, CssCandidateAction, CssFileAnalytics,
+        ScopedUnusedClasses,
+    };
+
+    let mut file_reports = Vec::new();
+    let mut summary = CssAnalyticsSummary::default();
+    let mut scoped_unused: Vec<ScopedUnusedClasses> = Vec::new();
+    // Project-wide design-token + custom-property + @keyframes accumulator,
+    // unioned across every analyzed stylesheet (including ones with no notable
+    // rule, which are not listed individually), finalized after the walk.
+    let mut tokens = CssTokenSets::default();
+
+    for file in files {
+        let path = &file.path;
+        let extension = path.extension().and_then(|ext| ext.to_str());
+        let is_css = extension == Some("css");
+        let is_sfc = matches!(extension, Some("vue") | Some("svelte"));
+        if !is_css && !is_sfc {
+            continue;
+        }
+        let relative = path.strip_prefix(&config.root).unwrap_or(path);
+        if ignore_set.is_match(relative) {
+            continue;
+        }
+        if let Some(changed) = changed_files
+            && !changed.contains(path)
+        {
+            continue;
+        }
+        if let Some(roots) = ws_roots
+            && !roots.iter().any(|root| path.starts_with(root))
+        {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+
+        if is_sfc {
+            let classes = fallow_core::extract::scoped_unused_classes(&source);
+            if !classes.is_empty() {
+                summary.scoped_unused_classes = summary
+                    .scoped_unused_classes
+                    .saturating_add(u32::try_from(classes.len()).unwrap_or(u32::MAX));
+                scoped_unused.push(ScopedUnusedClasses {
+                    path: relative.to_string_lossy().replace('\\', "/"),
+                    classes,
+                    actions: vec![CssCandidateAction::verify_scoped_classes()],
+                });
+            }
+        }
+
+        // Vue/Svelte SFC `<style>` blocks are folded into a virtual stylesheet so
+        // their structural metrics (specificity, !important, design tokens) count
+        // the same as a standalone .css file; SFCs with only SCSS blocks yield None.
+        let css_source = if is_sfc {
+            match fallow_core::extract::sfc_virtual_stylesheet(&source) {
+                Some(virtual_css) => std::borrow::Cow::Owned(virtual_css),
+                None => continue,
+            }
+        } else {
+            std::borrow::Cow::Borrowed(source.as_str())
+        };
+        let Some(analytics) = fallow_core::extract::compute_css_analytics(&css_source) else {
+            continue;
+        };
+
+        let rel = relative.to_string_lossy().replace('\\', "/");
+        summary.files_analyzed = summary.files_analyzed.saturating_add(1);
+        summary.total_rules = summary.total_rules.saturating_add(analytics.rule_count);
+        summary.total_declarations = summary
+            .total_declarations
+            .saturating_add(analytics.total_declarations);
+        summary.important_declarations = summary
+            .important_declarations
+            .saturating_add(analytics.important_declarations);
+        summary.empty_rules = summary
+            .empty_rules
+            .saturating_add(analytics.empty_rule_count);
+        summary.max_nesting_depth = summary.max_nesting_depth.max(analytics.max_nesting_depth);
+        if analytics.notable_truncated {
+            summary.notable_truncated_files = summary.notable_truncated_files.saturating_add(1);
+        }
+        tokens.record(&analytics, &rel);
+
+        if !analytics.notable_rules.is_empty() {
+            file_reports.push(CssFileAnalytics {
+                path: rel,
+                analytics,
+            });
+        }
+    }
+
+    let (unreferenced_keyframes, undefined_keyframes) = tokens.finalize(&mut summary);
+    let duplicate_declaration_blocks = tokens.group_duplicate_blocks(&mut summary);
+    let unused_at_rules = tokens.group_unused_at_rules(&mut summary);
+    // Markup arbitrary-value scan (gated on the project using Tailwind).
+    let tailwind_arbitrary_values = scan_markup_tailwind_arbitrary_values(
+        files,
+        config,
+        ignore_set,
+        changed_files,
+        ws_roots,
+        &mut summary,
+    );
+
+    if summary.files_analyzed == 0
+        && scoped_unused.is_empty()
+        && tailwind_arbitrary_values.is_empty()
+    {
+        return None;
+    }
+    scoped_unused.sort_by(|a, b| a.path.cmp(&b.path));
+    Some(CssAnalyticsReport {
+        files: file_reports,
+        summary,
+        scoped_unused,
+        unreferenced_keyframes,
+        undefined_keyframes,
+        duplicate_declaration_blocks,
+        tailwind_arbitrary_values,
+        unused_at_rules,
+    })
 }
 
 struct HealthCoverageSettings {

@@ -417,7 +417,12 @@ use crate::MemberKind;
 /// template `data.<key>` accesses onto the generated `$types` alias, keeping them
 /// keyed on `data` for the load-data join. A warm cache from 165 carries the
 /// remapped (`PageData.<key>`) accesses and would miss real consumer reads.
-pub(super) const CACHE_VERSION: u32 = 166;
+///
+/// Bumped to 167 for #550: CSS Module class extraction now derives its class set
+/// from a real CSS AST (lightningcss) for standard CSS, so warm caches written
+/// by the regex-only extractor can differ on escaped class names and malformed
+/// at-rule preludes.
+pub(super) const CACHE_VERSION: u32 = 167;
 
 /// Duplication token cache version. Bump when duplicate tokenization,
 /// normalization, or the on-disk token cache schema changes.

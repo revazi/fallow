@@ -2721,3 +2721,676 @@ fn health_churn_file_powers_hotspots_and_ownership_without_git() {
         inert.stdout, inert.stderr
     );
 }
+
+#[test]
+fn health_css_flag_surfaces_css_analytics() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"css-fixture","version":"1.0.0"}"#,
+    );
+    write_file(&root.join("src/index.ts"), "export const x = 1;\n");
+    // An id selector (specificity a=1) and an over-complex compound selector are
+    // both structurally notable; a plain class rule is not.
+    write_file(
+        &root.join("src/styles.css"),
+        ":root { --brand: 4px; --unused-token: 0; }\n\
+         #main { color: red; z-index: 5; }\n\
+         .a.b.c.d.e { color: blue; font-size: 12px; }\n\
+         .themed { width: var(--brand); }\n\
+         @keyframes spin { from {} to {} }\n\
+         @keyframes dead-anim { from {} }\n\
+         .spinner { animation-name: spin; }\n\
+         .plain { color: green; }\n",
+    );
+
+    // Without --css the section is absent (default output unchanged).
+    let plain = run_fallow_in_root(
+        "health",
+        root,
+        &["--max-crap", "10000", "--format", "json", "--quiet"],
+    );
+    let plain_json = parse_json(&plain);
+    assert!(
+        plain_json.get("css_analytics").is_none(),
+        "css_analytics must be absent without --css: {}",
+        plain.stdout
+    );
+
+    // With --css the section reports the stylesheet and its notable rules.
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&out);
+    let css = json
+        .get("css_analytics")
+        .expect("css_analytics present with --css");
+    assert_eq!(css["summary"]["files_analyzed"], 1);
+    let files = css["files"].as_array().expect("files array");
+    assert!(!files.is_empty(), "notable rules surface the stylesheet");
+    let notable: Vec<_> = files
+        .iter()
+        .flat_map(|f| f["analytics"]["notable_rules"].as_array().unwrap().iter())
+        .collect();
+    assert!(
+        notable.iter().any(|r| r["specificity_a"] == 1),
+        "the #main id selector contributes specificity a=1"
+    );
+    assert!(
+        notable
+            .iter()
+            .any(|r| r["complexity"].as_u64().unwrap() > 4),
+        "the five-class compound selector is over-complex"
+    );
+
+    // Design-token sprawl: three distinct colors, one font size, one z-index.
+    let summary = &css["summary"];
+    assert_eq!(summary["unique_colors"], 3, "summary: {summary}");
+    assert_eq!(summary["unique_font_sizes"], 1, "summary: {summary}");
+    assert_eq!(summary["unique_z_indexes"], 1, "summary: {summary}");
+
+    // Deadness candidates: --unused-token and @keyframes dead-anim are defined
+    // but never referenced in CSS.
+    assert_eq!(
+        summary["custom_properties_defined"], 2,
+        "summary: {summary}"
+    );
+    assert_eq!(
+        summary["custom_properties_unreferenced"], 1,
+        "summary: {summary}"
+    );
+    assert_eq!(summary["keyframes_defined"], 2, "summary: {summary}");
+    assert_eq!(summary["keyframes_unreferenced"], 1, "summary: {summary}");
+    assert_eq!(summary["notable_truncated_files"], 0, "summary: {summary}");
+
+    // The unreferenced @keyframes is LOCATED (name + path), not just counted.
+    let keyframes = css["unreferenced_keyframes"]
+        .as_array()
+        .expect("unreferenced_keyframes located list");
+    assert_eq!(keyframes.len(), 1);
+    assert_eq!(keyframes[0]["name"], "dead-anim");
+    assert_eq!(keyframes[0]["path"], "src/styles.css");
+
+    // Located cleanup candidates carry a read-only verify action so agents have
+    // a machine-readable next step (parity with every other health finding).
+    let kf_actions = keyframes[0]["actions"]
+        .as_array()
+        .expect("keyframe actions array");
+    assert_eq!(kf_actions[0]["type"], "verify-unused");
+    assert_eq!(kf_actions[0]["auto_fixable"], false);
+    assert!(
+        kf_actions[0]["command"]
+            .as_str()
+            .is_some_and(|c| c.contains("dead-anim")),
+        "keyframe verify action should carry a read-only search for the name: {kf_actions:#?}"
+    );
+
+    // No false positives on a healthy fixture: every var() and animation-name
+    // resolves to a definition, so both undefined directions are zero and the
+    // located undefined list is omitted.
+    assert_eq!(
+        summary["custom_properties_undefined"], 0,
+        "summary: {summary}"
+    );
+    assert_eq!(summary["keyframes_undefined"], 0, "summary: {summary}");
+    assert!(
+        css.get("undefined_keyframes").is_none(),
+        "undefined_keyframes omitted when every animation resolves: {}",
+        out.stdout
+    );
+}
+
+#[test]
+fn health_css_flags_undefined_keyframe_and_var() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"css-undef","version":"1.0.0"}"#,
+    );
+    write_file(&root.join("src/index.ts"), "export const x = 1;\n");
+    // `wobble` references a @keyframes defined nowhere (undefined). `spin` is
+    // defined in a DIFFERENT stylesheet, so cross-file resolution must NOT flag
+    // it. `--ghost` has no definition (undefined); `--brand` is defined in b.css.
+    write_file(
+        &root.join("src/a.css"),
+        ".x { animation-name: wobble; color: var(--ghost); }\n\
+         .y { animation-name: spin; color: var(--brand); }\n",
+    );
+    write_file(
+        &root.join("src/b.css"),
+        ":root { --brand: red; }\n@keyframes spin { from {} to {} }\n",
+    );
+
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&out);
+    let css = json
+        .get("css_analytics")
+        .expect("css_analytics present with --css");
+    let summary = &css["summary"];
+
+    // `spin` and `--brand` resolve across the two stylesheets, so only `wobble`
+    // and `--ghost` are undefined (used-but-defined-nowhere).
+    assert_eq!(summary["keyframes_undefined"], 1, "summary: {summary}");
+    assert_eq!(
+        summary["custom_properties_undefined"], 1,
+        "summary: {summary}"
+    );
+
+    // The undefined @keyframes is LOCATED (name + first referencing file).
+    let undefined = css["undefined_keyframes"]
+        .as_array()
+        .expect("undefined_keyframes located list");
+    assert_eq!(undefined.len(), 1);
+    assert_eq!(undefined[0]["name"], "wobble");
+    assert_eq!(undefined[0]["path"], "src/a.css");
+    assert!(
+        !undefined.iter().any(|kf| kf["name"] == "spin"),
+        "spin resolves cross-file and must not be undefined: {undefined:#?}"
+    );
+
+    // It carries a distinct verify-undefined action (a CSS-in-JS @keyframes the
+    // parser cannot see is the residual non-typo case).
+    let actions = undefined[0]["actions"]
+        .as_array()
+        .expect("undefined keyframe actions array");
+    assert_eq!(actions[0]["type"], "verify-undefined");
+    assert_eq!(actions[0]["auto_fixable"], false);
+    assert!(
+        actions[0]["command"]
+            .as_str()
+            .is_some_and(|c| c.contains("wobble")),
+        "verify action carries a read-only token search: {actions:#?}"
+    );
+
+    // Undefined custom properties are COUNT-ONLY (per panel review): no located
+    // list, because a var() with no CSS definition is dominated by JS-set tokens.
+    assert!(
+        css.get("undefined_custom_properties").is_none(),
+        "undefined custom properties are count-only, never located"
+    );
+}
+
+#[test]
+fn health_css_undefined_keyframe_renders_in_human() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"css-undef-human","version":"1.0.0"}"#,
+    );
+    write_file(&root.join("src/index.ts"), "export const x = 1;\n");
+    write_file(
+        &root.join("src/styles.css"),
+        ".x { animation-name: wobble; }\n",
+    );
+
+    let out = run_fallow_in_root("health", root, &["--css", "--max-crap", "10000", "--quiet"]);
+    assert!(
+        out.stdout.contains("undefined @keyframes")
+            && out.stdout.contains("wobble")
+            && out.stdout.contains("CSS-in-JS"),
+        "human output renders the located undefined keyframe with CSS-in-JS framing: stdout={:?}",
+        out.stdout
+    );
+}
+
+#[test]
+fn health_css_flags_duplicate_declaration_blocks() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"css-dup","version":"1.0.0"}"#,
+    );
+    write_file(&root.join("src/index.ts"), "export const x = 1;\n");
+    // `.card` and `.panel` share an identical 4-declaration block in a different
+    // order (one group). `.small` / `.other` share a 3-declaration block (below
+    // the 4-floor, not reported). `.unique` is a 4-declaration block appearing
+    // once (not reported).
+    write_file(
+        &root.join("src/a.css"),
+        ".card { padding: 8px; margin: 4px; border-radius: 4px; color: red; }\n\
+         .small { gap: 1px; width: 2px; height: 3px; }\n",
+    );
+    write_file(
+        &root.join("src/b.css"),
+        ".panel { color: red; border-radius: 4px; padding: 8px; margin: 4px; }\n\
+         .other { gap: 1px; width: 2px; height: 3px; }\n\
+         .unique { top: 1px; left: 2px; right: 3px; bottom: 4px; }\n",
+    );
+
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&out);
+    let css = json
+        .get("css_analytics")
+        .expect("css_analytics present with --css");
+    let summary = &css["summary"];
+
+    // Only the 4-declaration `.card`/`.panel` block is a group (order-insensitive).
+    assert_eq!(
+        summary["duplicate_declaration_blocks"], 1,
+        "summary: {summary}"
+    );
+    // savings = (2 occurrences - 1) * 4 declarations = 4.
+    assert_eq!(
+        summary["duplicate_declarations_total"], 4,
+        "summary: {summary}"
+    );
+
+    let groups = css["duplicate_declaration_blocks"]
+        .as_array()
+        .expect("duplicate_declaration_blocks array");
+    assert_eq!(groups.len(), 1);
+    let g = &groups[0];
+    assert_eq!(g["declaration_count"], 4);
+    assert_eq!(g["occurrence_count"], 2);
+    assert_eq!(g["estimated_savings"], 4);
+    let occ = g["occurrences"].as_array().expect("occurrences array");
+    assert_eq!(occ.len(), 2);
+    // Sorted by (path, line): a.css before b.css.
+    assert_eq!(occ[0]["path"], "src/a.css");
+    assert_eq!(occ[1]["path"], "src/b.css");
+
+    // Agent parity: a consolidate action (guidance-only, no command).
+    let actions = g["actions"].as_array().expect("actions array");
+    assert_eq!(actions[0]["type"], "consolidate");
+    assert_eq!(actions[0]["auto_fixable"], false);
+    assert!(
+        actions[0].get("command").is_none(),
+        "consolidate is guidance-only, no command: {actions:#?}"
+    );
+
+    // Human output renders the located group with savings + occurrences.
+    let human = run_fallow_in_root("health", root, &["--css", "--max-crap", "10000", "--quiet"]);
+    assert!(
+        human.stdout.contains("duplicate declaration blocks")
+            && human.stdout.contains("4 declarations in 2 rules")
+            && human.stdout.contains("src/a.css:1"),
+        "human output renders the duplicate-block group: stdout={:?}",
+        human.stdout
+    );
+}
+
+#[test]
+fn health_css_counts_shadow_radius_lineheight_sprawl() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"css-sprawl","version":"1.0.0"}"#,
+    );
+    write_file(&root.join("src/index.ts"), "export const x = 1;\n");
+    // Distinct shadows {0 1px 2px #000, 0 2px 4px #111} = 2; radii {4px, 8px} = 2;
+    // line-heights {1.5, 2} = 2. Each rule has 3 declarations (below the
+    // duplicate-block floor, so no interference).
+    write_file(
+        &root.join("src/styles.css"),
+        ".a { box-shadow: 0 1px 2px #000; border-radius: 4px; line-height: 1.5; }\n\
+         .b { box-shadow: 0 2px 4px #111; border-radius: 4px; line-height: 1.5; }\n\
+         .c { box-shadow: 0 1px 2px #000; border-radius: 8px; line-height: 2; }\n",
+    );
+
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&out);
+    let s = &json["css_analytics"]["summary"];
+    assert_eq!(s["unique_box_shadows"], 2, "summary: {s}");
+    assert_eq!(s["unique_border_radii"], 2, "summary: {s}");
+    assert_eq!(s["unique_line_heights"], 2, "summary: {s}");
+
+    // The human "(cont.)" line surfaces them only when present.
+    let human = run_fallow_in_root("health", root, &["--css", "--max-crap", "10000", "--quiet"]);
+    assert!(
+        human.stdout.contains("value sprawl (cont.)") && human.stdout.contains("shadow"),
+        "human renders shadow/radius/line-height sprawl: stdout={:?}",
+        human.stdout
+    );
+}
+
+#[test]
+fn health_css_flags_tailwind_arbitrary_values() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    // The tailwindcss dependency gates the arbitrary-value markup scan on.
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"tw","version":"1.0.0","devDependencies":{"tailwindcss":"^3.4.0"}}"#,
+    );
+    write_file(&root.join("src/index.ts"), "export const x = 1;\n");
+    write_file(&root.join("src/app.css"), ".x { color: red; }\n");
+    write_file(
+        &root.join("src/Button.tsx"),
+        "export const B = () => <div className=\"w-[13px] bg-[#abc] w-[13px]\">x</div>;\n",
+    );
+    write_file(
+        &root.join("src/Card.tsx"),
+        "export const C = () => <div className=\"top-[7px]\">y</div>;\n",
+    );
+
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&out);
+    let css = json
+        .get("css_analytics")
+        .expect("css_analytics present with --css");
+    let s = &css["summary"];
+    // Distinct tokens: w-[13px], bg-[#abc], top-[7px] = 3; total uses = 4.
+    assert_eq!(s["tailwind_arbitrary_values"], 3, "summary: {s}");
+    assert_eq!(s["tailwind_arbitrary_value_uses"], 4, "summary: {s}");
+
+    let arb = css["tailwind_arbitrary_values"]
+        .as_array()
+        .expect("tailwind_arbitrary_values array");
+    // Sorted by use count descending: w-[13px] (2x) first, located at its first file.
+    assert_eq!(arb[0]["value"], "w-[13px]");
+    assert_eq!(arb[0]["count"], 2);
+    assert_eq!(arb[0]["path"], "src/Button.tsx");
+
+    // Each entry carries a replace-with-token action with a find-all search.
+    let actions = arb[0]["actions"].as_array().expect("actions array");
+    assert_eq!(actions[0]["type"], "replace-with-token");
+    assert_eq!(actions[0]["auto_fixable"], false);
+    assert!(
+        actions[0]["command"]
+            .as_str()
+            .is_some_and(|c| c.contains("grep -rnF 'w-[13px]'")),
+        "action carries a fixed-string search for the token: {actions:#?}"
+    );
+
+    // Human output surfaces the bypass section.
+    let human = run_fallow_in_root("health", root, &["--css", "--max-crap", "10000", "--quiet"]);
+    assert!(
+        human.stdout.contains("Tailwind arbitrary values")
+            && human.stdout.contains("w-[13px] (2x)"),
+        "human renders the Tailwind arbitrary-value section: stdout={:?}",
+        human.stdout
+    );
+}
+
+#[test]
+fn health_css_tailwind_scan_gated_on_tailwind_dependency() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    // No tailwindcss dependency: the scan does not run even though the markup
+    // contains a bracket token (the gate avoids false positives off-Tailwind).
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"no-tw","version":"1.0.0"}"#,
+    );
+    write_file(&root.join("src/index.ts"), "export const x = 1;\n");
+    write_file(&root.join("src/app.css"), "#main { color: red; }\n");
+    write_file(
+        &root.join("src/Button.tsx"),
+        "export const B = () => <div className=\"w-[13px]\">x</div>;\n",
+    );
+
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&out);
+    let css = json
+        .get("css_analytics")
+        .expect("css_analytics present from the .css file");
+    assert_eq!(
+        css["summary"]["tailwind_arbitrary_values"], 0,
+        "no tailwind dep => no arbitrary-value scan"
+    );
+    assert!(
+        css.get("tailwind_arbitrary_values").is_none(),
+        "located list omitted when empty"
+    );
+}
+
+#[test]
+fn health_css_flags_unused_at_rules() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"atrules","version":"1.0.0"}"#,
+    );
+    write_file(&root.join("src/index.ts"), "export const x = 1;\n");
+    // `--used` is registered AND referenced; `--orphan` is registered but never
+    // var()'d -> unused @property. `base` is declared and populated; `utilities`
+    // is declared but never populated -> unused @layer.
+    write_file(
+        &root.join("src/styles.css"),
+        "@property --used { syntax: \"<color>\"; inherits: false; initial-value: red; }\n\
+         @property --orphan { syntax: \"<length>\"; inherits: false; initial-value: 0px; }\n\
+         @layer base, utilities;\n\
+         @layer base { .a { color: var(--used); } }\n",
+    );
+
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&out);
+    let css = json
+        .get("css_analytics")
+        .expect("css_analytics present with --css");
+    let s = &css["summary"];
+    assert_eq!(s["unused_property_registrations"], 1, "summary: {s}");
+    assert_eq!(s["unused_layers"], 1, "summary: {s}");
+
+    let entries = css["unused_at_rules"]
+        .as_array()
+        .expect("unused_at_rules array");
+    assert_eq!(entries.len(), 2);
+    let prop = entries
+        .iter()
+        .find(|e| e["type"] == "property-registration")
+        .expect("property-registration entry");
+    assert_eq!(prop["name"], "--orphan");
+    assert_eq!(prop["path"], "src/styles.css");
+    assert_eq!(prop["actions"][0]["type"], "verify-unused");
+    let layer = entries
+        .iter()
+        .find(|e| e["type"] == "layer")
+        .expect("layer entry");
+    assert_eq!(layer["name"], "utilities");
+}
+
+#[test]
+fn health_css_markdown_section_present() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"md","version":"1.0.0"}"#,
+    );
+    write_file(&root.join("src/index.ts"), "export const x = 1;\n");
+    write_file(
+        &root.join("src/styles.css"),
+        "#main { color: red; }\n.spinner { animation-name: ghost; }\n",
+    );
+
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "markdown",
+            "--quiet",
+        ],
+    );
+    assert!(
+        out.stdout.contains("## CSS Health")
+            && out.stdout.contains("Value sprawl")
+            && out.stdout.contains("Candidates")
+            && out.stdout.contains("ghost"),
+        "markdown CSS Health section renders summary + undefined keyframe: stdout={:?}",
+        out.stdout
+    );
+}
+
+#[test]
+fn health_css_flags_unused_scoped_vue_class() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"vue-fixture","version":"1.0.0","dependencies":{"vue":"^3.4.0"}}"#,
+    );
+    write_file(&root.join("src/index.ts"), "export const x = 1;\n");
+    // `.used` is referenced in the template; `.dead` is referenced nowhere.
+    write_file(
+        &root.join("src/App.vue"),
+        "<template><div class=\"used\"></div></template>\n\
+         <style scoped>.used { color: red; } .dead { color: blue; }</style>\n",
+    );
+
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&out);
+    let css = json
+        .get("css_analytics")
+        .expect("css_analytics present with --css and a scoped-dead class");
+    assert_eq!(
+        css["summary"]["scoped_unused_classes"], 1,
+        "stdout: {}",
+        out.stdout
+    );
+    let scoped = css["scoped_unused"]
+        .as_array()
+        .expect("scoped_unused array");
+    assert_eq!(scoped.len(), 1);
+    assert_eq!(scoped[0]["classes"][0], "dead");
+
+    // The scoped candidate also carries a verify action, but with no command:
+    // the component-scoped scan already covers static uses, so the residual
+    // check (dynamic string bindings) is manual.
+    let scoped_actions = scoped[0]["actions"]
+        .as_array()
+        .expect("scoped_unused actions array");
+    assert_eq!(scoped_actions[0]["type"], "verify-unused");
+    assert!(
+        scoped_actions[0].get("command").is_none(),
+        "scoped verify action omits a command: {scoped_actions:#?}"
+    );
+
+    // The SFC `<style>` block is folded into the metric path, so the component's
+    // styles are analyzed (red + blue), not silently excluded.
+    assert_eq!(
+        css["summary"]["files_analyzed"], 1,
+        "stdout: {}",
+        out.stdout
+    );
+    assert!(
+        css["summary"]["unique_colors"].as_u64().unwrap() >= 2,
+        "the SFC <style> colors are counted: {}",
+        out.stdout
+    );
+}
+
+#[test]
+fn health_css_human_section_survives_empty_complexity_section() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"css-human","version":"1.0.0"}"#,
+    );
+    // Trivial code: no complexity finding, so the `--complexity` section is empty.
+    write_file(&root.join("src/index.ts"), "export const x = 1;\n");
+    write_file(&root.join("src/styles.css"), "#main { color: red; }\n");
+
+    // `--complexity` selects an (empty) section without forcing a score. Without
+    // including css_analytics in the empty-report early-return, the human
+    // renderer would print the green "no findings" line and drop the CSS
+    // section. This is the human-output path the JSON tests do not cover.
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &["--css", "--complexity", "--max-crap", "10000", "--quiet"],
+    );
+    assert!(
+        out.stdout.contains("CSS health"),
+        "human output must keep the CSS health section: stdout={:?} stderr={:?}",
+        out.stdout,
+        out.stderr
+    );
+}

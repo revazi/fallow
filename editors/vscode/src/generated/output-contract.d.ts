@@ -564,6 +564,14 @@ export type RefactoringTargetActionType = ("apply-refactoring" | "suppress-line"
  */
 export type TrendDirection = ("improving" | "declining" | "stable")
 /**
+ * Discriminant for [`CssCandidateAction::kind`].
+ */
+export type CssCandidateActionType = ("verify-unused" | "verify-undefined" | "consolidate" | "replace-with-token")
+/**
+ * Discriminant for [`UnusedAtRule::kind`].
+ */
+export type UnusedAtRuleKind = ("property-registration" | "layer")
+/**
  * Singleton GitHub review-event marker.
  */
 export type ReviewEnvelopeEvent = "COMMENT"
@@ -3541,6 +3549,11 @@ health_trend?: (HealthTrend | null)
  * back to the report root.
  */
 actions_meta?: (HealthActionsMeta | null)
+/**
+ * Structural CSS analytics (specificity hotspots, `!important` density,
+ * over-complex selectors, deep nesting). Present only with `--css`.
+ */
+css_analytics?: (CssAnalyticsReport | null)
 }
 /**
  * Wire envelope for a single complexity finding.
@@ -5025,6 +5038,535 @@ reason: string
 scope: string
 }
 /**
+ * Structural CSS analytics surfaced by `fallow health --css`.
+ */
+export interface CssAnalyticsReport {
+/**
+ * Stylesheets with at least one structurally notable rule, in scan order.
+ */
+files: CssFileAnalytics[]
+summary: CssAnalyticsSummary
+/**
+ * Vue SFCs whose `<style scoped>` defines classes used nowhere else in the
+ * component (cleanup candidates).
+ */
+scoped_unused?: ScopedUnusedClasses[]
+/**
+ * `@keyframes` defined but referenced via no `animation` / `animation-name`
+ * in any stylesheet, with the stylesheet that defines them (cleanup
+ * candidates; an animation name can still be applied from JavaScript).
+ * The "defined-but-unused" direction.
+ */
+unreferenced_keyframes?: UnreferencedKeyframes[]
+/**
+ * Animation references (`animation` / `animation-name`) to a `@keyframes`
+ * name that is defined in NO stylesheet anywhere in the project, with the
+ * first stylesheet that references them. The "used-but-undefined" direction
+ * (the inverse of `unreferenced_keyframes`): usually a typo or a removed
+ * animation, occasionally a `@keyframes` defined in CSS-in-JS (which the
+ * CSS parser never sees). Conservative candidates, never gated findings.
+ */
+undefined_keyframes?: UndefinedKeyframes[]
+/**
+ * Groups of style rules across the project that share an identical
+ * declaration block (4+ declarations, sorted and `!important`-aware),
+ * grouped by content: copy-paste consolidation candidates (fallow's
+ * duplication signal applied to CSS). Sorted by estimated savings
+ * descending.
+ */
+duplicate_declaration_blocks?: CssDuplicateBlock[]
+/**
+ * Tailwind arbitrary-value utilities (`w-[13px]`, `bg-[#abc]`) found in
+ * markup, which hardcode a one-off value instead of a configured scale
+ * token (design-token bypass). Present only when the project uses Tailwind.
+ * Sorted by use count descending. Candidates, not findings: an arbitrary
+ * value is sometimes the right call.
+ */
+tailwind_arbitrary_values?: TailwindArbitraryValue[]
+/**
+ * Unused CSS at-rule entities: an `@property` registered but never read via
+ * `var()` in any stylesheet, or an `@layer` declared but never populated by
+ * a block. Cleanup candidates (an `@property` can be read from JS; a layer
+ * can be populated via `@import layer()`). Located by first definition.
+ */
+unused_at_rules?: UnusedAtRule[]
+}
+/**
+ * Per-stylesheet CSS analytics.
+ */
+export interface CssFileAnalytics {
+/**
+ * Project-root-relative, forward-slash path.
+ */
+path: string
+analytics: CssAnalytics
+}
+/**
+ * Stylesheet-level structural CSS analytics, computed from the parsed CSS
+ * syntax tree. Feeds `fallow health` penalty weights and located findings,
+ * never a standalone CSS score.
+ */
+export interface CssAnalytics {
+/**
+ * Total declarations across every style rule (normal plus `!important`).
+ */
+total_declarations: number
+/**
+ * Total `!important` declarations across every style rule.
+ */
+important_declarations: number
+/**
+ * Number of style rules.
+ */
+rule_count: number
+/**
+ * Number of style rules with no declarations.
+ */
+empty_rule_count: number
+/**
+ * Deepest style-rule nesting depth observed (0 = no nesting).
+ */
+max_nesting_depth: number
+/**
+ * Rules that crossed the structural floor, in source order. Bounded; see
+ * [`Self::notable_truncated`]. The scalar aggregates above always reflect
+ * the full stylesheet regardless of truncation.
+ */
+notable_rules: CssRuleMetric[]
+/**
+ * `true` when more rules crossed the structural floor than `notable_rules`
+ * retains (compiled utility CSS can emit thousands of `!important` rules),
+ * so consumers can note that per-rule findings were capped.
+ */
+notable_truncated: boolean
+/**
+ * Distinct color values in the stylesheet, in their authored form, sorted.
+ * Distinct notations of the same color (`red` vs `#f00`) count separately,
+ * since inconsistent notation is itself a design-token-sprawl signal.
+ */
+colors: string[]
+/**
+ * Distinct `font-size` declaration values in the stylesheet, sorted.
+ */
+font_sizes: string[]
+/**
+ * Distinct `z-index` declaration values in the stylesheet, sorted.
+ */
+z_indexes: string[]
+/**
+ * Distinct `box-shadow` declaration values in the stylesheet, sorted. A
+ * high count signals an uncontrolled shadow scale (design-token sprawl).
+ */
+box_shadows: string[]
+/**
+ * Distinct `border-radius` declaration values in the stylesheet, sorted.
+ */
+border_radii: string[]
+/**
+ * Distinct `line-height` declaration values in the stylesheet, sorted.
+ */
+line_heights: string[]
+/**
+ * Distinct custom properties (`--x`) DEFINED in the stylesheet, sorted.
+ */
+defined_custom_properties: string[]
+/**
+ * Distinct custom properties REFERENCED via `var()` in the stylesheet.
+ */
+referenced_custom_properties: string[]
+/**
+ * Distinct `@keyframes` names DEFINED in the stylesheet, sorted.
+ */
+defined_keyframes: string[]
+/**
+ * Distinct `@keyframes` names REFERENCED via `animation` / `animation-name`.
+ */
+referenced_keyframes: string[]
+/**
+ * Distinct custom properties REGISTERED via an `@property` rule, sorted.
+ */
+registered_custom_properties: string[]
+/**
+ * Distinct cascade layers DECLARED (via `@layer a, b;` statements or named
+ * `@layer a { }` blocks), sorted.
+ */
+declared_layers: string[]
+/**
+ * Distinct cascade layers POPULATED by a named `@layer a { }` block, sorted.
+ * A layer declared but never populated (and not imported into) is a
+ * cleanup candidate.
+ */
+populated_layers: string[]
+}
+/**
+ * Structural CSS metrics for a single style rule, computed from the parsed CSS
+ * syntax tree. A rule is recorded only when it crosses a structural floor (an
+ * id selector, a complex selector, a `!important` declaration, or deep
+ * nesting), so the vector stays bounded on normal stylesheets.
+ *
+ * Not persisted in the extraction cache: `fallow health` computes these
+ * on demand from the CSS source, so there is no `bitcode` derive.
+ */
+export interface CssRuleMetric {
+/**
+ * 1-based line of the rule's first selector.
+ */
+line: number
+/**
+ * 1-based column of the rule's first selector.
+ */
+col: number
+/**
+ * Specificity component `a` (id selectors), max across the rule's selectors.
+ */
+specificity_a: number
+/**
+ * Specificity component `b` (class / attribute / pseudo-class selectors).
+ */
+specificity_b: number
+/**
+ * Specificity component `c` (type / pseudo-element selectors).
+ */
+specificity_c: number
+/**
+ * Largest selector component count across the rule's selector list.
+ */
+complexity: number
+/**
+ * Declaration count in the rule (normal plus `!important`).
+ */
+declaration_count: number
+/**
+ * `!important` declaration count in the rule.
+ */
+important_count: number
+/**
+ * Style-rule nesting depth (0 = top level).
+ */
+nesting_depth: number
+}
+/**
+ * Project-wide CSS analytics aggregates across every analyzed stylesheet
+ * (including stylesheets with no notable rule, which are not listed
+ * individually).
+ */
+export interface CssAnalyticsSummary {
+/**
+ * Stylesheets analyzed (standard CSS only; SCSS is skipped).
+ */
+files_analyzed: number
+/**
+ * Total style rules across analyzed stylesheets.
+ */
+total_rules: number
+/**
+ * Total declarations across analyzed stylesheets.
+ */
+total_declarations: number
+/**
+ * Total `!important` declarations across analyzed stylesheets.
+ */
+important_declarations: number
+/**
+ * Total empty style rules across analyzed stylesheets.
+ */
+empty_rules: number
+/**
+ * Deepest style-rule nesting depth observed across analyzed stylesheets.
+ */
+max_nesting_depth: number
+/**
+ * Distinct color values (authored form) across the whole codebase. A high
+ * count signals an uncontrolled palette (design-token sprawl).
+ */
+unique_colors: number
+/**
+ * Distinct `font-size` values across the whole codebase.
+ */
+unique_font_sizes: number
+/**
+ * Distinct `z-index` values across the whole codebase.
+ */
+unique_z_indexes: number
+/**
+ * Distinct `box-shadow` values across the whole codebase (shadow-scale sprawl).
+ */
+unique_box_shadows: number
+/**
+ * Distinct `border-radius` values across the whole codebase (radius-scale sprawl).
+ */
+unique_border_radii: number
+/**
+ * Distinct `line-height` values across the whole codebase (type-scale sprawl).
+ */
+unique_line_heights: number
+/**
+ * Distinct custom properties (`--x`) defined anywhere in the codebase.
+ */
+custom_properties_defined: number
+/**
+ * Custom properties defined but never referenced via `var()` in any
+ * stylesheet (the defined-but-unused direction). These are cleanup
+ * CANDIDATES, not confirmed dead: a property may still be read or set from
+ * JavaScript or inline HTML styles.
+ */
+custom_properties_unreferenced: number
+/**
+ * Distinct custom properties referenced via `var()` that are defined in no
+ * stylesheet anywhere (the used-but-undefined direction). A COUNT only, not
+ * a located list: a `var(--x)` with no CSS definition is extremely common
+ * in JavaScript-driven theming and design-token libraries, so locating
+ * these would be net-noise. The count is an architecture signal (how much
+ * of the `var()` surface is resolved outside CSS), not a finding.
+ */
+custom_properties_undefined: number
+/**
+ * Distinct `@keyframes` defined anywhere in the codebase.
+ */
+keyframes_defined: number
+/**
+ * `@keyframes` defined but never referenced via `animation` /
+ * `animation-name` in any stylesheet (the defined-but-unused direction;
+ * cleanup CANDIDATES; an animation name can still be applied from
+ * JavaScript).
+ */
+keyframes_unreferenced: number
+/**
+ * Distinct animation names referenced via `animation` / `animation-name`
+ * that resolve to no `@keyframes` definition anywhere (the used-but-
+ * undefined direction). Located in `undefined_keyframes`; usually a typo or
+ * a removed animation.
+ */
+keyframes_undefined: number
+/**
+ * Total Vue `<style scoped>` classes used nowhere else in their component
+ * (cleanup candidates), across all SFCs.
+ */
+scoped_unused_classes: number
+/**
+ * Number of distinct declaration blocks (4+ declarations) that appear in
+ * two or more rules across the project (copy-paste consolidation
+ * candidates). Located in `duplicate_declaration_blocks`.
+ */
+duplicate_declaration_blocks: number
+/**
+ * Total declarations removable by consolidating every duplicate block:
+ * the sum of `(occurrence_count - 1) * declaration_count` across groups.
+ */
+duplicate_declarations_total: number
+/**
+ * Distinct Tailwind arbitrary-value tokens used in markup (design-token
+ * bypass). Zero when the project does not use Tailwind. Located in
+ * `tailwind_arbitrary_values`.
+ */
+tailwind_arbitrary_values: number
+/**
+ * Total Tailwind arbitrary-value occurrences across markup.
+ */
+tailwind_arbitrary_value_uses: number
+/**
+ * `@property` registrations never referenced via `var()` in any stylesheet
+ * (located in `unused_at_rules`). Cleanup candidates.
+ */
+unused_property_registrations: number
+/**
+ * Cascade layers declared but never populated by a block (located in
+ * `unused_at_rules`). Cleanup candidates.
+ */
+unused_layers: number
+/**
+ * Number of analyzed stylesheets whose per-rule `notable_rules` list was
+ * truncated at the per-file cap, so a consumer knows the per-rule detail is
+ * incomplete without walking every file.
+ */
+notable_truncated_files: number
+}
+/**
+ * A Vue SFC's `<style scoped>` classes that appear nowhere else in the
+ * component (cleanup candidates).
+ */
+export interface ScopedUnusedClasses {
+/**
+ * Project-root-relative, forward-slash path to the SFC.
+ */
+path: string
+/**
+ * The scoped class names with no use elsewhere in the component, sorted.
+ */
+classes: string[]
+/**
+ * Read-only verification step(s) an agent can run before removing the
+ * candidate. Always at least one entry, so consumers can iterate
+ * `actions` uniformly across every finding type.
+ */
+actions: CssCandidateAction[]
+}
+/**
+ * A read-only verification step attached to a CSS cleanup candidate.
+ *
+ * CSS candidates (unreferenced `@keyframes`, unused scoped classes) are never
+ * auto-removed: an animation name can still be applied from JavaScript, and a
+ * class can be assembled from a dynamic string binding. The action gives an
+ * agent a machine-readable next step, mirroring the `actions` array carried by
+ * every other health finding, plus an optional runnable probe to confirm the
+ * candidate is genuinely unused before deleting it.
+ */
+export interface CssCandidateAction {
+type: CssCandidateActionType
+/**
+ * Always `false`: CSS candidates are never auto-fixed (`fallow fix` does
+ * not touch them) because the residual consumer may live outside CSS.
+ */
+auto_fixable: boolean
+/**
+ * Human-readable description of what to confirm before removing.
+ */
+description: string
+/**
+ * A runnable, read-only, placeholder-free token search that surfaces any
+ * out-of-CSS use of the candidate. Absent when no shell-safe command can
+ * be built (e.g. the residual risk is a dynamic string binding that a
+ * single search cannot probe), in which case `description` is the guide.
+ */
+command?: (string | null)
+}
+/**
+ * A `@keyframes` defined in a stylesheet but referenced by no animation in any
+ * stylesheet (cleanup candidate).
+ */
+export interface UnreferencedKeyframes {
+/**
+ * The `@keyframes` name.
+ */
+name: string
+/**
+ * Project-root-relative, forward-slash path to the stylesheet that defines it.
+ */
+path: string
+/**
+ * Read-only verification step(s) an agent can run before removing the
+ * candidate. Always at least one entry, so consumers can iterate
+ * `actions` uniformly across every finding type.
+ */
+actions: CssCandidateAction[]
+}
+/**
+ * An animation reference (`animation` / `animation-name`) to a `@keyframes`
+ * name that is defined in no stylesheet anywhere in the project (the
+ * "used-but-undefined" direction). Usually a typo or a removed animation;
+ * occasionally a `@keyframes` defined in CSS-in-JS the CSS parser never sees.
+ */
+export interface UndefinedKeyframes {
+/**
+ * The referenced `@keyframes` name that resolves to no definition.
+ */
+name: string
+/**
+ * Project-root-relative, forward-slash path to the first stylesheet that
+ * references it.
+ */
+path: string
+/**
+ * Read-only verification step(s) an agent can run before fixing the
+ * reference. Always at least one entry, so consumers can iterate `actions`
+ * uniformly across every finding type.
+ */
+actions: CssCandidateAction[]
+}
+/**
+ * A group of style rules across the project that share an identical declaration
+ * block: a copy-paste consolidation candidate (fallow's duplication signal
+ * applied to CSS). Only blocks of 4+ declarations appearing in 2+ rules are
+ * reported, so the signal stays a strong copy-paste indicator rather than
+ * flagging legitimately-repeated small blocks.
+ */
+export interface CssDuplicateBlock {
+/**
+ * Declarations in the shared block.
+ */
+declaration_count: number
+/**
+ * Number of rules that share the block (always >= 2).
+ */
+occurrence_count: number
+/**
+ * Declarations removable by extracting the block into one shared rule:
+ * `(occurrence_count - 1) * declaration_count`.
+ */
+estimated_savings: number
+/**
+ * The rules sharing the block, sorted by `(path, line)`.
+ */
+occurrences: CssBlockOccurrence[]
+/**
+ * Read-only guidance step(s), so consumers can iterate `actions`
+ * uniformly across every finding type. Always at least one entry.
+ */
+actions: CssCandidateAction[]
+}
+/**
+ * One occurrence of a duplicate declaration block.
+ */
+export interface CssBlockOccurrence {
+/**
+ * Project-root-relative, forward-slash path to the stylesheet.
+ */
+path: string
+/**
+ * 1-based line of the rule's first selector.
+ */
+line: number
+}
+/**
+ * A distinct Tailwind arbitrary-value utility token used in markup, with its
+ * total use count and first location (a design-token-bypass candidate).
+ */
+export interface TailwindArbitraryValue {
+/**
+ * The `prefix-[value]` token (e.g. `w-[13px]`). Variant prefixes are
+ * stripped, so `hover:w-[13px]` and `w-[13px]` aggregate under `w-[13px]`.
+ */
+value: string
+/**
+ * Total occurrences across all scanned markup files.
+ */
+count: number
+/**
+ * Project-root-relative, forward-slash path to the first file using it.
+ */
+path: string
+/**
+ * 1-based line of the first occurrence.
+ */
+line: number
+/**
+ * Read-only action(s): a find-all-occurrences search so the token can be
+ * replaced with a scale token. Always at least one entry, so consumers can
+ * iterate `actions` uniformly across every finding type.
+ */
+actions: CssCandidateAction[]
+}
+/**
+ * An unused CSS at-rule entity (an `@property` registration with no `var()`
+ * reference, or an `@layer` declaration never populated), located by its first
+ * definition. A cleanup candidate, never a gated finding.
+ */
+export interface UnusedAtRule {
+type: UnusedAtRuleKind
+/**
+ * The entity name (`--x` for `@property`, the layer name for `@layer`).
+ */
+name: string
+/**
+ * Project-root-relative, forward-slash path to the first defining stylesheet.
+ */
+path: string
+/**
+ * Read-only verification step(s) before removal (parity with other findings).
+ */
+actions: CssCandidateAction[]
+}
+/**
  * Envelope emitted by `fallow explain <issue-type> --format json`.
  *
  * Standalone rule explanation. This command does not run project analysis
@@ -5386,6 +5928,11 @@ health_trend?: (HealthTrend | null)
  * back to the report root.
  */
 actions_meta?: (HealthActionsMeta | null)
+/**
+ * Structural CSS analytics (specificity hotspots, `!important` density,
+ * over-complex selectors, deep nesting). Present only with `--css`.
+ */
+css_analytics?: (CssAnalyticsReport | null)
 grouped_by?: (GroupByMode | null)
 groups?: (HealthGroup[] | null)
 _meta?: (Meta | null)

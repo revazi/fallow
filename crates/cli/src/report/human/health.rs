@@ -48,6 +48,7 @@ pub(in crate::report) fn print_health_human(input: &PrintHealthHumanInput<'_>) {
         && report.runtime_coverage.is_none()
         && report.coverage_intelligence.is_none()
         && report.threshold_overrides.is_empty()
+        && report.css_analytics.is_none()
         && !has_score
     {
         if !quiet {
@@ -163,10 +164,382 @@ fn build_health_human_lines_with_explain(
     render_file_scores(&mut lines, report, root);
     render_hotspots(&mut lines, report, root);
     render_refactoring_targets(&mut lines, report, root);
+    render_css_analytics(&mut lines, report);
     if explain {
         inject_explain_blocks(lines)
     } else {
         lines
+    }
+}
+
+/// Render the opt-in `--css` structural CSS analytics section: a one-line
+/// stylesheet summary plus the most structurally notable rules (highest
+/// specificity, then complexity, then `!important`).
+fn render_css_analytics(lines: &mut Vec<String>, report: &crate::health_types::HealthReport) {
+    let Some(ref css) = report.css_analytics else {
+        return;
+    };
+    let summary = &css.summary;
+
+    lines.push(String::new());
+    lines.push("CSS health".bold().to_string());
+
+    let important_pct = if summary.total_declarations > 0 {
+        f64::from(summary.important_declarations) / f64::from(summary.total_declarations) * 100.0
+    } else {
+        0.0
+    };
+    lines.push(format!(
+        "  {} stylesheet{} \u{00b7} {} rule{} \u{00b7} {important_pct:.1}% !important \u{00b7} {} empty \u{00b7} max nesting {}",
+        summary.files_analyzed,
+        plural(summary.files_analyzed as usize),
+        summary.total_rules,
+        plural(summary.total_rules as usize),
+        summary.empty_rules,
+        summary.max_nesting_depth,
+    ));
+    render_css_value_sprawl(lines, summary);
+    if summary.notable_truncated_files > 0 {
+        lines.push(
+            format!(
+                "  (per-rule detail truncated in {} file{}; see --format json)",
+                summary.notable_truncated_files,
+                plural(summary.notable_truncated_files as usize),
+            )
+            .dimmed()
+            .to_string(),
+        );
+    }
+    // Cleanup candidates. Custom properties stay a count in BOTH directions
+    // (high-cardinality and often JS/cross-app consumed, so locating them would
+    // be net-noise); the lower-cardinality @keyframes are located.
+    if summary.custom_properties_defined > 0 || summary.custom_properties_undefined > 0 {
+        let undefined = if summary.custom_properties_undefined > 0 {
+            format!(", {} undefined", summary.custom_properties_undefined)
+        } else {
+            String::new()
+        };
+        lines.push(format!(
+            "  custom properties: {} defined, {} unreferenced in CSS{undefined} (candidates; may be set from JS)",
+            summary.custom_properties_defined,
+            summary.custom_properties_unreferenced,
+        ));
+    }
+    render_css_keyframe_candidates(lines, css);
+    render_css_unused_at_rules(lines, css);
+    if !css.scoped_unused.is_empty() {
+        let class_word = if summary.scoped_unused_classes == 1 {
+            "class"
+        } else {
+            "classes"
+        };
+        lines.push(format!(
+            "  {} unused scoped {class_word} in {} Vue SFC{} (candidates; verify)",
+            summary.scoped_unused_classes,
+            css.scoped_unused.len(),
+            plural(css.scoped_unused.len()),
+        ));
+        for entry in css.scoped_unused.iter().take(5) {
+            lines.push(format!("  {}: {}", entry.path, entry.classes.join(", ")));
+        }
+        if css.scoped_unused.len() > 5 {
+            let more = css.scoped_unused.len() - 5;
+            lines.push(
+                format!(
+                    "  ... and {more} more SFC{} (--format json for full list)",
+                    plural(more),
+                )
+                .dimmed()
+                .to_string(),
+            );
+        }
+    }
+    render_css_duplicate_blocks(lines, css);
+    render_css_tailwind_arbitrary(lines, css);
+
+    let mut notable: Vec<(&str, &fallow_types::extract::CssRuleMetric)> = css
+        .files
+        .iter()
+        .flat_map(|file| {
+            file.analytics
+                .notable_rules
+                .iter()
+                .map(move |rule| (file.path.as_str(), rule))
+        })
+        .collect();
+    let total_notable = notable.len();
+    notable.sort_by(|a, b| {
+        let key = |m: &fallow_types::extract::CssRuleMetric| {
+            (
+                m.specificity_a,
+                m.specificity_b,
+                m.specificity_c,
+                m.complexity,
+                m.important_count,
+            )
+        };
+        // Sort by salience descending; tie-break on (path, line) so the human
+        // top-5 stays deterministic when two rules share identical metrics.
+        key(b.1)
+            .cmp(&key(a.1))
+            .then_with(|| (a.0, a.1.line).cmp(&(b.0, b.1.line)))
+    });
+
+    for (path, rule) in notable.iter().take(5) {
+        lines.push(format!(
+            "  {path}:{}  specificity ({},{},{}) \u{00b7} complexity {} \u{00b7} {} !important \u{00b7} nesting {}",
+            rule.line,
+            rule.specificity_a,
+            rule.specificity_b,
+            rule.specificity_c,
+            rule.complexity,
+            rule.important_count,
+            rule.nesting_depth,
+        ));
+    }
+    if total_notable > 5 {
+        let more = total_notable - 5;
+        lines.push(
+            format!("  ... and {more} more (--format json for full list)")
+                .dimmed()
+                .to_string(),
+        );
+    }
+}
+
+/// Render the two located `@keyframes` candidate lines: defined-but-unused
+/// (`unreferenced`) and used-but-defined-nowhere (`undefined`).
+fn render_css_keyframe_candidates(
+    lines: &mut Vec<String>,
+    css: &crate::health_types::CssAnalyticsReport,
+) {
+    let summary = &css.summary;
+    if summary.keyframes_defined > 0 {
+        if css.unreferenced_keyframes.is_empty() {
+            lines.push(format!(
+                "  @keyframes: {} defined, 0 unreferenced",
+                summary.keyframes_defined,
+            ));
+        } else {
+            let listed = join_located_keyframes(
+                css.unreferenced_keyframes
+                    .iter()
+                    .map(|kf| (kf.name.as_str(), kf.path.as_str())),
+                css.unreferenced_keyframes.len(),
+            );
+            lines.push(format!(
+                "  @keyframes: {} defined, {} unreferenced (candidates; verify): {listed}",
+                summary.keyframes_defined, summary.keyframes_unreferenced,
+            ));
+        }
+    }
+    if !css.undefined_keyframes.is_empty() {
+        let listed = join_located_keyframes(
+            css.undefined_keyframes
+                .iter()
+                .map(|kf| (kf.name.as_str(), kf.path.as_str())),
+            css.undefined_keyframes.len(),
+        );
+        lines.push(format!(
+            "  undefined @keyframes: {} referenced but defined nowhere (candidates; likely typo or defined in CSS-in-JS): {listed}",
+            summary.keyframes_undefined,
+        ));
+    }
+}
+
+/// Render unused CSS at-rule entities: `@property` registrations never read via
+/// `var()`, and cascade layers declared but never populated. One line per kind,
+/// shown only when present, with up to 5 located names.
+fn render_css_unused_at_rules(
+    lines: &mut Vec<String>,
+    css: &crate::health_types::CssAnalyticsReport,
+) {
+    use crate::health_types::UnusedAtRuleKind;
+    if css.unused_at_rules.is_empty() {
+        return;
+    }
+    let render_kind = |lines: &mut Vec<String>, kind: UnusedAtRuleKind, label: &str, what: &str| {
+        let named: Vec<String> = css
+            .unused_at_rules
+            .iter()
+            .filter(|e| e.kind == kind)
+            .take(5)
+            .map(|e| format!("{} ({})", e.name, e.path))
+            .collect();
+        if named.is_empty() {
+            return;
+        }
+        let total = css
+            .unused_at_rules
+            .iter()
+            .filter(|e| e.kind == kind)
+            .count();
+        let more = if total > 5 {
+            format!(", +{} more", total - 5)
+        } else {
+            String::new()
+        };
+        lines.push(format!(
+            "  {label}: {total} {what} (candidates; verify): {}{more}",
+            named.join(", ")
+        ));
+    };
+    render_kind(
+        lines,
+        UnusedAtRuleKind::PropertyRegistration,
+        "unused @property",
+        "registered but never used via var()",
+    );
+    render_kind(
+        lines,
+        UnusedAtRuleKind::Layer,
+        "unused @layer",
+        "declared but never populated",
+    );
+}
+
+/// Render the value-sprawl lines: colors / font-sizes / z-indexes always, plus a
+/// continuation line for shadow / radius / line-height scales when present.
+fn render_css_value_sprawl(
+    lines: &mut Vec<String>,
+    summary: &crate::health_types::CssAnalyticsSummary,
+) {
+    lines.push(format!(
+        "  value sprawl: {} distinct color{} \u{00b7} {} font size{} \u{00b7} {} z-index value{}",
+        summary.unique_colors,
+        plural(summary.unique_colors as usize),
+        summary.unique_font_sizes,
+        plural(summary.unique_font_sizes as usize),
+        summary.unique_z_indexes,
+        plural(summary.unique_z_indexes as usize),
+    ));
+    let mut extra: Vec<String> = Vec::new();
+    if summary.unique_box_shadows > 0 {
+        extra.push(format!(
+            "{} shadow{}",
+            summary.unique_box_shadows,
+            plural(summary.unique_box_shadows as usize)
+        ));
+    }
+    if summary.unique_border_radii > 0 {
+        extra.push(format!(
+            "{} radius value{}",
+            summary.unique_border_radii,
+            plural(summary.unique_border_radii as usize)
+        ));
+    }
+    if summary.unique_line_heights > 0 {
+        extra.push(format!(
+            "{} line-height{}",
+            summary.unique_line_heights,
+            plural(summary.unique_line_heights as usize)
+        ));
+    }
+    if !extra.is_empty() {
+        lines.push(format!(
+            "  value sprawl (cont.): {}",
+            extra.join(" \u{00b7} ")
+        ));
+    }
+}
+
+/// Render the Tailwind arbitrary-value section: a summary line plus the top 5
+/// most-used tokens (token, use count, first location). Present only when the
+/// project uses Tailwind and any arbitrary values were found.
+fn render_css_tailwind_arbitrary(
+    lines: &mut Vec<String>,
+    css: &crate::health_types::CssAnalyticsReport,
+) {
+    if css.tailwind_arbitrary_values.is_empty() {
+        return;
+    }
+    let summary = &css.summary;
+    lines.push(format!(
+        "  Tailwind arbitrary values: {} distinct ({} use{}) bypassing the scale (candidates; add a scale token or confirm one-off)",
+        summary.tailwind_arbitrary_values,
+        summary.tailwind_arbitrary_value_uses,
+        plural(summary.tailwind_arbitrary_value_uses as usize),
+    ));
+    for arb in css.tailwind_arbitrary_values.iter().take(5) {
+        lines.push(format!(
+            "    {} ({}x): {}:{}",
+            arb.value, arb.count, arb.path, arb.line
+        ));
+    }
+    if css.tailwind_arbitrary_values.len() > 5 {
+        let more = css.tailwind_arbitrary_values.len() - 5;
+        lines.push(
+            format!("  ... and {more} more (--format json for full list)")
+                .dimmed()
+                .to_string(),
+        );
+    }
+}
+
+/// Render the duplicate-declaration-block candidate section: a summary line plus
+/// the top 5 groups (declaration count, occurrence count, located occurrences).
+fn render_css_duplicate_blocks(
+    lines: &mut Vec<String>,
+    css: &crate::health_types::CssAnalyticsReport,
+) {
+    if css.duplicate_declaration_blocks.is_empty() {
+        return;
+    }
+    let summary = &css.summary;
+    let group_word = if summary.duplicate_declaration_blocks == 1 {
+        "group"
+    } else {
+        "groups"
+    };
+    lines.push(format!(
+        "  duplicate declaration blocks: {} {group_word}, {} declarations removable (candidates; consolidate or confirm intentional overrides)",
+        summary.duplicate_declaration_blocks, summary.duplicate_declarations_total,
+    ));
+    for block in css.duplicate_declaration_blocks.iter().take(5) {
+        let locs = block
+            .occurrences
+            .iter()
+            .take(3)
+            .map(|occ| format!("{}:{}", occ.path, occ.line))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let extra = block.occurrences.len().saturating_sub(3);
+        let more = if extra > 0 {
+            format!(", +{extra} more")
+        } else {
+            String::new()
+        };
+        lines.push(format!(
+            "    {} declarations in {} rules: {locs}{more}",
+            block.declaration_count, block.occurrence_count,
+        ));
+    }
+    if css.duplicate_declaration_blocks.len() > 5 {
+        let more = css.duplicate_declaration_blocks.len() - 5;
+        lines.push(
+            format!("  ... and {more} more (--format json for full list)")
+                .dimmed()
+                .to_string(),
+        );
+    }
+}
+
+/// Join the first 5 located keyframe names as `name (path)`, with a `, +N more`
+/// suffix when `total` exceeds 5.
+fn join_located_keyframes<'a>(
+    items: impl Iterator<Item = (&'a str, &'a str)>,
+    total: usize,
+) -> String {
+    let named = items
+        .take(5)
+        .map(|(name, path)| format!("{name} ({path})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let extra = total.saturating_sub(5);
+    if extra > 0 {
+        format!("{named}, +{extra} more")
+    } else {
+        named
     }
 }
 
