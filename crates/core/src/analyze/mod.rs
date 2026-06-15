@@ -787,16 +787,7 @@ fn populate_framework_specific_findings(input: &mut FrameworkSpecificFindingsInp
         input.line_offsets_by_file,
         input.results,
     );
-    populate_mixed_client_server_barrel_findings(
-        input.graph,
-        input.modules,
-        input.resolved_modules,
-        input.config,
-        input.declared_deps,
-        input.suppressions,
-        input.line_offsets_by_file,
-        input.results,
-    );
+    populate_mixed_client_server_barrel_findings(input);
     populate_misplaced_directive_findings(
         input.graph,
         input.modules,
@@ -873,30 +864,17 @@ fn populate_invalid_client_export_findings(
 /// Populate `mixed_client_server_barrels` when the rule is enabled. Gated on the
 /// project declaring `next` inside the detector (see
 /// [`find_mixed_client_server_barrels`]).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "mirrors the invalid-client-export populate site; threading the resolved modules + gate context is intrinsic"
-)]
-fn populate_mixed_client_server_barrel_findings(
-    graph: &ModuleGraph,
-    modules: &[ModuleInfo],
-    resolved_modules: &[ResolvedModule],
-    config: &ResolvedConfig,
-    declared_deps: &FxHashSet<String>,
-    suppressions: &SuppressionContext<'_>,
-    line_offsets_by_file: &LineOffsetsMap<'_>,
-    results: &mut AnalysisResults,
-) {
-    if config.rules.mixed_client_server_barrel == Severity::Off {
+fn populate_mixed_client_server_barrel_findings(input: &mut FrameworkSpecificFindingsInput<'_>) {
+    if input.config.rules.mixed_client_server_barrel == Severity::Off {
         return;
     }
-    results.mixed_client_server_barrels = find_mixed_client_server_barrels(
-        graph,
-        modules,
-        resolved_modules,
-        declared_deps,
-        suppressions,
-        line_offsets_by_file,
+    input.results.mixed_client_server_barrels = find_mixed_client_server_barrels(
+        input.graph,
+        input.modules,
+        input.resolved_modules,
+        input.declared_deps,
+        input.suppressions,
+        input.line_offsets_by_file,
     )
     .into_iter()
     .map(MixedClientServerBarrelFinding::with_actions)
