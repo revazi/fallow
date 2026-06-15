@@ -79,6 +79,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Next.js RSC findings carry a fix action and show up in the combined-mode CI summary.** The three RSC checks (invalid client exports, mixed client/server barrels, misplaced directives) now emit a structured fix action in JSON output (move the export to a server module, split the barrel, hoist the directive) next to the suppress action, so agents and CI integrations see the remediation, not just "ignore this". They also list by name in the GitHub Action and GitLab CI combined-mode "Code issues" breakdown table, where a combined run previously surfaced them only in the headline count. The `fallow dead-code --explain` output now also prints a description for the misplaced-directive section.
 
+- **`fallow coverage analyze --cloud` no longer fails to parse the runtime-context response.** When the caller-graph (blast-radius) or complexity / CODEOWNERS inputs are unavailable, the response now returns `null` for `caller_count`, `caller_count_weighted_by_traffic`, `cyclomatic`, and `owner_count` rather than a placeholder, and the client rejected those nulls, breaking the command outright. The client now tolerates `null`, absent, and legacy numeric values for those fields and renders them unchanged. (Closes [#1263](https://github.com/fallow-rs/fallow/issues/1263).)
+
 ## [2.96.0] - 2026-06-13
 
 ### Changed
