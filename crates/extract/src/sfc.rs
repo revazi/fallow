@@ -331,16 +331,16 @@ pub(crate) fn parse_sfc_to_module(
     let mut emit_return_binding: Option<String> = None;
 
     for script in &scripts {
-        merge_script_into_module(
+        merge_script_into_module(&mut SfcScriptMergeInput {
             kind,
             script,
-            &mut combined,
-            &mut template_visible_imports,
-            &mut template_visible_bound_targets,
-            &mut props_return_binding,
-            &mut emit_return_binding,
+            combined: &mut combined,
+            template_visible_imports: &mut template_visible_imports,
+            template_visible_bound_targets: &mut template_visible_bound_targets,
+            props_return_binding: &mut props_return_binding,
+            emit_return_binding: &mut emit_return_binding,
             need_complexity,
-        );
+        });
     }
 
     for style in &styles {
@@ -491,41 +491,43 @@ fn empty_sfc_module(file_id: FileId, source: &str, content_hash: u64) -> ModuleI
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "threads SFC script context plus the prop and emit template-credit return bindings into the per-script merge"
-)]
-fn merge_script_into_module(
+struct SfcScriptMergeInput<'a> {
     kind: SfcKind,
-    script: &SfcScript,
-    combined: &mut ModuleInfo,
-    template_visible_imports: &mut FxHashSet<String>,
-    template_visible_bound_targets: &mut FxHashMap<String, String>,
-    props_return_binding: &mut Option<String>,
-    emit_return_binding: &mut Option<String>,
+    script: &'a SfcScript,
+    combined: &'a mut ModuleInfo,
+    template_visible_imports: &'a mut FxHashSet<String>,
+    template_visible_bound_targets: &'a mut FxHashMap<String, String>,
+    props_return_binding: &'a mut Option<String>,
+    emit_return_binding: &'a mut Option<String>,
     need_complexity: bool,
-) {
-    if kind == SfcKind::Vue
-        && let Some(src) = &script.src
+}
+
+fn merge_script_into_module(input: &mut SfcScriptMergeInput<'_>) {
+    if input.kind == SfcKind::Vue
+        && let Some(src) = &input.script.src
     {
-        add_script_src_import(combined, src, script.src_span);
+        add_script_src_import(input.combined, src, input.script.src_span);
     }
 
     let allocator = Allocator::default();
-    let parser_return =
-        Parser::new(&allocator, &script.body, source_type_for_script(script)).parse();
+    let parser_return = Parser::new(
+        &allocator,
+        &input.script.body,
+        source_type_for_script(input.script),
+    )
+    .parse();
     let mut extractor = ModuleInfoExtractor::new();
     extractor.visit_program(&parser_return.program);
-    let extraction = ExtractionResult::contiguous(&script.body, script.byte_offset);
+    let extraction = ExtractionResult::contiguous(&input.script.body, input.script.byte_offset);
     extractor.remap_spans_with(|span| extraction.remap_span(span));
     extractor.resolve_typed_destructure_bindings();
 
-    let augmented_body = build_generic_attr_probe_source(script);
+    let augmented_body = build_generic_attr_probe_source(input.script);
     let empty_template_used = rustc_hash::FxHashSet::default();
     let (binding_usage, auto_import_candidates) = if let Some(augmented) = augmented_body.as_deref()
     {
         let augmented_return =
-            Parser::new(&allocator, augmented, source_type_for_script(script)).parse();
+            Parser::new(&allocator, augmented, source_type_for_script(input.script)).parse();
         (
             compute_import_binding_usage(
                 &augmented_return.program,
@@ -545,49 +547,56 @@ fn merge_script_into_module(
             semantic_usage.auto_import_candidates,
         )
     };
-    combined
+    input
+        .combined
         .unused_import_bindings
         .extend(binding_usage.unused.iter().cloned());
-    combined
+    input
+        .combined
         .type_referenced_import_bindings
         .extend(binding_usage.type_referenced.iter().cloned());
-    combined
+    input
+        .combined
         .value_referenced_import_bindings
         .extend(binding_usage.value_referenced.iter().cloned());
-    combined
+    input
+        .combined
         .auto_import_candidates
         .extend(auto_import_candidates);
-    if need_complexity {
-        combined.complexity.extend(translate_script_complexity(
-            script,
-            &parser_return.program,
-            &combined.line_offsets,
-        ));
+    if input.need_complexity {
+        input
+            .combined
+            .complexity
+            .extend(translate_script_complexity(
+                input.script,
+                &parser_return.program,
+                &input.combined.line_offsets,
+            ));
     }
 
     // Vue `<script setup>` `defineProps` harvesting for `unused-component-prop`.
     // Spans returned by the harvest are relative to the script body; remap onto
     // the SFC source via the script byte offset.
-    if kind == SfcKind::Vue && script.is_setup {
+    if input.kind == SfcKind::Vue && input.script.is_setup {
         let harvest = crate::sfc_props::harvest_define_props(&parser_return.program);
         if harvest.has_unharvestable_props {
-            combined.has_unharvestable_props = true;
+            input.combined.has_unharvestable_props = true;
         }
         if harvest.has_props_attrs_fallthrough {
-            combined.has_props_attrs_fallthrough = true;
+            input.combined.has_props_attrs_fallthrough = true;
         }
         if harvest.has_define_expose {
-            combined.has_define_expose = true;
+            input.combined.has_define_expose = true;
         }
         if harvest.has_define_model {
-            combined.has_define_model = true;
+            input.combined.has_define_model = true;
         }
         if let Some(binding) = harvest.props_return_binding {
-            *props_return_binding = Some(binding);
+            *input.props_return_binding = Some(binding);
         }
         for mut prop in harvest.props {
-            prop.span_start += script.byte_offset as u32;
-            combined.component_props.push(prop);
+            prop.span_start += input.script.byte_offset as u32;
+            input.combined.component_props.push(prop);
         }
 
         // `defineEmits` harvesting for `unused-component-emit`. Same span remap.
@@ -595,32 +604,32 @@ fn merge_script_into_module(
         // `defineModel` must abstain emits too (reuse the props-side flag).
         let emit_harvest = crate::sfc_props::harvest_define_emits(&parser_return.program);
         if emit_harvest.has_unharvestable_emits {
-            combined.has_unharvestable_emits = true;
+            input.combined.has_unharvestable_emits = true;
         }
         if emit_harvest.has_dynamic_emit {
-            combined.has_dynamic_emit = true;
+            input.combined.has_dynamic_emit = true;
         }
         if emit_harvest.has_emit_whole_object_use {
-            combined.has_emit_whole_object_use = true;
+            input.combined.has_emit_whole_object_use = true;
         }
         if let Some(binding) = emit_harvest.emit_binding {
-            *emit_return_binding = Some(binding);
+            *input.emit_return_binding = Some(binding);
         }
         for mut emit in emit_harvest.emits {
-            emit.span_start += script.byte_offset as u32;
-            combined.component_emits.push(emit);
+            emit.span_start += input.script.byte_offset as u32;
+            input.combined.component_emits.push(emit);
         }
     }
 
-    if is_template_visible_script(kind, script) {
-        template_visible_imports.extend(
+    if is_template_visible_script(input.kind, input.script) {
+        input.template_visible_imports.extend(
             extractor
                 .imports
                 .iter()
                 .filter(|import| !import.local_name.is_empty())
                 .map(|import| import.local_name.clone()),
         );
-        template_visible_bound_targets.extend(
+        input.template_visible_bound_targets.extend(
             extractor
                 .binding_target_names()
                 .iter()
@@ -629,7 +638,7 @@ fn merge_script_into_module(
         );
     }
 
-    extractor.merge_into(combined);
+    extractor.merge_into(input.combined);
 }
 
 fn translate_script_complexity(
