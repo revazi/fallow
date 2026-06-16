@@ -692,6 +692,20 @@
           },
           "description": "Vue `<script setup>` `defineEmits` events emitted nowhere in their own SFC\n(no `emit('<name>')` call). Wrapped in [`UnusedComponentEmitFinding`] so\neach entry carries a typed `actions` array natively. Default severity is\n`warn`."
         },
+        "unused_component_inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UnusedComponentInputFinding"
+          },
+          "description": "Angular `@Input()` / signal `input()` / `model()` inputs read nowhere in\ntheir own component (neither the template nor the class body). Wrapped in\n[`UnusedComponentInputFinding`] so each entry carries a typed `actions`\narray natively. Default severity is `warn`."
+        },
+        "unused_component_outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UnusedComponentOutputFinding"
+          },
+          "description": "Angular `@Output()` / signal `output()` outputs emitted nowhere in their\nown component (no `this.<output>.emit(...)`). Wrapped in\n[`UnusedComponentOutputFinding`] so each entry carries a typed `actions`\narray natively. Default severity is `warn`."
+        },
         "unused_server_actions": {
           "type": "array",
           "items": {
@@ -1131,6 +1145,20 @@
             "$ref": "#/definitions/UnusedComponentEmitFinding"
           },
           "description": "Vue `<script setup>` `defineEmits` events emitted nowhere in their own SFC\n(no `emit('<name>')` call). Wrapped in [`UnusedComponentEmitFinding`] so\neach entry carries a typed `actions` array natively. Default severity is\n`warn`."
+        },
+        "unused_component_inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UnusedComponentInputFinding"
+          },
+          "description": "Angular `@Input()` / signal `input()` / `model()` inputs read nowhere in\ntheir own component (neither the template nor the class body). Wrapped in\n[`UnusedComponentInputFinding`] so each entry carries a typed `actions`\narray natively. Default severity is `warn`."
+        },
+        "unused_component_outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UnusedComponentOutputFinding"
+          },
+          "description": "Angular `@Output()` / signal `output()` outputs emitted nowhere in their\nown component (no `this.<output>.emit(...)`). Wrapped in\n[`UnusedComponentOutputFinding`] so each entry carries a typed `actions`\narray natively. Default severity is `warn`."
         },
         "unused_server_actions": {
           "type": "array",
@@ -4996,6 +5024,14 @@
           "type": "integer",
           "description": "Vue `<script setup>` emits emitted nowhere inside their own SFC."
         },
+        "unused_component_inputs": {
+          "type": "integer",
+          "description": "Angular `@Input()` bindings referenced nowhere inside their own component."
+        },
+        "unused_component_outputs": {
+          "type": "integer",
+          "description": "Angular `@Output()` bindings emitted nowhere inside their own component."
+        },
         "unused_server_actions": {
           "type": "integer",
           "description": "Next.js Server Actions (exports of `\"use server\"` files) referenced by no\ncode in the project."
@@ -5844,6 +5880,20 @@
             "$ref": "#/definitions/UnusedComponentEmitFinding"
           },
           "description": "Vue `<script setup>` `defineEmits` events emitted nowhere in their own SFC\n(no `emit('<name>')` call). Wrapped in [`UnusedComponentEmitFinding`] so\neach entry carries a typed `actions` array natively. Default severity is\n`warn`."
+        },
+        "unused_component_inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UnusedComponentInputFinding"
+          },
+          "description": "Angular `@Input()` / signal `input()` / `model()` inputs read nowhere in\ntheir own component (neither the template nor the class body). Wrapped in\n[`UnusedComponentInputFinding`] so each entry carries a typed `actions`\narray natively. Default severity is `warn`."
+        },
+        "unused_component_outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UnusedComponentOutputFinding"
+          },
+          "description": "Angular `@Output()` / signal `output()` outputs emitted nowhere in their\nown component (no `this.<output>.emit(...)`). Wrapped in\n[`UnusedComponentOutputFinding`] so each entry carries a typed `actions`\narray natively. Default severity is `warn`."
         },
         "unused_server_actions": {
           "type": "array",
@@ -14477,6 +14527,110 @@
       ],
       "description": "A Tailwind v4 `@theme` design token defined in a stylesheet whose generated\nutility, `var()` reads, and arbitrary-value references appear nowhere in the\nproject: a dead design token (the `unused-export` of the token era). A\ncandidate, never a gated finding: the token could be consumed by a Tailwind\nplugin, a published design-system surface, or a non-CSS-aware build step the\nscan cannot see (those cases are gated out before this is emitted)."
     },
+    "UnusedComponentInputFinding": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The Angular component/directive `.ts` file declaring the unused input."
+        },
+        "component_name": {
+          "type": "string",
+          "description": "The component name (the `.ts` file stem)."
+        },
+        "input_name": {
+          "type": "string",
+          "description": "The declared input name that is never read."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based line number of the input declaration."
+        },
+        "col": {
+          "type": "integer",
+          "description": "0-based byte column offset of the input declaration."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IssueAction"
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
+        },
+        "introduced": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AuditIntroduced"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
+        }
+      },
+      "required": [
+        "path",
+        "component_name",
+        "input_name",
+        "line",
+        "col",
+        "actions"
+      ],
+      "description": "Wire-shape envelope for an [`UnusedComponentInput`] finding. There is no safe\nauto-fix: removing a declared input is judgement-bearing (the input may be\npart of a deliberately-stable public component API). The only action is a\nline-level suppress at the input declaration."
+    },
+    "UnusedComponentOutputFinding": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The Angular component/directive `.ts` file declaring the unused output."
+        },
+        "component_name": {
+          "type": "string",
+          "description": "The component name (the `.ts` file stem)."
+        },
+        "output_name": {
+          "type": "string",
+          "description": "The declared output name that is never emitted."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based line number of the output declaration."
+        },
+        "col": {
+          "type": "integer",
+          "description": "0-based byte column offset of the output declaration."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IssueAction"
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
+        },
+        "introduced": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AuditIntroduced"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
+        }
+      },
+      "required": [
+        "path",
+        "component_name",
+        "output_name",
+        "line",
+        "col",
+        "actions"
+      ],
+      "description": "Wire-shape envelope for an [`UnusedComponentOutput`] finding. There is no safe\nauto-fix: removing a declared output is judgement-bearing (the event may be\npart of a deliberately-stable public component API). The only action is a\nline-level suppress at the output declaration."
+    },
     "PropDrillingChainFinding": {
       "type": "object",
       "properties": {
@@ -14544,46 +14698,6 @@
         "component"
       ],
       "description": "One hop in a prop-drilling chain: a component that received the prop and\npassed it along (or, at the chain ends, the source that owns it and the\nconsumer that substantively reads it)."
-    },
-    "ReactHookProfile": {
-      "type": "object",
-      "properties": {
-        "state": {
-          "type": "integer",
-          "description": "`useState` call count attributed to this component."
-        },
-        "effect": {
-          "type": "integer",
-          "description": "`useEffect` call count attributed to this component."
-        },
-        "memo": {
-          "type": "integer",
-          "description": "`useMemo` call count attributed to this component."
-        },
-        "callback": {
-          "type": "integer",
-          "description": "`useCallback` call count attributed to this component."
-        },
-        "custom": {
-          "type": "integer",
-          "description": "Custom `use*` hook call count attributed to this component."
-        },
-        "max_effect_dep_arity": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "description": "Largest `useEffect` dependency-array arity over the attributed effects\nthat carry a literal deps array. `None` when no attributed `useEffect`\nhad a literal array (absent or non-literal deps; ADR-001 syntactic-only,\nso absence does NOT mean \"no coupling\")."
-        }
-      },
-      "required": [
-        "state",
-        "effect",
-        "memo",
-        "callback",
-        "custom"
-      ],
-      "description": "Per-component React hook profile derived from the cached `hook_uses` IR at\nthe health layer. Descriptive context that refines the bare\n[`ComplexityViolation::react_hook_count`] headline with a per-kind breakdown\nand the maximum `useEffect` dependency-array arity.\n\nAttached only when at least one component-scope hook was attributed to the\nfunction, so non-React findings stay byte-identical on the wire. The\nper-kind counts cover hooks recorded by the React visitor (calls inside an\nidentified component); a `use*` call inside a plain helper function is\ncounted in `react_hook_count` but NOT here, so the breakdown can sum to LESS\nthan `react_hook_count`. `react_hook_count` remains the headline total; this\nis an additive refinement."
     },
     "ThinWrapperFinding": {
       "type": "object",
@@ -14717,6 +14831,46 @@
         "component"
       ],
       "description": "One member of a duplicate-prop-shape group: the OTHER components that share\nthe same significant prop-name set, listed in each member's\n`sharing_components`. Path-sorted for stable output. A located reference (no\n`shape`, which is carried once on the owning [`DuplicatePropShape`])."
+    },
+    "ReactHookProfile": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "integer",
+          "description": "`useState` call count attributed to this component."
+        },
+        "effect": {
+          "type": "integer",
+          "description": "`useEffect` call count attributed to this component."
+        },
+        "memo": {
+          "type": "integer",
+          "description": "`useMemo` call count attributed to this component."
+        },
+        "callback": {
+          "type": "integer",
+          "description": "`useCallback` call count attributed to this component."
+        },
+        "custom": {
+          "type": "integer",
+          "description": "Custom `use*` hook call count attributed to this component."
+        },
+        "max_effect_dep_arity": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Largest `useEffect` dependency-array arity over the attributed effects\nthat carry a literal deps array. `None` when no attributed `useEffect`\nhad a literal array (absent or non-literal deps; ADR-001 syntactic-only,\nso absence does NOT mean \"no coupling\")."
+        }
+      },
+      "required": [
+        "state",
+        "effect",
+        "memo",
+        "callback",
+        "custom"
+      ],
+      "description": "Per-component React hook profile derived from the cached `hook_uses` IR at\nthe health layer. Descriptive context that refines the bare\n[`ComplexityViolation::react_hook_count`] headline with a per-kind breakdown\nand the maximum `useEffect` dependency-array arity.\n\nAttached only when at least one component-scope hook was attributed to the\nfunction, so non-React findings stay byte-identical on the wire. The\nper-kind counts cover hooks recorded by the React visitor (calls inside an\nidentified component); a `use*` call inside a plain helper function is\ncounted in `react_hook_count` but NOT here, so the breakdown can sum to LESS\nthan `react_hook_count`. `react_hook_count` remains the headline total; this\nis an additive refinement."
     },
     "RenderFanInTopComponent": {
       "type": "object",
