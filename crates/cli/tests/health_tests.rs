@@ -1203,6 +1203,97 @@ fn health_score_flag_shows_score() {
 }
 
 #[test]
+fn health_vital_signs_carry_render_fan_in_on_react_project() {
+    // Descriptive component render fan-in (the component-graph analogue of module
+    // fan-in) is computed whenever React is declared and surfaced under the
+    // existing `vital_signs` block (no flag, no rule).
+    let output = run_fallow("health", "render-fan-in", &["--format", "json", "--quiet"]);
+    let json = parse_json(&output);
+    let vital = json
+        .get("vital_signs")
+        .expect("health renders vital_signs by default");
+    assert_eq!(
+        vital
+            .get("max_render_fan_in")
+            .and_then(serde_json::Value::as_u64),
+        Some(3),
+        "the headline is the honest DISTINCT-PARENTS count (Button = 3 parents), \
+         not the inflated render-site count (6): {vital}"
+    );
+    // The located top-N is sorted by distinct_parents descending: Button (3) leads.
+    let top = vital
+        .get("top_render_fan_in")
+        .and_then(serde_json::Value::as_array)
+        .expect("top_render_fan_in present on a React project");
+    let first = &top[0];
+    assert_eq!(
+        first.get("component").and_then(serde_json::Value::as_str),
+        Some("Button"),
+        "the top entry is sorted by distinct_parents desc (Button leads): {vital}"
+    );
+    assert_eq!(
+        first
+            .get("distinct_parents")
+            .and_then(serde_json::Value::as_u64),
+        Some(3),
+        "Button's headline axis is distinct_parents = 3: {vital}"
+    );
+    assert_eq!(
+        first
+            .get("render_sites")
+            .and_then(serde_json::Value::as_u64),
+        Some(6),
+        "render_sites is kept as secondary 'incl. repeats' context (6): {vital}"
+    );
+    // No test-file component (the fixture's __tests__/Button.test.tsx Page) leaks
+    // into the located list.
+    assert!(
+        !top.iter()
+            .any(|c| c.get("component").and_then(serde_json::Value::as_str) == Some("Page")),
+        "a component defined in a test file must not appear in top_render_fan_in: {vital}"
+    );
+    assert!(
+        vital.get("p95_render_fan_in").is_some(),
+        "p95_render_fan_in is present on a React project: {vital}"
+    );
+    let high_pct = vital
+        .get("render_fan_in_high_pct")
+        .and_then(serde_json::Value::as_f64)
+        .expect("render_fan_in_high_pct present on a React project");
+    assert!(
+        high_pct.is_finite() && (0.0..=100.0).contains(&high_pct),
+        "render_fan_in_high_pct is a finite percentage: {high_pct}"
+    );
+}
+
+#[test]
+fn health_vital_signs_omit_render_fan_in_on_non_react_project() {
+    // A non-React project computes no render fan-in; the three fields are
+    // skip_serializing_if-omitted so the JSON contract is unchanged.
+    let output = run_fallow(
+        "health",
+        "complexity-project",
+        &["--format", "json", "--quiet"],
+    );
+    let json = parse_json(&output);
+    let vital = json
+        .get("vital_signs")
+        .expect("health renders vital_signs by default");
+    assert!(
+        vital.get("max_render_fan_in").is_none(),
+        "max_render_fan_in is omitted on a non-React project: {vital}"
+    );
+    assert!(
+        vital.get("p95_render_fan_in").is_none(),
+        "p95_render_fan_in is omitted on a non-React project: {vital}"
+    );
+    assert!(
+        vital.get("render_fan_in_high_pct").is_none(),
+        "render_fan_in_high_pct is omitted on a non-React project: {vital}"
+    );
+}
+
+#[test]
 fn health_score_save_snapshot_keeps_hotspot_vital_signs() {
     let temp = tempdir().expect("create temp dir");
     let root = temp.path();

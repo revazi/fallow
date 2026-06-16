@@ -2811,6 +2811,9 @@ export function choose(value: number): string {
             unused_server_actions: vec![],
             unused_load_data_keys: vec![],
             unused_load_data_keys_global_abstain: false,
+            prop_drilling_chains: vec![],
+            thin_wrappers: vec![],
+            duplicate_prop_shapes: vec![],
             route_collisions: vec![fallow_core::results::RouteCollisionFinding::with_actions(
                 fallow_core::results::RouteCollision {
                     path: "/app/(a)/about/page.tsx".into(),
@@ -2885,6 +2888,17 @@ export function choose(value: number): string {
                         fallow_core::extract::SkippedSecurityCalleeExpressionKind::Other,
                 },
             ],
+            render_fan_in: Some(fallow_core::results::RenderFanInMetric {
+                per_component: vec![fallow_core::results::RenderFanInComponent {
+                    file: "/Button.tsx".into(),
+                    component: "Button".to_string(),
+                    render_sites: 6,
+                    distinct_parents: 3,
+                }],
+                p95_distinct_parents: Some(3),
+                high_pct: Some(0.0),
+                max_distinct_parents: Some(3),
+            }),
         }
     }
 
@@ -2931,6 +2945,13 @@ export function choose(value: number): string {
         assert_eq!(target.security_unresolved_callee_diagnostics.len(), 1);
         assert_eq!(target.suppression_count, 1);
         assert!(target.entry_point_summary.is_some());
+        assert_eq!(
+            target
+                .render_fan_in
+                .as_ref()
+                .and_then(|m| m.max_distinct_parents),
+            Some(3)
+        );
     }
 
     #[test]

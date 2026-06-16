@@ -171,6 +171,7 @@ fn build_health_human_lines_with_explain(
     render_coverage_intelligence(&mut lines, report, root);
     render_vital_signs(&mut lines, report);
     render_risk_profiles(&mut lines, report);
+    render_render_fan_in(&mut lines, report);
     render_large_functions(&mut lines, report, root);
     render_findings(&mut lines, report, root);
     render_threshold_overrides(&mut lines, report, root);
@@ -1214,6 +1215,48 @@ fn render_risk_profiles(lines: &mut Vec<String>, report: &crate::health_types::H
     }
 }
 
+/// Render the descriptive render-fan-in (blast-radius) list of the highest
+/// fan-in React/Preact components, e.g.
+/// `Render fan-in: <Button> 31 parents (146 incl. repeats) ...`.
+///
+/// The HEADLINE axis is distinct parents (the honest count of distinct render
+/// LOCATIONS); render sites is shown as secondary "incl. repeats" context.
+/// Mirrors `render_risk_profiles`: descriptive vital-sign context, gated on a
+/// non-empty `top_render_fan_in` so non-React output is byte-identical. The
+/// list is already sorted by distinct parents descending and project-relativized
+/// in the health layer; this only renders a capped, dimmed summary line.
+fn render_render_fan_in(lines: &mut Vec<String>, report: &crate::health_types::HealthReport) {
+    let Some(ref vs) = report.vital_signs else {
+        return;
+    };
+    if vs.top_render_fan_in.is_empty() {
+        return;
+    }
+
+    const MAX_SHOWN: usize = 5;
+    let shown: Vec<String> = vs
+        .top_render_fan_in
+        .iter()
+        .take(MAX_SHOWN)
+        .map(|c| {
+            format!(
+                "<{}> {} parent{} ({} incl. repeats)",
+                c.component,
+                c.distinct_parents,
+                plural(c.distinct_parents as usize),
+                c.render_sites,
+            )
+        })
+        .collect();
+
+    lines.push(format!(
+        "  {} {}",
+        "Render fan-in:".dimmed(),
+        shown.join(" \u{00b7} ").dimmed()
+    ));
+    lines.push(String::new());
+}
+
 fn render_large_functions(
     lines: &mut Vec<String>,
     report: &crate::health_types::HealthReport,
@@ -1447,12 +1490,118 @@ fn push_finding_metric_rows(
         threshold_colored(finding.cognitive, thresholds.max_cognitive),
         format!("{:>3}", finding.line_count).dimmed(),
     ));
+    if let Some(line) = render_react_context(finding) {
+        lines.push(line);
+    }
+    if let Some(line) = render_blast_radius_context(finding, report) {
+        lines.push(line);
+    }
     if let Some(line) = render_component_rollup_breakdown(finding, root) {
         lines.push(line);
     }
     if let Some(line) = finding_crap_line(finding, root) {
         lines.push(line);
     }
+}
+
+/// Render the descriptive React-shape context line for a complexity finding:
+/// `react: 14 props, 9 hooks (3 state, 4 effect, 2 memo), max effect deps 5,
+/// JSX depth 7`. Purely descriptive (the same counts already fed the cognitive
+/// fold); never a threshold. Returns `None` when the finding has no React
+/// signals, so non-React findings render unchanged. The per-kind breakdown and
+/// max effect deps come from the cached `hook_uses` IR (component-scope hooks
+/// only) and are shown only when a profile was attributed; `react_hook_count`
+/// stays the headline so the documented breakdown-vs-total divergence is a
+/// non-issue.
+fn render_react_context(finding: &crate::health_types::ComplexityViolation) -> Option<String> {
+    if finding.react_prop_count == 0
+        && finding.react_hook_count == 0
+        && finding.react_jsx_max_depth == 0
+    {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if finding.react_prop_count > 0 {
+        parts.push(format!("{} props", finding.react_prop_count));
+    }
+    if finding.react_hook_count > 0 {
+        let breakdown = finding
+            .react_hook_profile
+            .as_ref()
+            .map(hook_breakdown_fragment)
+            .filter(|b| !b.is_empty());
+        match breakdown {
+            Some(breakdown) => {
+                parts.push(format!("{} hooks ({breakdown})", finding.react_hook_count));
+            }
+            None => parts.push(format!("{} hooks", finding.react_hook_count)),
+        }
+    }
+    if let Some(arity) = finding
+        .react_hook_profile
+        .as_ref()
+        .and_then(|p| p.max_effect_dep_arity)
+    {
+        parts.push(format!("max effect deps {arity}"));
+    }
+    if finding.react_jsx_max_depth > 0 {
+        parts.push(format!("JSX depth {}", finding.react_jsx_max_depth));
+    }
+    Some(format!(
+        "         {}",
+        format!("react: {}", parts.join(", ")).dimmed()
+    ))
+}
+
+/// The minimum render-SITE count for the descriptive blast-radius line. A
+/// component rendered in `<= 1` place is not a blast-radius amplifier (editing
+/// it ripples to at most one site), so the line only surfaces for components
+/// rendered in MULTIPLE places. Descriptive floor only, not a gate or threshold.
+const BLAST_RADIUS_MIN_SITES: u32 = 2;
+
+/// Render the descriptive blast-radius line for a complexity finding whose file
+/// declares a high-render-fan-in component: `rendered in N places`. This is the
+/// component-graph analogue of fan-in surfaced as context (a hotspot file
+/// containing a shared component is a higher blast-radius hotspot: editing it
+/// ripples to every render site). Purely descriptive (dimmed, sibling to the
+/// `react: ...` line), never a threshold or finding. Returns `None` when the
+/// file has no inspectable high-fan-in component (so non-React findings render
+/// unchanged) or the metric was not computed (non-React run / score-only).
+fn render_blast_radius_context(
+    finding: &crate::health_types::ComplexityViolation,
+    report: &crate::health_types::HealthReport,
+) -> Option<String> {
+    let (component, render_sites) = report.render_fan_in_top.get(&finding.path)?;
+    if *render_sites < BLAST_RADIUS_MIN_SITES {
+        return None;
+    }
+    Some(format!(
+        "         {}",
+        format!("blast radius: <{component}> rendered in {render_sites} places").dimmed()
+    ))
+}
+
+/// Build the per-kind hook breakdown parenthetical (`3 state, 4 effect, 2
+/// memo`), gating each segment on `> 0` so empty kinds never produce dangling
+/// fragments. Returns an empty string when no kind was attributed.
+fn hook_breakdown_fragment(profile: &crate::health_types::ReactHookProfile) -> String {
+    let mut segments: Vec<String> = Vec::new();
+    if profile.state > 0 {
+        segments.push(format!("{} state", profile.state));
+    }
+    if profile.effect > 0 {
+        segments.push(format!("{} effect", profile.effect));
+    }
+    if profile.memo > 0 {
+        segments.push(format!("{} memo", profile.memo));
+    }
+    if profile.callback > 0 {
+        segments.push(format!("{} callback", profile.callback));
+    }
+    if profile.custom > 0 {
+        segments.push(format!("{} custom", profile.custom));
+    }
+    segments.join(", ")
 }
 
 fn finding_thresholds(
@@ -2143,7 +2292,7 @@ fn colorize_grade(grade: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::plain;
+    use super::super::{plain, strip_ansi};
     use super::*;
     use std::path::PathBuf;
 
@@ -2177,6 +2326,10 @@ mod tests {
                     cognitive: 30,
                     line_count: 80,
                     param_count: 0,
+                    react_hook_count: 0,
+                    react_jsx_max_depth: 0,
+                    react_prop_count: 0,
+                    react_hook_profile: None,
                     exceeded: crate::health_types::ExceededThreshold::Both,
                     severity: crate::health_types::FindingSeverity::High,
                     crap: None,
@@ -2224,6 +2377,10 @@ mod tests {
                     cognitive: 20,
                     line_count: 50,
                     param_count: 0,
+                    react_hook_count: 0,
+                    react_jsx_max_depth: 0,
+                    react_prop_count: 0,
+                    react_hook_profile: None,
                     exceeded: crate::health_types::ExceededThreshold::Both,
                     severity: crate::health_types::FindingSeverity::High,
                     crap: None,
@@ -2265,6 +2422,10 @@ mod tests {
                     cognitive: 20,
                     line_count: 80,
                     param_count: 0,
+                    react_hook_count: 0,
+                    react_jsx_max_depth: 0,
+                    react_prop_count: 0,
+                    react_hook_profile: None,
                     exceeded: crate::health_types::ExceededThreshold::Crap,
                     severity: crate::health_types::FindingSeverity::High,
                     crap: Some(650.0),
@@ -2308,6 +2469,10 @@ mod tests {
                     cognitive: 20,
                     line_count: 80,
                     param_count: 0,
+                    react_hook_count: 0,
+                    react_jsx_max_depth: 0,
+                    react_prop_count: 0,
+                    react_hook_profile: None,
                     exceeded: crate::health_types::ExceededThreshold::Crap,
                     severity: crate::health_types::FindingSeverity::High,
                     crap: Some(45.0),
@@ -2357,6 +2522,10 @@ mod tests {
                     cognitive: 20,
                     line_count: 80,
                     param_count: 0,
+                    react_hook_count: 0,
+                    react_jsx_max_depth: 0,
+                    react_prop_count: 0,
+                    react_hook_profile: None,
                     exceeded: crate::health_types::ExceededThreshold::Crap,
                     severity: crate::health_types::FindingSeverity::High,
                     crap: Some(45.0),
@@ -2406,6 +2575,10 @@ mod tests {
                     cognitive: 20,
                     line_count: 40,
                     param_count: 0,
+                    react_hook_count: 0,
+                    react_jsx_max_depth: 0,
+                    react_prop_count: 0,
+                    react_hook_profile: None,
                     exceeded: crate::health_types::ExceededThreshold::Both,
                     severity: crate::health_types::FindingSeverity::High,
                     crap: None,
@@ -2428,6 +2601,10 @@ mod tests {
                     cognitive: 18,
                     line_count: 30,
                     param_count: 0,
+                    react_hook_count: 0,
+                    react_jsx_max_depth: 0,
+                    react_prop_count: 0,
+                    react_hook_profile: None,
                     exceeded: crate::health_types::ExceededThreshold::Both,
                     severity: crate::health_types::FindingSeverity::High,
                     crap: None,
@@ -2789,6 +2966,7 @@ mod tests {
                 unit_size: None,
                 coupling: None,
                 duplication: None,
+                prop_drilling: None,
             },
         });
         let lines = build_health_human_lines(&report, &root);
@@ -2821,6 +2999,7 @@ mod tests {
                 unit_size: None,
                 coupling: None,
                 duplication: None,
+                prop_drilling: None,
             },
         });
         let lines = build_health_human_lines(&report, &root);
@@ -2853,6 +3032,7 @@ mod tests {
                 unit_size: None,
                 coupling: None,
                 duplication: None,
+                prop_drilling: None,
             },
         });
         let lines = build_health_human_lines(&report, &root);
@@ -2880,6 +3060,7 @@ mod tests {
                 unit_size: None,
                 coupling: None,
                 duplication: None,
+                prop_drilling: None,
             },
         });
         let lines = build_health_human_lines(&report, &root);
@@ -2907,6 +3088,7 @@ mod tests {
                 unit_size: None,
                 coupling: None,
                 duplication: None,
+                prop_drilling: None,
             },
         });
         let lines = build_health_human_lines(&report, &root);
@@ -2935,6 +3117,7 @@ mod tests {
                 unit_size: None,
                 coupling: None,
                 duplication: None,
+                prop_drilling: None,
             },
         });
         let lines = build_health_human_lines(&report, &root);
@@ -2962,6 +3145,7 @@ mod tests {
                 unit_size: None,
                 coupling: None,
                 duplication: None,
+                prop_drilling: None,
             },
         });
         let lines = build_health_human_lines(&report, &root);
@@ -4030,6 +4214,10 @@ mod tests {
                 cognitive: 20,
                 line_count: 80,
                 param_count: 0,
+                react_hook_count: 0,
+                react_jsx_max_depth: 0,
+                react_prop_count: 0,
+                react_hook_profile: None,
                 exceeded: crate::health_types::ExceededThreshold::Both,
                 severity: crate::health_types::FindingSeverity::Moderate,
                 crap: None,
@@ -4060,6 +4248,7 @@ mod tests {
                 unit_size: None,
                 coupling: None,
                 duplication: None,
+                prop_drilling: None,
             },
         });
         report.file_scores = vec![crate::health_types::FileHealthScore {
@@ -4138,6 +4327,10 @@ mod tests {
                 cognitive: 10,  // does not exceed 15
                 line_count: 50,
                 param_count: 0,
+                react_hook_count: 0,
+                react_jsx_max_depth: 0,
+                react_prop_count: 0,
+                react_hook_profile: None,
                 exceeded: crate::health_types::ExceededThreshold::Cyclomatic,
                 severity: crate::health_types::FindingSeverity::Moderate,
                 crap: None,
@@ -4173,6 +4366,10 @@ mod tests {
                 cognitive: 25,  // exceeds 15
                 line_count: 50,
                 param_count: 0,
+                react_hook_count: 0,
+                react_jsx_max_depth: 0,
+                react_prop_count: 0,
+                react_hook_profile: None,
                 exceeded: crate::health_types::ExceededThreshold::Cognitive,
                 severity: crate::health_types::FindingSeverity::High,
                 crap: None,
@@ -4208,6 +4405,10 @@ mod tests {
                 cognitive: 20,
                 line_count: 50,
                 param_count: 0,
+                react_hook_count: 0,
+                react_jsx_max_depth: 0,
+                react_prop_count: 0,
+                react_hook_profile: None,
                 exceeded: crate::health_types::ExceededThreshold::Both,
                 severity: crate::health_types::FindingSeverity::Moderate,
                 crap: None,
@@ -4230,6 +4431,10 @@ mod tests {
                 cognitive: 18,
                 line_count: 40,
                 param_count: 0,
+                react_hook_count: 0,
+                react_jsx_max_depth: 0,
+                react_prop_count: 0,
+                react_hook_profile: None,
                 exceeded: crate::health_types::ExceededThreshold::Both,
                 severity: crate::health_types::FindingSeverity::Moderate,
                 crap: None,
@@ -4265,6 +4470,10 @@ mod tests {
                 cognitive: 20,
                 line_count: 50,
                 param_count: 0,
+                react_hook_count: 0,
+                react_jsx_max_depth: 0,
+                react_prop_count: 0,
+                react_hook_profile: None,
                 exceeded: crate::health_types::ExceededThreshold::Both,
                 severity: crate::health_types::FindingSeverity::Moderate,
                 crap: None,
@@ -4354,6 +4563,10 @@ mod tests {
             cognitive: 28,
             line_count: 0,
             param_count: 0,
+            react_hook_count: 0,
+            react_jsx_max_depth: 0,
+            react_prop_count: 0,
+            react_hook_profile: None,
             exceeded: crate::health_types::ExceededThreshold::Both,
             severity: crate::health_types::FindingSeverity::High,
             crap: None,
@@ -4403,6 +4616,10 @@ mod tests {
                     cognitive: 14,
                     line_count: 0,
                     param_count: 0,
+                    react_hook_count: 0,
+                    react_jsx_max_depth: 0,
+                    react_prop_count: 0,
+                    react_hook_profile: None,
                     exceeded: crate::health_types::ExceededThreshold::Both,
                     severity: crate::health_types::FindingSeverity::High,
                     crap: Some(45.0),
@@ -4439,5 +4656,111 @@ mod tests {
             !text.contains("(inherited from permissions.component.ts)"),
             "bare basename suffix must not be rendered: {text}"
         );
+    }
+
+    fn react_finding(
+        react_hook_count: u16,
+        react_prop_count: u16,
+        react_jsx_max_depth: u16,
+        profile: Option<crate::health_types::ReactHookProfile>,
+    ) -> crate::health_types::ComplexityViolation {
+        crate::health_types::ComplexityViolation {
+            path: PathBuf::from("src/Dashboard.tsx"),
+            name: "Dashboard".to_string(),
+            line: 1,
+            col: 0,
+            cyclomatic: 40,
+            cognitive: 30,
+            line_count: 90,
+            param_count: 1,
+            react_hook_count,
+            react_jsx_max_depth,
+            react_prop_count,
+            react_hook_profile: profile,
+            exceeded: crate::health_types::ExceededThreshold::Both,
+            severity: crate::health_types::FindingSeverity::High,
+            crap: None,
+            coverage_pct: None,
+            coverage_tier: None,
+            coverage_source: None,
+            inherited_from: None,
+            component_rollup: None,
+            contributions: Vec::new(),
+            effective_thresholds: None,
+            threshold_source: None,
+        }
+    }
+
+    #[test]
+    fn react_context_renders_hook_breakdown_and_max_effect_deps() {
+        let finding = react_finding(
+            9,
+            14,
+            7,
+            Some(crate::health_types::ReactHookProfile {
+                state: 3,
+                effect: 4,
+                memo: 2,
+                callback: 0,
+                custom: 0,
+                max_effect_dep_arity: Some(5),
+            }),
+        );
+        let line = render_react_context(&finding).expect("react context line");
+        let plain_line = strip_ansi(&line);
+        assert!(
+            plain_line
+                .contains("react: 14 props, 9 hooks (3 state, 4 effect, 2 memo), max effect deps 5, JSX depth 7"),
+            "breakdown line: {plain_line}"
+        );
+    }
+
+    #[test]
+    fn react_context_without_profile_keeps_bare_hook_count() {
+        let finding = react_finding(5, 0, 0, None);
+        let line = render_react_context(&finding).expect("react context line");
+        let plain_line = strip_ansi(&line);
+        assert!(plain_line.contains("react: 5 hooks"), "{plain_line}");
+        assert!(
+            !plain_line.contains('('),
+            "no breakdown parenthetical without a profile: {plain_line}"
+        );
+        assert!(
+            !plain_line.contains("max effect deps"),
+            "no effect-deps segment without a profile: {plain_line}"
+        );
+    }
+
+    #[test]
+    fn react_context_omits_max_effect_deps_when_arity_absent() {
+        let finding = react_finding(
+            2,
+            0,
+            0,
+            Some(crate::health_types::ReactHookProfile {
+                state: 1,
+                effect: 1,
+                memo: 0,
+                callback: 0,
+                custom: 0,
+                max_effect_dep_arity: None,
+            }),
+        );
+        let line = render_react_context(&finding).expect("react context line");
+        let plain_line = strip_ansi(&line);
+        assert!(
+            plain_line.contains("2 hooks (1 state, 1 effect)"),
+            "{plain_line}"
+        );
+        assert!(
+            !plain_line.contains("max effect deps"),
+            "absent arity must omit the effect-deps segment: {plain_line}"
+        );
+    }
+
+    #[test]
+    fn react_context_none_for_non_react_finding() {
+        let finding = react_finding(0, 0, 0, None);
+        assert!(render_react_context(&finding).is_none());
     }
 }
