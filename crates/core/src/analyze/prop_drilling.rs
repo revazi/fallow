@@ -95,6 +95,13 @@ struct ForwardTarget {
     child_attr: String,
 }
 
+/// Classified props for one component: role plus declaration metadata keyed by
+/// local prop name.
+struct PropClassification {
+    prop_roles: FxHashMap<String, PropRole>,
+    prop_decls: FxHashMap<String, PropDecl>,
+}
+
 /// Result of the prop-drilling scan: the located chains plus the number of React
 /// components inspected (for the observability diagnostic, so a silent
 /// dep-gate / silent abstain is visible).
@@ -209,10 +216,25 @@ fn build_single_component_state<'a>(
     props: &[&ComponentProp],
 ) -> CompState<'a> {
     let component_abstain = component_has_abstain(func, edges);
+    let PropClassification {
+        prop_roles,
+        prop_decls,
+    } = classify_component_props(props);
+    let forwards = collect_forward_targets(edges, &prop_roles);
 
+    CompState {
+        path,
+        span_start: func.span_start,
+        abstain: component_abstain,
+        prop_roles,
+        prop_decls,
+        forwards,
+    }
+}
+
+fn classify_component_props(props: &[&ComponentProp]) -> PropClassification {
     let mut prop_roles = FxHashMap::default();
     let mut prop_decls = FxHashMap::default();
-    let mut forwards: FxHashMap<String, Vec<ForwardTarget>> = FxHashMap::default();
 
     for prop in props {
         if !prop.used_in_script {
@@ -235,8 +257,20 @@ fn build_single_component_state<'a>(
         );
     }
 
-    // Forward targets: each render edge's `forward_attrs` whose root is one of
-    // this component's prop locals.
+    PropClassification {
+        prop_roles,
+        prop_decls,
+    }
+}
+
+fn collect_forward_targets(
+    edges: &[&RenderEdge],
+    prop_roles: &FxHashMap<String, PropRole>,
+) -> FxHashMap<String, Vec<ForwardTarget>> {
+    let mut forwards: FxHashMap<String, Vec<ForwardTarget>> = FxHashMap::default();
+
+    // Each render edge's `forward_attrs` whose root is one of this component's
+    // prop locals.
     for edge in edges {
         for fa in &edge.forward_attrs {
             if prop_roles.contains_key(&fa.root) {
@@ -251,14 +285,7 @@ fn build_single_component_state<'a>(
         }
     }
 
-    CompState {
-        path,
-        span_start: func.span_start,
-        abstain: component_abstain,
-        prop_roles,
-        prop_decls,
-        forwards,
-    }
+    forwards
 }
 
 /// Whether a component carries any prop-drilling abstain signal.
