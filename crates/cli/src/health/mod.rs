@@ -350,62 +350,32 @@ fn execute_health_inner(
         pre_computed_analysis,
     })?;
 
-    let HealthOutputParts {
-        mut report,
-        grouping,
-        timings,
-        coverage_gaps_has_findings,
-    } = build_health_output_parts(
-        opts,
-        &HealthOutputBuildInput {
+    let HealthOutputContext { build, sections } =
+        prepare_health_output_context(HealthOutputContextInput {
             config: &config,
             files: &files,
             modules: &modules,
-            file_paths: &scope.file_paths,
-            group_resolver: scope.group_resolver.as_ref(),
+            scope: &scope,
             needs_file_scores,
             report_coverage_gaps,
             has_istanbul_coverage,
-            threshold_overrides: findings_data.threshold_overrides,
-            max_cyclomatic: scope.max_cyclomatic,
-            max_cognitive: scope.max_cognitive,
-            max_crap: scope.max_crap,
-            files_analyzed: findings_data.files_analyzed,
-            total_functions: findings_data.total_functions,
-            total_above_threshold: findings_data.total_above_threshold,
-            sev_critical: findings_data.sev_critical,
-            sev_high: findings_data.sev_high,
-            sev_moderate: findings_data.sev_moderate,
-            timing_base: timings.into_base_input(findings_data.complexity_ms),
-            start: &start,
-        },
-        HealthOutputSectionInput {
+            findings_data,
             analysis_data,
             derived_sections,
             vital_data,
-            findings: findings_data.findings,
-        },
-    );
+            timings,
+            start: &start,
+        });
 
-    finalize_health_report_side_effects(&mut HealthReportSideEffectsInput {
+    let output = build_health_output_parts(opts, &build, sections);
+
+    Ok(finalize_health_result(HealthFinalizeInput {
         opts,
-        report: &mut report,
-        files: &files,
-        config: &config,
-        ignore_set: &scope.ignore_set,
-        changed_files: scope.changed_files.as_ref(),
-        ws_roots: scope.ws_roots.as_deref(),
-        coverage_gaps_has_findings,
-    });
-
-    Ok(build_health_result(HealthResultInput {
         config,
-        report,
-        grouping,
-        group_resolver: scope.group_resolver,
+        files: &files,
+        scope,
+        output,
         elapsed: start.elapsed(),
-        timings,
-        coverage_gaps_has_findings,
         should_fail_on_coverage_gaps: enforce_coverage_gaps,
     }))
 }
@@ -520,6 +490,16 @@ struct HealthReportSideEffectsInput<'a> {
     coverage_gaps_has_findings: bool,
 }
 
+struct HealthFinalizeInput<'a> {
+    opts: &'a HealthOptions<'a>,
+    config: ResolvedConfig,
+    files: &'a [fallow_types::discover::DiscoveredFile],
+    scope: HealthScope<'a>,
+    output: HealthOutputParts,
+    elapsed: Duration,
+    should_fail_on_coverage_gaps: bool,
+}
+
 fn finalize_health_report_side_effects(input: &mut HealthReportSideEffectsInput<'_>) {
     if input.opts.css {
         input.report.css_analytics = compute_css_analytics_report(
@@ -532,6 +512,46 @@ fn finalize_health_report_side_effects(input: &mut HealthReportSideEffectsInput<
     }
 
     record_health_telemetry(input.report, input.coverage_gaps_has_findings);
+}
+
+fn finalize_health_result(input: HealthFinalizeInput<'_>) -> HealthResult {
+    let HealthFinalizeInput {
+        opts,
+        config,
+        files,
+        scope,
+        output,
+        elapsed,
+        should_fail_on_coverage_gaps,
+    } = input;
+    let HealthOutputParts {
+        mut report,
+        grouping,
+        timings,
+        coverage_gaps_has_findings,
+    } = output;
+
+    finalize_health_report_side_effects(&mut HealthReportSideEffectsInput {
+        opts,
+        report: &mut report,
+        files,
+        config: &config,
+        ignore_set: &scope.ignore_set,
+        changed_files: scope.changed_files.as_ref(),
+        ws_roots: scope.ws_roots.as_deref(),
+        coverage_gaps_has_findings,
+    });
+
+    build_health_result(HealthResultInput {
+        config,
+        report,
+        grouping,
+        group_resolver: scope.group_resolver,
+        elapsed,
+        timings,
+        coverage_gaps_has_findings,
+        should_fail_on_coverage_gaps,
+    })
 }
 
 /// Compute structural CSS analytics, honoring the same ignore / changed-since /
@@ -2648,6 +2668,27 @@ struct HealthFindingsData {
     loaded_baseline: Option<HealthBaselineData>,
 }
 
+struct HealthOutputContextInput<'a> {
+    config: &'a ResolvedConfig,
+    files: &'a [fallow_types::discover::DiscoveredFile],
+    modules: &'a [fallow_core::extract::ModuleInfo],
+    scope: &'a HealthScope<'a>,
+    needs_file_scores: bool,
+    report_coverage_gaps: bool,
+    has_istanbul_coverage: bool,
+    findings_data: HealthFindingsData,
+    analysis_data: HealthAnalysisData,
+    derived_sections: HealthDerivedSections,
+    vital_data: HealthVitalData,
+    timings: HealthPipelineTimings,
+    start: &'a Instant,
+}
+
+struct HealthOutputContext<'a> {
+    build: HealthOutputBuildInput<'a>,
+    sections: HealthOutputSectionInput,
+}
+
 struct HealthOutputBuildInput<'a> {
     config: &'a ResolvedConfig,
     files: &'a [fallow_types::discover::DiscoveredFile],
@@ -2688,6 +2729,52 @@ struct HealthOutputParts {
 struct HealthOutputSupportingParts {
     grouping: Option<crate::health_types::HealthGrouping>,
     timings: Option<crate::health_types::HealthTimings>,
+}
+
+fn prepare_health_output_context(input: HealthOutputContextInput<'_>) -> HealthOutputContext<'_> {
+    let HealthFindingsData {
+        findings,
+        threshold_overrides,
+        files_analyzed,
+        total_functions,
+        complexity_ms,
+        total_above_threshold,
+        sev_critical,
+        sev_high,
+        sev_moderate,
+        loaded_baseline: _,
+    } = input.findings_data;
+
+    HealthOutputContext {
+        build: HealthOutputBuildInput {
+            config: input.config,
+            files: input.files,
+            modules: input.modules,
+            file_paths: &input.scope.file_paths,
+            group_resolver: input.scope.group_resolver.as_ref(),
+            needs_file_scores: input.needs_file_scores,
+            report_coverage_gaps: input.report_coverage_gaps,
+            has_istanbul_coverage: input.has_istanbul_coverage,
+            threshold_overrides,
+            max_cyclomatic: input.scope.max_cyclomatic,
+            max_cognitive: input.scope.max_cognitive,
+            max_crap: input.scope.max_crap,
+            files_analyzed,
+            total_functions,
+            total_above_threshold,
+            sev_critical,
+            sev_high,
+            sev_moderate,
+            timing_base: input.timings.into_base_input(complexity_ms),
+            start: input.start,
+        },
+        sections: HealthOutputSectionInput {
+            analysis_data: input.analysis_data,
+            derived_sections: input.derived_sections,
+            vital_data: input.vital_data,
+            findings,
+        },
+    }
 }
 
 fn build_health_output_parts(
