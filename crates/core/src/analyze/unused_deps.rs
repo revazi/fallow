@@ -415,38 +415,20 @@ pub fn find_unused_dependencies(
 
     let usage = collect_dependency_usage_indices(graph, config, workspaces);
 
-    let root_pkg_path = config.root.join("package.json");
-    let root_pkg_content = read_pkg_json_content(&root_pkg_path);
-    let root_package_referenced = package_referenced
-        .get(&root_pkg_path)
-        .unwrap_or(&empty_package_referenced);
-
     let shared = shared_dep_sets(
         &plugin_referenced,
-        root_package_referenced,
+        package_referenced
+            .get(&config.root.join("package.json"))
+            .unwrap_or(&empty_package_referenced),
         &plugin_tooling,
         &script_used,
         &ignore_deps,
     );
 
-    let is_used_globally =
-        |dep: &str| usage.used_packages.contains(dep) || usage.root_peer_used.contains(dep);
-
     let (mut unused_deps, mut unused_dev_deps, mut unused_optional_deps) =
-        collect_root_unused_categories(
-            pkg,
-            &shared,
-            &is_used_globally,
-            &root_pkg_path,
-            root_pkg_content.as_deref(),
-        );
-
-    let root_flagged: FxHashSet<String> = unused_deps
-        .iter()
-        .chain(unused_dev_deps.iter())
-        .chain(unused_optional_deps.iter())
-        .map(|d| d.package_name.clone())
-        .collect();
+        collect_root_unused_dependencies(pkg, config, &shared, &usage);
+    let root_flagged =
+        root_flagged_dependencies(&unused_deps, &unused_dev_deps, &unused_optional_deps);
 
     let inputs = WorkspaceUnusedDependencyInputs {
         config,
@@ -498,6 +480,39 @@ fn collect_dependency_usage_indices<'a>(
         used_packages,
         root_peer_used,
     }
+}
+
+fn collect_root_unused_dependencies(
+    pkg: &PackageJson,
+    config: &ResolvedConfig,
+    shared: &SharedDepSets<'_>,
+    usage: &DependencyUsageIndices<'_>,
+) -> UnusedDependencyTriple {
+    let root_pkg_path = config.root.join("package.json");
+    let root_pkg_content = read_pkg_json_content(&root_pkg_path);
+    let is_used_globally =
+        |dep: &str| usage.used_packages.contains(dep) || usage.root_peer_used.contains(dep);
+
+    collect_root_unused_categories(
+        pkg,
+        shared,
+        &is_used_globally,
+        &root_pkg_path,
+        root_pkg_content.as_deref(),
+    )
+}
+
+fn root_flagged_dependencies(
+    unused_deps: &[UnusedDependency],
+    unused_dev_deps: &[UnusedDependency],
+    unused_optional_deps: &[UnusedDependency],
+) -> FxHashSet<String> {
+    unused_deps
+        .iter()
+        .chain(unused_dev_deps)
+        .chain(unused_optional_deps)
+        .map(|d| d.package_name.clone())
+        .collect()
 }
 
 /// Collect unused prod/dev/optional dependencies for the root package.json.
