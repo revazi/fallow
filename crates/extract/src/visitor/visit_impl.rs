@@ -45,6 +45,17 @@ mod visit_helpers;
 
 use visit_helpers::*;
 
+struct ArgSinkSiteInput<'site, 'ast> {
+    callee_path: &'site str,
+    sink_shape: SinkShape,
+    arg_index: u32,
+    arg_expr: &'site Expression<'ast>,
+    arg_literal: Option<SinkLiteralValue>,
+    arg_is_non_literal: bool,
+    url_arg_literal: Option<String>,
+    span: Span,
+}
+
 impl ModuleInfoExtractor {
     fn is_module_scope(&self) -> bool {
         self.block_depth == 0 && self.function_depth == 0 && self.namespace_depth == 0
@@ -7817,7 +7828,7 @@ impl ModuleInfoExtractor {
         if arg_is_non_literal {
             self.record_sanitized_sink_arg(span.start, arg_index, arg_expr);
         }
-        let site = self.build_arg_sink_site(
+        let site = self.build_arg_sink_site(ArgSinkSiteInput {
             callee_path,
             sink_shape,
             arg_index,
@@ -7826,7 +7837,7 @@ impl ModuleInfoExtractor {
             arg_is_non_literal,
             url_arg_literal,
             span,
-        );
+        });
         self.security_sinks.push(site);
     }
 
@@ -7834,21 +7845,17 @@ impl ModuleInfoExtractor {
     /// capture gates have passed. Non-literal arguments carry the ident /
     /// source-path / arg-kind / url-shape metadata; literal arguments carry the
     /// literal value with empty metadata.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "mirrors the SinkSite shape; splitting further would obscure the build"
-    )]
-    fn build_arg_sink_site(
-        &self,
-        callee_path: &str,
-        sink_shape: SinkShape,
-        arg_index: u32,
-        arg_expr: &Expression<'_>,
-        arg_literal: Option<SinkLiteralValue>,
-        arg_is_non_literal: bool,
-        url_arg_literal: Option<String>,
-        span: Span,
-    ) -> SinkSite {
+    fn build_arg_sink_site(&self, input: ArgSinkSiteInput<'_, '_>) -> SinkSite {
+        let ArgSinkSiteInput {
+            callee_path,
+            sink_shape,
+            arg_index,
+            arg_expr,
+            arg_literal,
+            arg_is_non_literal,
+            url_arg_literal,
+            span,
+        } = input;
         let object_keys = object_key_metadata(arg_expr);
         SinkSite {
             sink_shape,
