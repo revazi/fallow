@@ -351,33 +351,15 @@ fn walk_chains(
     let non_maximal = non_maximal_origins(states, resolver);
 
     for (key, state) in states {
-        if state.abstain {
-            continue;
-        }
-        // A chain ORIGIN is a pass-through prop on a NON-abstaining component:
-        // the component owns the prop and only forwards it. (A consumer prop is a
-        // chain terminus, not an origin; an unused prop is not a chain link.)
-        for (local, role) in &state.prop_roles {
-            if *role != PropRole::PassThrough {
-                continue;
-            }
-            if non_maximal.contains(&(key.clone(), local.clone())) {
-                continue;
-            }
-            let Some(decl) = state.prop_decls.get(local) else {
-                continue;
-            };
-            let dedup_key = (key.file, key.name.clone(), decl.name.clone());
-            if seen.contains(&dedup_key) {
-                continue;
-            }
-            if let Some(hops) = follow_chain(key, local, states, resolver, line_offsets_by_file)
+        for origin in component_chain_origins(key, state, &non_maximal, &seen) {
+            if let Some(hops) =
+                follow_chain(key, &origin.local, states, resolver, line_offsets_by_file)
                 && hops.len() >= MIN_CHAIN_DEPTH
             {
-                seen.insert(dedup_key);
+                seen.insert(origin.dedup_key);
                 let depth = u32::try_from(hops.len()).unwrap_or(u32::MAX);
                 chains.push(PropDrillingChain {
-                    prop: decl.name.clone(),
+                    prop: origin.prop,
                     depth,
                     hops,
                 });
@@ -395,6 +377,51 @@ fn walk_chains(
             .then(a.prop.cmp(&b.prop))
     });
     chains
+}
+
+/// A maximal component prop that can start a prop-drilling chain.
+struct ChainOrigin {
+    local: String,
+    prop: String,
+    dedup_key: (FileId, String, String),
+}
+
+fn component_chain_origins(
+    key: &CompKey,
+    state: &CompState<'_>,
+    non_maximal: &FxHashSet<(CompKey, String)>,
+    seen: &FxHashSet<(FileId, String, String)>,
+) -> Vec<ChainOrigin> {
+    if state.abstain {
+        return Vec::new();
+    }
+
+    let mut origins = Vec::new();
+    // A chain origin is a pass-through prop on a non-abstaining component: the
+    // component owns the prop and only forwards it. A consumer prop is a chain
+    // terminus, and an unused prop is not a chain link.
+    for (local, role) in &state.prop_roles {
+        if *role != PropRole::PassThrough {
+            continue;
+        }
+        if non_maximal.contains(&(key.clone(), local.clone())) {
+            continue;
+        }
+        let Some(decl) = state.prop_decls.get(local) else {
+            continue;
+        };
+        let dedup_key = (key.file, key.name.clone(), decl.name.clone());
+        if seen.contains(&dedup_key) {
+            continue;
+        }
+        origins.push(ChainOrigin {
+            local: local.clone(),
+            prop: decl.name.clone(),
+            dedup_key,
+        });
+    }
+
+    origins
 }
 
 /// Follow a chain from `(key, local)` through pass-through hops to a consumer.
