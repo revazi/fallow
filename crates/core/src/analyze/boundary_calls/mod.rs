@@ -34,29 +34,10 @@ pub fn find_boundary_call_violations(
         return Vec::new();
     }
 
-    // Parse each zone's pattern strings once. Inert patterns are rejected at
-    // config load, so a parse failure here only drops that single pattern.
-    let patterns_by_zone: FxHashMap<&str, Vec<CalleePattern>> = forbidden
-        .iter()
-        .map(|(zone, patterns)| {
-            (
-                zone.as_str(),
-                patterns
-                    .iter()
-                    .filter_map(|raw| CalleePattern::parse(raw))
-                    .collect(),
-            )
-        })
-        .collect();
-
+    let patterns_by_zone = boundary_call_patterns_by_zone(config);
     let modules_by_id: FxHashMap<FileId, &ModuleInfo> =
         modules.iter().map(|m| (m.file_id, m)).collect();
-
-    // Track how many analyzed files classified into each referenced zone so a
-    // rule pointing at a zone that matches nothing warns instead of silently
-    // reporting zero findings forever.
-    let mut zone_file_counts: FxHashMap<&str, usize> =
-        patterns_by_zone.keys().map(|zone| (*zone, 0)).collect();
+    let mut zone_file_counts = boundary_call_zone_file_counts(&patterns_by_zone);
 
     let mut violations = Vec::new();
     for node in &graph.modules {
@@ -81,6 +62,34 @@ pub fn find_boundary_call_violations(
 
     warn_empty_boundary_call_zones(&zone_file_counts);
     violations
+}
+
+fn boundary_call_patterns_by_zone(config: &ResolvedConfig) -> FxHashMap<&str, Vec<CalleePattern>> {
+    // Parse each zone's pattern strings once. Inert patterns are rejected at
+    // config load, so a parse failure here only drops that single pattern.
+    config
+        .boundaries
+        .calls_forbidden_by_zone
+        .iter()
+        .map(|(zone, patterns)| {
+            (
+                zone.as_str(),
+                patterns
+                    .iter()
+                    .filter_map(|raw| CalleePattern::parse(raw))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+fn boundary_call_zone_file_counts<'a>(
+    patterns_by_zone: &FxHashMap<&'a str, Vec<CalleePattern>>,
+) -> FxHashMap<&'a str, usize> {
+    // Track how many analyzed files classified into each referenced zone so a
+    // rule pointing at a zone that matches nothing warns instead of silently
+    // reporting zero findings forever.
+    patterns_by_zone.keys().map(|zone| (*zone, 0)).collect()
 }
 
 fn boundary_call_scan_target<'a>(
