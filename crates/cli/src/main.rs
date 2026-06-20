@@ -60,6 +60,7 @@ mod setup_hooks;
 mod signal;
 mod task_matrix;
 mod telemetry;
+mod trace_chain;
 mod update_check;
 mod validate;
 mod vital_signs;
@@ -623,6 +624,42 @@ enum Command {
         /// Exported symbol to inspect, formatted as FILE:EXPORT.
         #[arg(long, value_name = "FILE:EXPORT", conflicts_with = "file")]
         symbol: Option<String>,
+
+        /// OPT-IN: also attach the best-effort symbol-level call chain (E8
+        /// `fallow trace`) as the `symbol_chain` evidence section. Only
+        /// meaningful for a `--symbol` target. Default off (best-effort,
+        /// syntactic, OFF the ranked path).
+        #[arg(long)]
+        symbol_chain: bool,
+    },
+
+    /// Trace a symbol's call chain (best-effort, syntactic; OFF the ranked path)
+    ///
+    /// Walks callers UP (modules that import the symbol) and callees DOWN
+    /// (import-symbol edges + intra-module call sites) via the module graph,
+    /// bounded by `--depth`. Symbol-level chains are labeled best-effort per
+    /// ADR-001: resolved-vs-unresolved callees are reported honestly, never
+    /// silently dropped. The result is its OWN surface, NOT folded into the
+    /// ranked brief and NEVER an input to the focus map / ranking.
+    Trace {
+        /// Target symbol, formatted as FILE:SYMBOL (e.g. src/utils.ts:formatDate).
+        #[arg(value_name = "FILE:SYMBOL")]
+        symbol: String,
+
+        /// Walk UP to callers (modules that import the symbol). When neither
+        /// `--callers` nor `--callees` is set, both directions are walked.
+        #[arg(long)]
+        callers: bool,
+
+        /// Walk DOWN to callees (the symbol's module's import-symbol edges plus
+        /// unresolved call sites). When neither flag is set, both are walked.
+        #[arg(long)]
+        callees: bool,
+
+        /// Chain depth bound for both directions (default 2). Symbol-level is
+        /// best-effort, so a shallow bound keeps the trace legible.
+        #[arg(long, value_name = "N")]
+        depth: Option<u32>,
     },
 
     /// Auto-fix issues: remove unused exports, dependencies, and enum
@@ -3339,6 +3376,7 @@ fn command_rejects_output_gate(command: Option<&Command>) -> bool {
                 | Command::Ci { .. }
                 | Command::List { .. }
                 | Command::Inspect { .. }
+                | Command::Trace { .. }
                 | Command::Flags { .. }
                 | Command::Migrate { .. }
                 | Command::License { .. }
@@ -3527,7 +3565,17 @@ fn dispatch_subcommand(command: Command, dispatch: &DispatchContext<'_>) -> Exit
     match command {
         check @ Command::Check { .. } => dispatch_check_command(check, dispatch),
         Command::Watch { no_clear } => dispatch_watch(dispatch, no_clear),
-        Command::Inspect { file, symbol } => dispatch_inspect_command(dispatch, file, symbol),
+        Command::Inspect {
+            file,
+            symbol,
+            symbol_chain,
+        } => dispatch_inspect_command(dispatch, file, symbol, symbol_chain),
+        Command::Trace {
+            symbol,
+            callers,
+            callees,
+            depth,
+        } => dispatch_trace_command(dispatch, symbol, callers, callees, depth),
         fix @ Command::Fix { .. } => dispatch_fix_command(&fix, dispatch),
         init @ Command::Init { .. } => dispatch_init_command(init, root, quiet),
         Command::Hooks { subcommand } => run_hooks_command(root, subcommand, output),
@@ -3706,6 +3754,7 @@ fn dispatch_inspect_command(
     dispatch: &DispatchContext<'_>,
     file: Option<String>,
     symbol: Option<String>,
+    symbol_chain: bool,
 ) -> ExitCode {
     let target = match (file, symbol) {
         (Some(file), None) => inspect::InspectTarget::File { file },
@@ -3747,6 +3796,28 @@ fn dispatch_inspect_command(
         production: dispatch.cli.production,
         workspace: dispatch.cli.workspace.as_ref(),
         target,
+        symbol_chain,
+    })
+}
+
+fn dispatch_trace_command(
+    dispatch: &DispatchContext<'_>,
+    symbol: String,
+    callers: bool,
+    callees: bool,
+    depth: Option<u32>,
+) -> ExitCode {
+    trace_chain::run_trace(&trace_chain::TraceChainOptions {
+        root: dispatch.root,
+        config_path: &dispatch.cli.config,
+        output: dispatch.output,
+        no_cache: dispatch.cli.no_cache,
+        threads: dispatch.threads,
+        quiet: dispatch.quiet,
+        target: symbol,
+        callers,
+        callees,
+        depth: depth.unwrap_or(fallow_core::trace_chain::DEFAULT_TRACE_DEPTH),
     })
 }
 
@@ -4509,7 +4580,6 @@ fn telemetry_workflow_for_command(
         Some(Command::Dupes { .. }) => telemetry::Workflow::Dupes,
         Some(Command::Health { .. }) => telemetry::Workflow::Health,
         Some(Command::Audit { .. } | Command::DecisionSurface { .. }) => telemetry::Workflow::Audit,
-        Some(Command::Inspect { .. }) => telemetry::Workflow::ProjectInventory,
         Some(Command::Ci { .. }) => match output {
             fallow_config::OutputFormat::ReviewGitlab
             | fallow_config::OutputFormat::PrCommentGitlab
@@ -4521,9 +4591,13 @@ fn telemetry_workflow_for_command(
         Some(Command::Security { .. }) => telemetry::Workflow::Security,
         Some(Command::Fix { .. }) => telemetry::Workflow::Fix,
         Some(Command::Explain { .. }) => telemetry::Workflow::Explain,
-        Some(Command::List { .. } | Command::Workspaces | Command::Schema) => {
-            telemetry::Workflow::ProjectInventory
-        }
+        Some(
+            Command::Inspect { .. }
+            | Command::Trace { .. }
+            | Command::List { .. }
+            | Command::Workspaces
+            | Command::Schema,
+        ) => telemetry::Workflow::ProjectInventory,
         Some(Command::License { .. }) => telemetry::Workflow::License,
         Some(
             Command::Init { .. }

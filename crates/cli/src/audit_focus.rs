@@ -27,7 +27,7 @@
 //!
 //! ## The E9 runtime seam (documented, NOT built)
 //!
-//! [`FocusScore`] keeps the four component sub-scores on the wire so E9 (paid)
+//! `FocusScore` keeps the four component sub-scores on the wire so E9 (paid)
 //! can multiply a runtime hot/cold weight into `total` WITHOUT recomputing the
 //! deterministic signals. The single `// E9 seam` marker sits at the point the
 //! components are summed. No runtime field, no runtime read, no runtime gate here:
@@ -641,5 +641,55 @@ mod tests {
         assert_eq!(map.review_here.len(), 2);
         assert!(map.review_here[0].score.total >= map.review_here[1].score.total);
         assert_eq!(map.review_here[0].file, "src/high.ts");
+    }
+
+    // E8 done-condition (c): the symbol-level call chain (`fallow trace`) is
+    // EXPLICITLY OFF the ranked path. The focus-map ranking inputs
+    // (`FocusInputs`) carry NO trace / symbol-chain field, and the composite
+    // `FocusScore.total` is the sum of EXACTLY the four documented components
+    // (no symbol-chain term). This pins the trace as never feeding
+    // de-prioritization.
+    #[test]
+    fn focus_map_inputs_have_no_symbol_chain_or_trace_field() {
+        // FocusInputs is the complete input surface to the focus map. Naming
+        // every field here is exhaustive (the struct is `pub` with no `..`), so
+        // adding a trace/symbol-chain field would force this destructure to be
+        // updated -- a compile-time guard that the trace stays out of the ranking
+        // inputs.
+        let empty_facts: &[FocusFileFactsPaths] = &[];
+        let empty_boundary: &[BoundaryZoneFile] = &[];
+        let empty_strings: &[String] = &[];
+        let FocusInputs {
+            graph_facts: _,
+            boundary_files: _,
+            public_api_added: _,
+            coordination_changed_files: _,
+            taint_touched_files: _,
+            // NOTE: no `symbol_chain` / `trace` field exists. If E8 ever wired
+            // one in, this destructure would fail to compile.
+        } = inputs(
+            empty_facts,
+            empty_boundary,
+            empty_strings,
+            empty_strings,
+            empty_strings,
+        );
+
+        // The composite total is the sum of exactly the four documented
+        // components. A symbol-chain term would break this invariant.
+        let gf = vec![facts("src/x.ts", 4, 2, false, false)];
+        let map = build_focus_map(&inputs(&gf, &[], &[], &[], &[]));
+        let unit = map
+            .review_here
+            .iter()
+            .chain(map.deprioritized.iter())
+            .next()
+            .unwrap();
+        let score = &unit.score;
+        assert_eq!(
+            score.total,
+            score.fan_io + score.security_taint + score.risk_zone + score.change_shape,
+            "the focus total must be the four documented components only -- no symbol-chain term"
+        );
     }
 }

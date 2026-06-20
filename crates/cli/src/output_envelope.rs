@@ -561,6 +561,12 @@ pub struct InspectEvidence {
     /// E2 impact closure scoped to the inspected file as the seed: the transitive
     /// affected-but-not-in-diff set + coordination gap.
     pub impact_closure: InspectEvidenceSection,
+    /// E8 OPT-IN symbol-level call chain. Present only when `--symbol-chain` was
+    /// requested AND the target is a SYMBOL (best-effort, syntactic, OFF the
+    /// ranked path). `None` (omitted) by default: symbol-level chains are
+    /// best-effort and not part of the trusted ranked evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol_chain: Option<InspectEvidenceSection>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1145,6 +1151,13 @@ pub enum FallowOutput {
     /// `evidence`, and `warnings`; no `schema_version`.
     #[serde(rename = "inspect_target")]
     Inspect(InspectOutput),
+    /// `fallow trace <symbol> --format json` (E8 symbol-level call chains).
+    /// Required `file`, `symbol`, `symbol_found`, `depth`, `best_effort`,
+    /// `reason`; optional `callers`, `callees`, `unresolved_callees`. Its OWN
+    /// surface, best-effort and EXPLICITLY OFF the ranked path: NEVER folded
+    /// into the ranked brief and NEVER a focus-map input.
+    #[serde(rename = "trace")]
+    Trace(fallow_core::trace_chain::SymbolChainTrace),
     /// `fallow --format review-github` / `--format review-gitlab`. Required
     /// `body`, `comments`, `meta`; no `schema_version`.
     #[serde(rename = "review-envelope")]

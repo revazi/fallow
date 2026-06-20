@@ -15632,6 +15632,17 @@
         "impact_closure": {
           "description": "E2 impact closure scoped to the inspected file as the seed: the transitive\naffected-but-not-in-diff set + coordination gap.",
           "$ref": "#/definitions/InspectEvidenceSection"
+        },
+        "symbol_chain": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InspectEvidenceSection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "E8 OPT-IN symbol-level call chain. Present only when `--symbol-chain` was\nrequested AND the target is a SYMBOL (best-effort, syntactic, OFF the\nranked path). `None` (omitted) by default: symbol-level chains are\nbest-effort and not part of the trusted ranked evidence."
         }
       },
       "required": [
@@ -16878,6 +16889,140 @@
         "deprioritized"
       ],
       "description": "The weighted focus map: the ranked `review-here` units plus the FULL\n`deprioritized` escape-hatch list, so nothing is hidden.\n\nCompleteness invariant (the escape-hatch done-condition): the two lists\npartition the unit set, so `review_here.len() + deprioritized.len()` equals\nthe total unit count by construction."
+    },
+    "SymbolChainTrace": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "The file containing the traced symbol (project-root-relative)."
+        },
+        "symbol": {
+          "type": "string",
+          "description": "The traced symbol name."
+        },
+        "symbol_found": {
+          "type": "boolean",
+          "description": "Whether the symbol's defining export was found in the graph. When\n`false`, the chains are empty and `reason` explains why."
+        },
+        "depth": {
+          "type": "integer",
+          "description": "The chain depth applied to both directions."
+        },
+        "best_effort": {
+          "type": "boolean",
+          "description": "Whether this trace is best-effort (always `true`: symbol-level chains are\nlabeled best-effort, syntactic per ADR-001)."
+        },
+        "callers": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/ChainHop"
+          },
+          "description": "Caller chain hops (UP). Present only when `--callers` was requested."
+        },
+        "callees": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/ChainHop"
+          },
+          "description": "Callee chain hops (DOWN) resolved to an import-symbol edge. Present only\nwhen `--callees` was requested."
+        },
+        "unresolved_callees": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/UnresolvedCallee"
+          },
+          "description": "Callees referenced at a call site in the symbol's module that the\nsyntactic walk could NOT resolve to an import-symbol edge (locals,\nglobals, dynamic dispatch, re-bound callees). Reported, never dropped.\nPresent only when `--callees` was requested."
+        },
+        "reason": {
+          "type": "string",
+          "description": "A human-readable summary of the trace outcome."
+        }
+      },
+      "required": [
+        "file",
+        "symbol",
+        "symbol_found",
+        "depth",
+        "best_effort",
+        "reason"
+      ],
+      "description": "The result of a symbol-level call-chain trace. Its own surface (`kind:\n\"trace\"`), NOT folded into the ranked brief."
+    },
+    "ChainHop": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "The file at this hop (project-root-relative). For a caller hop this is\nthe importing module; for a callee hop the imported module."
+        },
+        "imported_as": {
+          "type": "string",
+          "description": "The symbol name as imported across the edge (`default`, `*` for namespace,\nthe imported name otherwise)."
+        },
+        "local_name": {
+          "type": "string",
+          "description": "The local binding name in the file at this hop."
+        },
+        "type_only": {
+          "type": "boolean",
+          "description": "Whether the import edge is type-only (`import type { ... }`)."
+        },
+        "depth": {
+          "type": "integer",
+          "description": "The hop's depth (1 = direct caller/callee of the symbol)."
+        }
+      },
+      "required": [
+        "file",
+        "imported_as",
+        "local_name",
+        "type_only",
+        "depth"
+      ],
+      "description": "One hop in a caller / callee chain."
+    },
+    "UnresolvedCallee": {
+      "type": "object",
+      "properties": {
+        "callee": {
+          "type": "string",
+          "description": "The callee path as written at the call site (e.g. `helper`,\n`obj.method`)."
+        },
+        "reason": {
+          "description": "Why it is unresolved (best-effort classification).",
+          "$ref": "#/definitions/UnresolvedReason"
+        }
+      },
+      "required": [
+        "callee",
+        "reason"
+      ],
+      "description": "A callee referenced at a call site that did not resolve to an import-symbol\nedge. Surfaced so a missing callee is never silently dropped."
+    },
+    "UnresolvedReason": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "local-or-global",
+          "description": "A bare identifier call with no matching import binding (a same-module\nlocal function, a global, or a re-bound callee)."
+        },
+        {
+          "type": "string",
+          "const": "member-or-dynamic",
+          "description": "A computed / member-expression callee (`obj.method`, dynamic dispatch)."
+        }
+      ],
+      "description": "Best-effort classification of why a callee did not resolve to an edge."
     }
   }
 }

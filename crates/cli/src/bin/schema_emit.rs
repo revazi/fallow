@@ -802,6 +802,11 @@ fn register_per_command_envelope_definitions(generator: &mut schemars::SchemaGen
     let _ = generator.subschema_for::<InspectEvidenceSection>();
     let _ = generator.subschema_for::<InspectSectionStatus>();
     let _ = generator.subschema_for::<InspectEvidenceScope>();
+    // E8 symbol-level call chain (`fallow trace`, `FallowOutput::Trace`).
+    let _ = generator.subschema_for::<fallow_core::trace_chain::SymbolChainTrace>();
+    let _ = generator.subschema_for::<fallow_core::trace_chain::ChainHop>();
+    let _ = generator.subschema_for::<fallow_core::trace_chain::UnresolvedCallee>();
+    let _ = generator.subschema_for::<fallow_core::trace_chain::UnresolvedReason>();
     let _ = generator.subschema_for::<CodeClimateOutput>();
     let _ = generator.subschema_for::<CodeClimateIssue>();
     let _ = generator.subschema_for::<CodeClimateIssueKind>();
@@ -1343,6 +1348,7 @@ mod drift_tests {
                 FallowOutput::Audit(_) => "Audit",
                 FallowOutput::Explain(_) => "Explain",
                 FallowOutput::Inspect(_) => "Inspect",
+                FallowOutput::Trace(_) => "Trace",
                 FallowOutput::ReviewEnvelope(_) => "ReviewEnvelope",
                 FallowOutput::ReviewReconcile(_) => "ReviewReconcile",
                 FallowOutput::CoverageSetup(_) => "CoverageSetup",

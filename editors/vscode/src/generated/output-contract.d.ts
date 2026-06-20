@@ -6498,6 +6498,13 @@ duplication: InspectEvidenceSection
 complexity: InspectEvidenceSection
 security: InspectEvidenceSection
 impact_closure: InspectEvidenceSection
+/**
+ * E8 OPT-IN symbol-level call chain. Present only when `--symbol-chain` was
+ * requested AND the target is a SYMBOL (best-effort, syntactic, OFF the
+ * ranked path). `None` (omitted) by default: symbol-level chains are
+ * best-effort and not part of the trusted ranked evidence.
+ */
+symbol_chain?: (InspectEvidenceSection | null)
 }
 export interface InspectEvidenceSection {
 status: InspectSectionStatus
