@@ -70,31 +70,47 @@ pub fn annotate_dead_code_cross_links(
         if !matches!(finding.kind, SecurityFindingKind::TaintedSink) {
             continue;
         }
-        if unused_file_paths.contains(finding.path.as_path()) {
-            finding.dead_code = Some(SecurityDeadCodeContext {
-                kind: SecurityDeadCodeKind::UnusedFile,
-                export_name: None,
-                line: None,
-                guidance: UNUSED_FILE_GUIDANCE.to_string(),
-            });
-            prepend_dead_code_action(finding);
-            continue;
-        }
-
-        if let Some(export) = matching_unused_export(
-            module_by_path.get(finding.path.as_path()).copied(),
+        annotate_finding_dead_code(
+            finding,
+            &unused_file_paths,
+            &module_by_path,
             line_offsets_by_file,
             unused_exports,
-            finding,
-        ) {
-            finding.dead_code = Some(SecurityDeadCodeContext {
-                kind: SecurityDeadCodeKind::UnusedExport,
-                export_name: Some(export.export.export_name.clone()),
-                line: Some(export.export.line),
-                guidance: UNUSED_EXPORT_GUIDANCE.to_string(),
-            });
-            prepend_dead_code_action(finding);
-        }
+        );
+    }
+}
+
+fn annotate_finding_dead_code(
+    finding: &mut SecurityFinding,
+    unused_file_paths: &FxHashSet<&Path>,
+    module_by_path: &FxHashMap<&Path, &ModuleInfo>,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+    unused_exports: &[UnusedExportFinding],
+) {
+    if unused_file_paths.contains(finding.path.as_path()) {
+        finding.dead_code = Some(SecurityDeadCodeContext {
+            kind: SecurityDeadCodeKind::UnusedFile,
+            export_name: None,
+            line: None,
+            guidance: UNUSED_FILE_GUIDANCE.to_string(),
+        });
+        prepend_dead_code_action(finding);
+        return;
+    }
+
+    if let Some(export) = matching_unused_export(
+        module_by_path.get(finding.path.as_path()).copied(),
+        line_offsets_by_file,
+        unused_exports,
+        finding,
+    ) {
+        finding.dead_code = Some(SecurityDeadCodeContext {
+            kind: SecurityDeadCodeKind::UnusedExport,
+            export_name: Some(export.export.export_name.clone()),
+            line: Some(export.export.line),
+            guidance: UNUSED_EXPORT_GUIDANCE.to_string(),
+        });
+        prepend_dead_code_action(finding);
     }
 }
 
