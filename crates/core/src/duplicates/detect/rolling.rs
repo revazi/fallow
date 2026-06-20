@@ -253,30 +253,25 @@ fn build_raw_groups(
     let mut groups = Vec::new();
     let mut seed_class_count = 0_usize;
 
-    for bucket in seed_buckets.into_values() {
-        match bucket {
-            SeedBucket::One(class) => {
-                process_seed_class(
-                    ranked_files,
-                    boundary_prefixes,
-                    has_boundaries,
-                    class,
-                    min_tokens,
-                    &mut seed_class_count,
-                    &mut groups,
-                );
-            }
-            SeedBucket::Many(classes) => {
-                for class in classes {
-                    process_seed_class(
-                        ranked_files,
-                        boundary_prefixes,
-                        has_boundaries,
-                        class,
-                        min_tokens,
-                        &mut seed_class_count,
-                        &mut groups,
-                    );
+    {
+        let mut ctx = SeedClassContext {
+            ranked_files,
+            boundary_prefixes,
+            has_boundaries,
+            min_tokens,
+            seed_class_count: &mut seed_class_count,
+            groups: &mut groups,
+        };
+
+        for bucket in seed_buckets.into_values() {
+            match bucket {
+                SeedBucket::One(class) => {
+                    process_seed_class(&mut ctx, class);
+                }
+                SeedBucket::Many(classes) => {
+                    for class in classes {
+                        process_seed_class(&mut ctx, class);
+                    }
                 }
             }
         }
@@ -285,36 +280,37 @@ fn build_raw_groups(
     (groups, seed_class_count)
 }
 
-fn process_seed_class(
-    ranked_files: &[Vec<u32>],
-    boundary_prefixes: &[Option<Vec<u32>>],
+struct SeedClassContext<'a, 'b> {
+    ranked_files: &'a [Vec<u32>],
+    boundary_prefixes: &'a [Option<Vec<u32>>],
     has_boundaries: bool,
-    class: SeedClass,
     min_tokens: usize,
-    seed_class_count: &mut usize,
-    groups: &mut Vec<RawGroup>,
-) {
+    seed_class_count: &'b mut usize,
+    groups: &'b mut Vec<RawGroup>,
+}
+
+fn process_seed_class(ctx: &mut SeedClassContext<'_, '_>, class: SeedClass) {
     let Some(occurrences) = class.occurrences.into_many() else {
         return;
     };
-    *seed_class_count += 1;
+    *ctx.seed_class_count += 1;
 
     let is_left_maximal = is_left_maximal(
-        ranked_files,
-        boundary_prefixes,
-        has_boundaries,
+        ctx.ranked_files,
+        ctx.boundary_prefixes,
+        ctx.has_boundaries,
         &occurrences,
-        min_tokens,
+        ctx.min_tokens,
     );
 
     if is_left_maximal {
         collect_extended_groups(
-            ranked_files,
-            boundary_prefixes,
-            has_boundaries,
+            ctx.ranked_files,
+            ctx.boundary_prefixes,
+            ctx.has_boundaries,
             &occurrences,
-            min_tokens,
-            groups,
+            ctx.min_tokens,
+            ctx.groups,
         );
     }
 }
