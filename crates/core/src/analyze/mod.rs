@@ -76,6 +76,7 @@ use fallow_types::output_dead_code::{
 
 use crate::results::{
     AnalysisResults, CircularDependency, CircularDependencyEdge, StaleSuppression, UnusedExport,
+    UnusedMember,
 };
 use crate::suppress::{IssueKind, SuppressionContext};
 
@@ -2290,16 +2291,8 @@ struct MemberDetectorInput<'a> {
 
 fn run_member_detectors(input: MemberDetectorInput<'_>) -> AnalysisResults {
     let mut results = AnalysisResults::default();
-    // Store-member detection activates only when Pinia is a declared dependency,
-    // so an unrelated user `defineStore`-named helper in a non-Pinia project
-    // never fires. The harvest is intentionally loose at extraction time; this
-    // is the activation boundary.
-    let store_members_active = input.config.rules.unused_store_members != Severity::Off
-        && (input.declared_deps.contains("pinia") || input.declared_deps.contains("@pinia/nuxt"));
-    if input.config.rules.unused_enum_members == Severity::Off
-        && input.config.rules.unused_class_members == Severity::Off
-        && !store_members_active
-    {
+    let store_members_active = store_member_rule_is_active(input.config, input.declared_deps);
+    if member_rules_are_disabled(input.config, store_members_active) {
         return results;
     }
 
@@ -2313,28 +2306,71 @@ fn run_member_detectors(input: MemberDetectorInput<'_>) -> AnalysisResults {
         ignore_decorators: &input.config.ignore_decorators,
         public_api_entry_points: input.public_api_entry_points,
     });
-    if input.config.rules.unused_enum_members != Severity::Off {
-        results.unused_enum_members = member_results
-            .enum_members
-            .into_iter()
-            .map(UnusedEnumMemberFinding::with_actions)
-            .collect();
-    }
-    if input.config.rules.unused_class_members != Severity::Off {
-        results.unused_class_members = member_results
-            .class_members
-            .into_iter()
-            .map(UnusedClassMemberFinding::with_actions)
-            .collect();
-    }
-    if store_members_active {
-        results.unused_store_members = member_results
-            .store_members
-            .into_iter()
-            .map(UnusedStoreMemberFinding::with_actions)
-            .collect();
-    }
+    populate_unused_enum_member_findings(&mut results, input.config, member_results.enum_members);
+    populate_unused_class_member_findings(&mut results, input.config, member_results.class_members);
+    populate_unused_store_member_findings(
+        &mut results,
+        store_members_active,
+        member_results.store_members,
+    );
     results
+}
+
+fn member_rules_are_disabled(config: &ResolvedConfig, store_members_active: bool) -> bool {
+    config.rules.unused_enum_members == Severity::Off
+        && config.rules.unused_class_members == Severity::Off
+        && !store_members_active
+}
+
+fn store_member_rule_is_active(config: &ResolvedConfig, declared_deps: &FxHashSet<String>) -> bool {
+    // Store-member detection activates only when Pinia is a declared dependency,
+    // so an unrelated user `defineStore`-named helper in a non-Pinia project
+    // never fires. The harvest is intentionally loose at extraction time; this
+    // is the activation boundary.
+    config.rules.unused_store_members != Severity::Off
+        && (declared_deps.contains("pinia") || declared_deps.contains("@pinia/nuxt"))
+}
+
+fn populate_unused_enum_member_findings(
+    results: &mut AnalysisResults,
+    config: &ResolvedConfig,
+    enum_members: Vec<UnusedMember>,
+) {
+    if config.rules.unused_enum_members == Severity::Off {
+        return;
+    }
+    results.unused_enum_members = enum_members
+        .into_iter()
+        .map(UnusedEnumMemberFinding::with_actions)
+        .collect();
+}
+
+fn populate_unused_class_member_findings(
+    results: &mut AnalysisResults,
+    config: &ResolvedConfig,
+    class_members: Vec<UnusedMember>,
+) {
+    if config.rules.unused_class_members == Severity::Off {
+        return;
+    }
+    results.unused_class_members = class_members
+        .into_iter()
+        .map(UnusedClassMemberFinding::with_actions)
+        .collect();
+}
+
+fn populate_unused_store_member_findings(
+    results: &mut AnalysisResults,
+    store_members_active: bool,
+    store_members: Vec<UnusedMember>,
+) {
+    if !store_members_active {
+        return;
+    }
+    results.unused_store_members = store_members
+        .into_iter()
+        .map(UnusedStoreMemberFinding::with_actions)
+        .collect();
 }
 
 #[derive(Clone, Copy)]
