@@ -264,47 +264,66 @@ fn walk_client_cone(scan: &LeakScanInput<'_>, client_id: FileId) -> ClientConeRe
     queue.push_back(client_id);
 
     while let Some(current) = queue.pop_front() {
-        if let Some(current_module) = scan.modules_by_id.get(&current)
-            && !current_module.dynamic_import_patterns.is_empty()
-        {
-            result.had_unresolved_edge = true;
-        }
-
-        if current != client_id {
-            if result.reached_secret.is_none() && scan.secret_sources.contains_key(&current) {
-                result.reached_secret = Some(current);
-            }
-            if result.reached_server_only.is_none() && scan.server_only_sources.contains(&current) {
-                result.reached_server_only = Some(current);
-            }
-        }
-
-        // Exclude edges reached only through a `next/dynamic ssr:false`
-        // dynamic import made by `current` (the client-only escape hatch).
-        let excluded = scan
-            .client_only_spans
-            .get(&current)
-            .unwrap_or(scan.empty_spans);
-        for (target, all_type_only, span_start, all_client_only) in scan
-            .graph
-            .outgoing_edge_summaries_with_exclusions(current, excluded)
-        {
-            if all_type_only {
-                continue; // type-only imports are erased at build; cannot leak.
-            }
-            if all_client_only {
-                // Reached only via next/dynamic ssr:false: the sanctioned
-                // client-only escape hatch, not a leak edge.
-                continue;
-            }
-            if visited.insert(target) {
-                result.parent.insert(target, (current, span_start));
-                queue.push_back(target);
-            }
-        }
+        record_client_cone_module(scan, client_id, current, &mut result);
+        enqueue_client_cone_edges(scan, current, &mut visited, &mut result.parent, &mut queue);
     }
 
     result
+}
+
+fn record_client_cone_module(
+    scan: &LeakScanInput<'_>,
+    client_id: FileId,
+    current: FileId,
+    result: &mut ClientConeResult,
+) {
+    if let Some(current_module) = scan.modules_by_id.get(&current)
+        && !current_module.dynamic_import_patterns.is_empty()
+    {
+        result.had_unresolved_edge = true;
+    }
+
+    if current == client_id {
+        return;
+    }
+    if result.reached_secret.is_none() && scan.secret_sources.contains_key(&current) {
+        result.reached_secret = Some(current);
+    }
+    if result.reached_server_only.is_none() && scan.server_only_sources.contains(&current) {
+        result.reached_server_only = Some(current);
+    }
+}
+
+fn enqueue_client_cone_edges(
+    scan: &LeakScanInput<'_>,
+    current: FileId,
+    visited: &mut FxHashSet<FileId>,
+    parent: &mut FxHashMap<FileId, (FileId, Option<u32>)>,
+    queue: &mut VecDeque<FileId>,
+) {
+    // Exclude edges reached only through a `next/dynamic ssr:false`
+    // dynamic import made by `current` (the client-only escape hatch).
+    let excluded = scan
+        .client_only_spans
+        .get(&current)
+        .unwrap_or(scan.empty_spans);
+    for (target, all_type_only, span_start, all_client_only) in scan
+        .graph
+        .outgoing_edge_summaries_with_exclusions(current, excluded)
+    {
+        if all_type_only {
+            continue; // type-only imports are erased at build; cannot leak.
+        }
+        if all_client_only {
+            // Reached only via next/dynamic ssr:false: the sanctioned
+            // client-only escape hatch, not a leak edge.
+            continue;
+        }
+        if visited.insert(target) {
+            parent.insert(target, (current, span_start));
+            queue.push_back(target);
+        }
+    }
 }
 
 fn find_client_server_leaks(
