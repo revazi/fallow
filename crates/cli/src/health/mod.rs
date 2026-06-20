@@ -2739,6 +2739,13 @@ struct HealthFindingsData {
     loaded_baseline: Option<HealthBaselineData>,
 }
 
+struct CollectedHealthFindings {
+    findings: Vec<ComplexityViolation>,
+    files_analyzed: usize,
+    total_functions: usize,
+    complexity_ms: f64,
+}
+
 struct HealthOutputContextInput<'a> {
     config: &'a ResolvedConfig,
     files: &'a [fallow_types::discover::DiscoveredFile],
@@ -3641,20 +3648,8 @@ fn prepare_health_findings(input: HealthFindingsInput<'_>) -> Result<HealthFindi
     let threshold_resolver =
         ThresholdOverrideResolver::new(&input.config.health.threshold_overrides, global_thresholds);
     let mut threshold_state_tracker = ThresholdOverrideStateTracker::default();
-    let mut collect_input = CollectFindingsInput {
-        modules: input.modules,
-        file_paths: input.file_paths,
-        config_root: &input.config.root,
-        ignore_set: input.ignore_set,
-        changed_files: input.changed_files,
-        ws_roots: input.ws_roots,
-        threshold_resolver: &threshold_resolver,
-        threshold_state_tracker: &mut threshold_state_tracker,
-        complexity_breakdown: input.opts.complexity_breakdown,
-    };
-    let (mut findings, files_analyzed, total_functions) =
-        collect_findings_with_resolver(&mut collect_input);
-    let complexity_ms = t.elapsed().as_secs_f64() * 1000.0;
+    let mut collected =
+        collect_health_findings(input, &threshold_resolver, &mut threshold_state_tracker, t);
 
     let mut crap_ctx = HealthCrapMergeContext {
         modules: input.modules,
@@ -3670,9 +3665,14 @@ fn prepare_health_findings(input: HealthFindingsInput<'_>) -> Result<HealthFindi
         threshold_resolver: &threshold_resolver,
         threshold_state_tracker: &mut threshold_state_tracker,
     };
-    apply_optional_crap_findings(input.opts, &mut findings, &mut crap_ctx);
+    apply_optional_crap_findings(input.opts, &mut collected.findings, &mut crap_ctx);
     let (total_above_threshold, sev_critical, sev_high, sev_moderate, loaded_baseline) =
-        finalize_health_findings(input.opts, input.config, &mut findings, input.diff_index)?;
+        finalize_health_findings(
+            input.opts,
+            input.config,
+            &mut collected.findings,
+            input.diff_index,
+        )?;
     threshold_state_tracker.record_no_match_entries(
         &threshold_resolver,
         should_emit_no_match_threshold_overrides(
@@ -3684,17 +3684,45 @@ fn prepare_health_findings(input: HealthFindingsInput<'_>) -> Result<HealthFindi
     );
 
     Ok(HealthFindingsData {
-        findings,
+        findings: collected.findings,
         threshold_overrides: threshold_state_tracker.into_states(),
-        files_analyzed,
-        total_functions,
-        complexity_ms,
+        files_analyzed: collected.files_analyzed,
+        total_functions: collected.total_functions,
+        complexity_ms: collected.complexity_ms,
         total_above_threshold,
         sev_critical,
         sev_high,
         sev_moderate,
         loaded_baseline,
     })
+}
+
+fn collect_health_findings(
+    input: HealthFindingsInput<'_>,
+    threshold_resolver: &ThresholdOverrideResolver,
+    threshold_state_tracker: &mut ThresholdOverrideStateTracker,
+    started_at: Instant,
+) -> CollectedHealthFindings {
+    let mut collect_input = CollectFindingsInput {
+        modules: input.modules,
+        file_paths: input.file_paths,
+        config_root: &input.config.root,
+        ignore_set: input.ignore_set,
+        changed_files: input.changed_files,
+        ws_roots: input.ws_roots,
+        threshold_resolver,
+        threshold_state_tracker,
+        complexity_breakdown: input.opts.complexity_breakdown,
+    };
+    let (findings, files_analyzed, total_functions) =
+        collect_findings_with_resolver(&mut collect_input);
+
+    CollectedHealthFindings {
+        findings,
+        files_analyzed,
+        total_functions,
+        complexity_ms: started_at.elapsed().as_secs_f64() * 1000.0,
+    }
 }
 
 struct HealthCrapMergeContext<'a> {
