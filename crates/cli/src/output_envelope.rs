@@ -1233,6 +1233,18 @@ pub enum FallowOutput {
     /// each with structured `actions[]`. Independently versioned; always exit 0.
     #[serde(rename = "decision-surface")]
     DecisionSurface(crate::audit_decision_surface::DecisionSurfaceOutput),
+    /// `fallow review --walkthrough-guide --format json` (E5). The digest +
+    /// schema the agent fetches: the brief + decision surface, the review
+    /// direction, the graph-snapshot pin, and the embedded agent schema. The
+    /// digest is graph-derived only (injection-resistant). Always exit 0.
+    #[serde(rename = "review-walkthrough-guide")]
+    WalkthroughGuide(crate::audit_walkthrough::WalkthroughGuide),
+    /// `fallow review --walkthrough-file --format json` (E5). The post-validation
+    /// of an agent's judgment JSON against the live graph: accepted (anchored,
+    /// framing fenced), rejected (unanchored), and a stale flag (the tree moved).
+    /// The verifier is the graph, never a second model. Always exit 0.
+    #[serde(rename = "review-walkthrough-validation")]
+    WalkthroughValidation(crate::audit_walkthrough::WalkthroughValidation),
 }
 
 #[cfg(test)]

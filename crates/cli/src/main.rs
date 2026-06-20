@@ -22,6 +22,7 @@ mod api;
 mod audit;
 mod audit_brief;
 mod audit_decision_surface;
+mod audit_walkthrough;
 mod base_worktree;
 mod baseline;
 mod cache_notice;
@@ -1156,6 +1157,26 @@ enum Command {
             default_value_t = audit_decision_surface::DEFAULT_DECISION_CAP
         )]
         max_decisions: usize,
+
+        /// (E5) Emit the agent-contract WALKTHROUGH GUIDE: the current digest
+        /// (brief + decision surface), the review direction, the JSON schema the
+        /// agent must return, and a deterministic graph-snapshot hash pinned into
+        /// the digest. The digest is built from the graph only (PR prose is never
+        /// folded in, so it is injection-resistant). Implies the brief; always
+        /// exits 0. A thin agent skill calls this to fetch the current guide,
+        /// produces judgment JSON, then reopens with `--walkthrough-file`.
+        #[arg(long, conflicts_with = "walkthrough_file")]
+        walkthrough_guide: bool,
+
+        /// (E5) Ingest an agent's judgment JSON and POST-VALIDATE it against the
+        /// LIVE graph. Rejects any judgment whose `signal_id` fallow did not emit
+        /// (anti-hallucination); refuses the whole payload as stale when the
+        /// echoed graph-snapshot hash no longer matches (the tree moved). The
+        /// verifier is the graph, not a second model. Implies the brief; always
+        /// exits 0. The agent's free-text framing is fenced as non-deterministic
+        /// and never gates or auto-posts.
+        #[arg(long, value_name = "PATH")]
+        walkthrough_file: Option<PathBuf>,
     },
 
     /// Surface the consequential structural DECISIONS a change embeds (the apex
@@ -4201,10 +4222,16 @@ fn dispatch_audit_command(command: Command, dispatch: &DispatchContext<'_>) -> E
         gate_marker,
         brief,
         max_decisions,
+        walkthrough_guide,
+        walkthrough_file,
     } = command
     else {
         unreachable!("audit dispatcher only handles audit commands");
     };
+
+    // E5: the walkthrough flags imply the brief path (the guide digest + the
+    // graph-snapshot pin are brief-path data).
+    let brief = brief || walkthrough_guide || walkthrough_file.is_some();
 
     dispatch_audit(
         dispatch,
@@ -4224,6 +4251,8 @@ fn dispatch_audit_command(command: Command, dispatch: &DispatchContext<'_>) -> E
             gate_marker,
             brief,
             max_decisions,
+            walkthrough_guide,
+            walkthrough_file,
         },
     )
 }
@@ -5055,6 +5084,11 @@ struct AuditDispatchArgs {
     gate_marker: Option<String>,
     brief: bool,
     max_decisions: usize,
+    /// (E5) Emit the agent-contract walkthrough guide instead of the brief body.
+    walkthrough_guide: bool,
+    /// (E5) Post-validate an agent's judgment JSON from this path against the
+    /// live graph.
+    walkthrough_file: Option<PathBuf>,
 }
 
 struct ResolvedAuditInputs {
@@ -5182,6 +5216,8 @@ fn run_resolved_audit(
             min_invocations_hot: args.min_invocations_hot,
             brief: args.brief,
             max_decisions: args.max_decisions,
+            walkthrough_guide: args.walkthrough_guide,
+            walkthrough_file: args.walkthrough_file.as_deref(),
         },
         args.gate_marker.as_deref(),
     )
@@ -5210,6 +5246,8 @@ fn dispatch_decision_surface(dispatch: &DispatchContext<'_>, max_decisions: usiz
         gate_marker: None,
         brief: true,
         max_decisions,
+        walkthrough_guide: false,
+        walkthrough_file: None,
     };
     let inputs = match resolve_audit_inputs(dispatch, &args) {
         Ok(inputs) => inputs,
@@ -5246,6 +5284,8 @@ fn dispatch_decision_surface(dispatch: &DispatchContext<'_>, max_decisions: usiz
         min_invocations_hot: 0,
         brief: true,
         max_decisions,
+        walkthrough_guide: false,
+        walkthrough_file: None,
     })
 }
 

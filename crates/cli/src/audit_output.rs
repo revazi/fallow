@@ -647,6 +647,7 @@ mod tests {
             weakening_signals: Vec::new(),
             routing: None,
             decision_surface: None,
+            graph_snapshot_hash: None,
         }
     }
 

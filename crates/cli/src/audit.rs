@@ -95,6 +95,13 @@ pub struct AuditResult {
     /// of consequential structural decisions, each framed as a judgment question.
     /// Populated only on the brief path; `None` otherwise.
     pub decision_surface: Option<crate::audit_decision_surface::DecisionSurface>,
+    /// E5 deterministic graph-snapshot hash: a stable hash of the relevant HEAD
+    /// graph + diff state (the six key sets plus the resolved base ref + head
+    /// sha). Pinned into the walkthrough guide digest so a stale agent JSON
+    /// (whose echoed hash != this) is REFUSED on reentry. The verifier is the
+    /// graph: a mutated tree changes a key set, changes this hash, refuses the
+    /// stale payload. Populated only on the brief path; `None` otherwise.
+    pub graph_snapshot_hash: Option<String>,
 }
 
 pub struct AuditOptions<'a> {
@@ -149,6 +156,12 @@ pub struct AuditOptions<'a> {
     /// [3, 5] (4 plus or minus 1) by the extractor. Only consulted on the brief
     /// path.
     pub max_decisions: usize,
+    /// (E5) Emit the agent-contract walkthrough GUIDE (digest + schema + graph-
+    /// snapshot pin) instead of the brief body. Implies `brief`. Always exit 0.
+    pub walkthrough_guide: bool,
+    /// (E5) Path to an agent's judgment JSON to POST-VALIDATE against the live
+    /// graph. Implies `brief`. Always exit 0. `None` off the walkthrough path.
+    pub walkthrough_file: Option<&'a std::path::Path>,
 }
 
 /// A base ref resolved by auto-detection: the git ref to diff against plus a
@@ -938,6 +951,8 @@ fn build_base_audit_options<'a>(
         min_invocations_hot: opts.min_invocations_hot,
         brief: false,
         max_decisions: 4,
+        walkthrough_guide: false,
+        walkthrough_file: None,
     }
 }
 
@@ -1303,6 +1318,7 @@ struct AuditResultParts {
     weakening_signals: Vec<weakening::WeakeningSignal>,
     routing: Option<routing::RoutingFacts>,
     decision_surface: Option<crate::audit_decision_surface::DecisionSurface>,
+    graph_snapshot_hash: Option<String>,
 }
 
 /// Run the three HEAD-side analyses with intra-pipeline sharing intact:
@@ -1541,6 +1557,23 @@ fn assemble_audit_result(input: AuditAssemblyInput<'_>) -> Result<AuditResult, E
         None
     };
 
+    // E5 graph-snapshot hash (the staleness pin): a deterministic hash of the
+    // HEAD-side key sets plus the resolved base ref + head sha. Brief-path only.
+    // The verifier is the graph: a mutated tree changes a key set, changes this
+    // hash, and refuses a stale agent walkthrough on reentry.
+    let head_sha = get_head_sha(opts.root);
+    let graph_snapshot_hash = if opts.brief {
+        Some(compute_graph_snapshot_hash(
+            check_result.as_ref(),
+            dupes_result.as_ref(),
+            health_result.as_ref(),
+            &input.base_ref,
+            head_sha.as_deref(),
+        ))
+    } else {
+        None
+    };
+
     Ok(build_audit_result(AuditResultParts {
         verdict,
         summary,
@@ -1551,7 +1584,7 @@ fn assemble_audit_result(input: AuditAssemblyInput<'_>) -> Result<AuditResult, E
         changed_files: input.changed_files,
         base_ref: input.base_ref,
         base_description: input.base_description,
-        head_sha: get_head_sha(opts.root),
+        head_sha,
         output: opts.output,
         performance: opts.performance,
         check: check_result,
@@ -1562,7 +1595,53 @@ fn assemble_audit_result(input: AuditAssemblyInput<'_>) -> Result<AuditResult, E
         weakening_signals,
         routing,
         decision_surface,
+        graph_snapshot_hash,
     }))
+}
+
+/// Compute the E5 deterministic graph-snapshot hash from the HEAD-side analysis
+/// results plus the resolved base ref + head sha. Reuses [`snapshot_from_results`]
+/// for the six key sets (dead_code / health / dupes / boundary_edges / cycles /
+/// public_api), each sorted, then folds in the base ref and head sha so the same
+/// tree compared against the same base always yields the same hash.
+///
+/// The verifier is the graph: any structural change (a new finding, a new edge,
+/// a new export) shifts a key set and changes this hash, so a stale agent
+/// walkthrough whose echoed hash no longer matches is REFUSED on reentry.
+fn compute_graph_snapshot_hash(
+    check: Option<&CheckResult>,
+    dupes: Option<&DupesResult>,
+    health: Option<&HealthResult>,
+    base_ref: &str,
+    head_sha: Option<&str>,
+) -> String {
+    // The HEAD public-export set was computed on the brief path and retained on
+    // the check result (`public_api_keys`); reuse it so the hash is exports-aware
+    // without re-walking the graph.
+    let public_api = check
+        .and_then(|c| c.public_api_keys.clone())
+        .unwrap_or_default();
+    let snapshot = snapshot_from_results(check, dupes, health, public_api);
+    let mut bytes: Vec<u8> = Vec::new();
+    // Sorted key sets, each length-prefixed, so the byte stream is unambiguous.
+    for set in [
+        &snapshot.dead_code,
+        &snapshot.health,
+        &snapshot.dupes,
+        &snapshot.boundary_edges,
+        &snapshot.cycles,
+        &snapshot.public_api,
+    ] {
+        for key in sorted_keys(set) {
+            bytes.extend_from_slice(key.as_bytes());
+            bytes.push(0);
+        }
+        bytes.push(1);
+    }
+    bytes.extend_from_slice(base_ref.as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(head_sha.unwrap_or("").as_bytes());
+    format!("graph:{:016x}", xxh3_64(&bytes))
 }
 
 /// Compute the E4 decision surface from the assembled brief inputs: gather the
@@ -1870,6 +1949,7 @@ fn build_audit_result(parts: AuditResultParts) -> AuditResult {
         weakening_signals: parts.weakening_signals,
         routing: parts.routing,
         decision_surface: parts.decision_surface,
+        graph_snapshot_hash: parts.graph_snapshot_hash,
     }
 }
 
@@ -1938,6 +2018,22 @@ fn empty_audit_result(
 ) -> AuditResult {
     crate::telemetry::note_final_result_count(0);
 
+    let head_sha = get_head_sha(opts.root);
+    // An empty changeset is a valid graph state: pin a hash on the brief path so
+    // the walkthrough guide still carries a stable snapshot pin (no findings, so
+    // the hash folds only the base ref + head sha).
+    let graph_snapshot_hash = if opts.brief {
+        Some(compute_graph_snapshot_hash(
+            None,
+            None,
+            None,
+            &base_ref,
+            head_sha.as_deref(),
+        ))
+    } else {
+        None
+    };
+
     AuditResult {
         verdict: AuditVerdict::Pass,
         summary: AuditSummary {
@@ -1957,7 +2053,7 @@ fn empty_audit_result(
         changed_files: Vec::new(),
         base_ref,
         base_description,
-        head_sha: get_head_sha(opts.root),
+        head_sha,
         output: opts.output,
         performance: opts.performance,
         check: None,
@@ -1968,6 +2064,7 @@ fn empty_audit_result(
         weakening_signals: Vec::new(),
         routing: None,
         decision_surface: None,
+        graph_snapshot_hash,
     }
 }
 
@@ -2275,7 +2372,13 @@ pub fn run_audit(opts: &AuditOptions<'_>, gate_marker: Option<&str>) -> ExitCode
                     attribution: Some(&attribution),
                 },
             );
-            if opts.brief {
+            // E5 walkthrough surfaces take priority over the brief body when
+            // requested. Both always exit 0.
+            if opts.walkthrough_guide {
+                crate::audit_brief::print_walkthrough_guide_result(&result)
+            } else if let Some(path) = opts.walkthrough_file {
+                crate::audit_brief::print_walkthrough_file_result(&result, path)
+            } else if opts.brief {
                 // Exit-0 seam: the brief renders the same analysis but never
                 // gates on the verdict. `print_brief_result` always returns
                 // SUCCESS.
@@ -3500,6 +3603,8 @@ mod tests {
             min_invocations_hot: 100,
             brief: false,
             max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
         };
         let key = AuditBaseSnapshotCacheKey {
             hash: 0xfeed,
@@ -3562,6 +3667,8 @@ mod tests {
             min_invocations_hot: 100,
             brief: false,
             max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
         };
         let key = AuditBaseSnapshotCacheKey {
             hash: 0xbeef,
@@ -3638,6 +3745,8 @@ mod tests {
             min_invocations_hot: 100,
             brief: false,
             max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
         };
 
         let first = config_file_fingerprint(&opts).expect("fingerprint should be computed");
@@ -3712,6 +3821,8 @@ mod tests {
             min_invocations_hot: 100,
             brief: false,
             max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3791,6 +3902,8 @@ mod tests {
             min_invocations_hot: 100,
             brief: false,
             max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3886,6 +3999,8 @@ mod tests {
             min_invocations_hot: 100,
             brief: false,
             max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3965,6 +4080,8 @@ mod tests {
             min_invocations_hot: 100,
             brief: false,
             max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -4123,6 +4240,8 @@ mod tests {
             min_invocations_hot: 100,
             brief: false,
             max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -4255,6 +4374,8 @@ export function App() {
             min_invocations_hot: 100,
             brief: false,
             max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -4394,6 +4515,8 @@ export function App() {
             min_invocations_hot: 100,
             brief: false,
             max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -4478,6 +4601,8 @@ export function App() {
             min_invocations_hot: 100,
             brief: false,
             max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
         };
 
         let result = execute_audit(&opts).expect("audit should execute with a new explicit config");
@@ -4556,6 +4681,8 @@ export function App() {
             min_invocations_hot: 100,
             brief: false,
             max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -4640,6 +4767,8 @@ export function App() {
             min_invocations_hot: 100,
             brief: false,
             max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
         };
 
         let first = execute_audit(&opts).expect("first audit should execute");
@@ -4747,6 +4876,8 @@ export function App() {
             min_invocations_hot: 100,
             brief: false,
             max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");

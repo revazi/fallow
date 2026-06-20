@@ -764,6 +764,50 @@ pub fn print_decision_surface_result(result: &AuditResult, quiet: bool) -> ExitC
     }
 }
 
+/// (E5) Render the agent-contract WALKTHROUGH GUIDE: the digest (brief +
+/// decision surface), the review direction, the JSON schema the agent returns,
+/// and the deterministic graph-snapshot pin. JSON renders the
+/// `FallowOutput::WalkthroughGuide` envelope (`kind: "review-walkthrough-guide"`).
+/// Every format emits the guide as JSON: the guide is an agent-facing contract,
+/// not a human walkthrough. Always exit 0.
+#[must_use]
+pub fn print_walkthrough_guide_result(result: &AuditResult) -> ExitCode {
+    let guide = crate::audit_walkthrough::build_guide_from_result(result);
+    let envelope = crate::output_envelope::FallowOutput::WalkthroughGuide(guide);
+    if let Ok(mut value) = serde_json::to_value(&envelope) {
+        crate::output_envelope::apply_root_kind(&mut value, "review-walkthrough-guide");
+        crate::output_envelope::attach_telemetry_meta(&mut value);
+        let _ = crate::report::emit_json(&value, "review-walkthrough-guide");
+    }
+    ExitCode::SUCCESS
+}
+
+/// (E5) Ingest the agent's judgment JSON from `path` and POST-VALIDATE it against
+/// the live graph: reject unanchored signal_ids (anti-hallucination), refuse the
+/// whole payload when the echoed graph-snapshot hash is stale (the tree moved).
+/// JSON renders the `FallowOutput::WalkthroughValidation` envelope (`kind:
+/// "review-walkthrough-validation"`). Always exit 0 (advisory).
+///
+/// A path that cannot be read yields an empty agent payload (default `""` hash),
+/// which never matches the current hash, so it is refused as stale, the safe
+/// direction: a missing or garbled agent file never accepts a judgment.
+#[must_use]
+pub fn print_walkthrough_file_result(result: &AuditResult, path: &std::path::Path) -> ExitCode {
+    let contents = std::fs::read_to_string(path).unwrap_or_default();
+    let agent = crate::audit_walkthrough::parse_agent_walkthrough(&contents);
+    let surface = result.decision_surface.clone().unwrap_or_default();
+    let current_hash = result.graph_snapshot_hash.clone().unwrap_or_default();
+    let validation =
+        crate::audit_walkthrough::validate_walkthrough(&agent, &surface, &current_hash);
+    let envelope = crate::output_envelope::FallowOutput::WalkthroughValidation(validation);
+    if let Ok(mut value) = serde_json::to_value(&envelope) {
+        crate::output_envelope::apply_root_kind(&mut value, "review-walkthrough-validation");
+        crate::output_envelope::attach_telemetry_meta(&mut value);
+        let _ = crate::report::emit_json(&value, "review-walkthrough-validation");
+    }
+    ExitCode::SUCCESS
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -805,6 +849,7 @@ mod tests {
             weakening_signals: Vec::new(),
             routing: None,
             decision_surface: None,
+            graph_snapshot_hash: None,
         }
     }
 

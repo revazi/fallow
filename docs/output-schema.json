@@ -8326,6 +8326,46 @@
               ]
             }
           ]
+        },
+        {
+          "description": "`fallow review --walkthrough-guide --format json` (E5). The digest +\nschema the agent fetches: brief + decision surface, review direction, the\ngraph-snapshot pin, and the embedded agent schema. Graph-derived only\n(injection-resistant). Always exit 0.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/WalkthroughGuide"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "review-walkthrough-guide"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            }
+          ]
+        },
+        {
+          "description": "`fallow review --walkthrough-file --format json` (E5). Post-validation\nof an agent's judgment JSON against the live graph: `accepted` (anchored,\nframing fenced), `rejected` (unanchored), and a `stale` flag. The verifier\nis the graph, not a second model. Always exit 0.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/WalkthroughValidation"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "review-walkthrough-validation"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            }
+          ]
         }
       ],
       "title": "fallow --format json (typed root)",
@@ -16418,6 +16458,249 @@
         "reason"
       ],
       "description": "A note for the decisions collapsed below the cap."
+    },
+    "AcceptedJudgment": {
+      "type": "object",
+      "properties": {
+        "signal_id": {
+          "type": "string",
+          "description": "The fallow-emitted `signal_id` (verified against the allowlist)."
+        },
+        "agent_framing": {
+          "type": "string",
+          "description": "The agent's framing, FENCED: this is non-deterministic agent prose."
+        },
+        "concern": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The agent's optional concern category (advisory)."
+        },
+        "deterministic": {
+          "type": "boolean",
+          "description": "Hard fence: always `false`. The framing is agent prose, never a\ndeterministic fallow result, so it never gates or auto-posts."
+        }
+      },
+      "required": [
+        "signal_id",
+        "agent_framing",
+        "deterministic"
+      ],
+      "description": "One accepted judgment: the real anchored signal passed through with the\nagent's framing FENCED as non-deterministic."
+    },
+    "AgentSchema": {
+      "type": "object",
+      "properties": {
+        "judgment_shape": {
+          "type": "string",
+          "description": "How the agent must structure each judgment: cite an emitted `signal_id`,\nadd free-text `framing` (non-deterministic, fenced), an optional `concern`."
+        },
+        "echo_field": {
+          "type": "string",
+          "description": "The agent MUST echo this `graph_snapshot_hash` back in its JSON; a\nmismatch on reentry REFUSES the payload as stale."
+        },
+        "anchoring_rule": {
+          "type": "string",
+          "description": "The constant naming the anti-hallucination rule."
+        }
+      },
+      "required": [
+        "judgment_shape",
+        "echo_field",
+        "anchoring_rule"
+      ],
+      "description": "The shape the agent must return, embedded in the guide so a thin skill needs\nno frozen copy. Documents the anchoring + staleness contract in the wire."
+    },
+    "DirectionUnit": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Root-relative path of the unit to review."
+        },
+        "concern_lens": {
+          "type": "string",
+          "description": "The concern lens the agent should check for this unit, derived from the\nunit's risk signals (impact-closure consumers vs a plain touched file)."
+        },
+        "out_of_diff": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Root-relative paths of modules affected by this unit but NOT in the diff\n(the out-of-diff context the agent must reason about)."
+        },
+        "expert": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The routed expert(s) to ask, from E3 ownership routing."
+        }
+      },
+      "required": [
+        "file",
+        "concern_lens",
+        "out_of_diff",
+        "expert"
+      ],
+      "description": "One directed review unit projected from the graph: a file the change touches,\nthe concern to check, the out-of-diff consumers it must account for, and the\nrouted expert. Graph-derived only (routing + impact closure), NEVER from prose."
+    },
+    "RejectedJudgment": {
+      "type": "object",
+      "properties": {
+        "signal_id": {
+          "type": "string",
+          "description": "The `signal_id` the agent cited (fallow never emitted it)."
+        },
+        "reason": {
+          "type": "string",
+          "description": "The rejection reason (e.g. `unanchored-signal-id`)."
+        }
+      },
+      "required": [
+        "signal_id",
+        "reason"
+      ],
+      "description": "One rejected judgment plus the reason it was rejected."
+    },
+    "ReviewDirection": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The dependency-sensible review order: unit file paths, units carrying\nout-of-diff consumers first (review the load-bearing definitions before\nthe mechanical units)."
+        },
+        "units": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DirectionUnit"
+          },
+          "description": "The coherent review units, in `order`."
+        }
+      },
+      "required": [
+        "order",
+        "units"
+      ],
+      "description": "The review direction artifact: the order to review in, the coherent units,\nand per-unit concern lens + out-of-diff + expert. A minimal projection of the\nEXISTING graph facts (routing units + impact closure); the full weighted-focus\nengine is a later epic. Graph-derived only (injection-resistant)."
+    },
+    "WalkthroughGuide": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "description": "Pinned to the E1 brief schema version (the spec versions the guide by\n`review_brief_schema_version`).",
+          "$ref": "#/definitions/ReviewBriefSchemaVersion"
+        },
+        "version": {
+          "type": "string",
+          "description": "Fallow CLI version that produced this guide."
+        },
+        "command": {
+          "type": "string",
+          "description": "Command discriminator singleton: always `\"review-walkthrough-guide\"`."
+        },
+        "graph_snapshot_hash": {
+          "type": "string",
+          "description": "The deterministic graph-snapshot hash pinned into the digest. The agent\nechoes it back; a mismatch on reentry refuses the payload as stale."
+        },
+        "digest": {
+          "description": "The graph-derived digest (brief + decision surface). Pure over the tree.",
+          "$ref": "#/definitions/ReviewBriefOutput"
+        },
+        "direction": {
+          "description": "The review direction (order/units/concern-lens/out-of-diff/expert).",
+          "$ref": "#/definitions/ReviewDirection"
+        },
+        "agent_schema": {
+          "description": "The JSON shape the agent must return, embedded so the skill stays thin.",
+          "$ref": "#/definitions/AgentSchema"
+        },
+        "injection_note": {
+          "type": "string",
+          "description": "The injection-resistance note (digest is graph-only; PR prose untrusted)."
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "command",
+        "graph_snapshot_hash",
+        "digest",
+        "direction",
+        "agent_schema",
+        "injection_note"
+      ],
+      "title": "fallow review --walkthrough-guide --format json",
+      "description": "The `fallow review --walkthrough-guide` envelope: the current digest + schema\nthe agent fetches. The tool owns this; the skill stays thin (it fetches this\nrather than embedding a frozen copy). Always emitted with exit 0."
+    },
+    "WalkthroughValidation": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "description": "Pinned to the E1 brief schema version.",
+          "$ref": "#/definitions/ReviewBriefSchemaVersion"
+        },
+        "version": {
+          "type": "string",
+          "description": "Fallow CLI version that produced this validation."
+        },
+        "command": {
+          "type": "string",
+          "description": "Command discriminator singleton: always `\"review-walkthrough-validation\"`."
+        },
+        "graph_snapshot_hash": {
+          "type": "string",
+          "description": "The current run's deterministic graph-snapshot hash."
+        },
+        "stale": {
+          "type": "boolean",
+          "description": "`true` when the agent's echoed hash != the current hash (the tree moved):\nthe WHOLE payload is refused, `accepted` is empty."
+        },
+        "accepted": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AcceptedJudgment"
+          },
+          "description": "Judgments that cite a real fallow-emitted signal, framing fenced."
+        },
+        "rejected": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RejectedJudgment"
+          },
+          "description": "Judgments rejected (unanchored signal id, or all-rejected when stale)."
+        },
+        "accepted_count": {
+          "type": "integer",
+          "description": "Count of accepted judgments."
+        },
+        "rejected_count": {
+          "type": "integer",
+          "description": "Count of rejected judgments."
+        },
+        "unanchored_count": {
+          "type": "integer",
+          "description": "Count of accepted judgments whose `signal_id` resolved against the live\nallowlist. Zero unanchored when this equals `accepted_count` and there are\nno rejections (the clean done-condition)."
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "command",
+        "graph_snapshot_hash",
+        "stale",
+        "accepted",
+        "rejected",
+        "accepted_count",
+        "rejected_count",
+        "unanchored_count"
+      ],
+      "title": "fallow review --walkthrough-file --format json",
+      "description": "The `fallow review --walkthrough-file` validation envelope: the result of\npost-validating the agent's judgment against the live graph. Always exit 0."
     }
   }
 }

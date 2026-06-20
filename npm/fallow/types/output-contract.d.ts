@@ -87,6 +87,10 @@ kind: "dead-code"
 kind: "combined"
 }) | (ReviewBriefOutput & {
 kind: "audit-brief"
+}) | (WalkthroughGuide & {
+kind: "review-walkthrough-guide"
+}) | (WalkthroughValidation & {
+kind: "review-walkthrough-validation"
 }))
 /**
  * Schema version for this output format (independent of tool version). Bump
@@ -8740,6 +8744,179 @@ export interface TruncationNote {
 collapsed: number
 /**
  * Human-readable collapse reason.
+ */
+reason: string
+}
+/**
+ * The `fallow review --walkthrough-guide` envelope: the current digest + schema
+ * the agent fetches. The tool owns this; the skill stays thin (it fetches this
+ * rather than embedding a frozen copy). Always emitted with exit 0.
+ */
+export interface WalkthroughGuide {
+schema_version: ReviewBriefSchemaVersion
+/**
+ * Fallow CLI version that produced this guide.
+ */
+version: string
+/**
+ * Command discriminator singleton: always `"review-walkthrough-guide"`.
+ */
+command: string
+/**
+ * The deterministic graph-snapshot hash pinned into the digest. The agent
+ * echoes it back; a mismatch on reentry refuses the payload as stale.
+ */
+graph_snapshot_hash: string
+digest: ReviewBriefOutput
+direction: ReviewDirection
+agent_schema: AgentSchema
+/**
+ * The injection-resistance note (digest is graph-only; PR prose untrusted).
+ */
+injection_note: string
+}
+/**
+ * The review direction artifact: the order to review in, the coherent units,
+ * and per-unit concern lens + out-of-diff + expert. A minimal projection of the
+ * EXISTING graph facts (routing units + impact closure); the full weighted-focus
+ * engine is a later epic. Graph-derived only (injection-resistant).
+ */
+export interface ReviewDirection {
+/**
+ * The dependency-sensible review order: unit file paths, units carrying
+ * out-of-diff consumers first (review the load-bearing definitions before
+ * the mechanical units).
+ */
+order: string[]
+/**
+ * The coherent review units, in `order`.
+ */
+units: DirectionUnit[]
+}
+/**
+ * One directed review unit projected from the graph: a file the change touches,
+ * the concern to check, the out-of-diff consumers it must account for, and the
+ * routed expert. Graph-derived only (routing + impact closure), NEVER from prose.
+ */
+export interface DirectionUnit {
+/**
+ * Root-relative path of the unit to review.
+ */
+file: string
+/**
+ * The concern lens the agent should check for this unit, derived from the
+ * unit's risk signals (impact-closure consumers vs a plain touched file).
+ */
+concern_lens: string
+/**
+ * Root-relative paths of modules affected by this unit but NOT in the diff
+ * (the out-of-diff context the agent must reason about).
+ */
+out_of_diff: string[]
+/**
+ * The routed expert(s) to ask, from E3 ownership routing.
+ */
+expert: string[]
+}
+/**
+ * The shape the agent must return, embedded in the guide so a thin skill needs
+ * no frozen copy. Documents the anchoring + staleness contract in the wire.
+ */
+export interface AgentSchema {
+/**
+ * How the agent must structure each judgment: cite an emitted `signal_id`,
+ * add free-text `framing` (non-deterministic, fenced), an optional `concern`.
+ */
+judgment_shape: string
+/**
+ * The agent MUST echo this `graph_snapshot_hash` back in its JSON; a
+ * mismatch on reentry REFUSES the payload as stale.
+ */
+echo_field: string
+/**
+ * The constant naming the anti-hallucination rule.
+ */
+anchoring_rule: string
+}
+/**
+ * The `fallow review --walkthrough-file` validation envelope: the result of
+ * post-validating the agent's judgment against the live graph. Always exit 0.
+ */
+export interface WalkthroughValidation {
+schema_version: ReviewBriefSchemaVersion
+/**
+ * Fallow CLI version that produced this validation.
+ */
+version: string
+/**
+ * Command discriminator singleton: always `"review-walkthrough-validation"`.
+ */
+command: string
+/**
+ * The current run's deterministic graph-snapshot hash.
+ */
+graph_snapshot_hash: string
+/**
+ * `true` when the agent's echoed hash != the current hash (the tree moved):
+ * the WHOLE payload is refused, `accepted` is empty.
+ */
+stale: boolean
+/**
+ * Judgments that cite a real fallow-emitted signal, framing fenced.
+ */
+accepted: AcceptedJudgment[]
+/**
+ * Judgments rejected (unanchored signal id, or all-rejected when stale).
+ */
+rejected: RejectedJudgment[]
+/**
+ * Count of accepted judgments.
+ */
+accepted_count: number
+/**
+ * Count of rejected judgments.
+ */
+rejected_count: number
+/**
+ * Count of accepted judgments whose `signal_id` resolved against the live
+ * allowlist. Zero unanchored when this equals `accepted_count` and there are
+ * no rejections (the clean done-condition).
+ */
+unanchored_count: number
+}
+/**
+ * One accepted judgment: the real anchored signal passed through with the
+ * agent's framing FENCED as non-deterministic.
+ */
+export interface AcceptedJudgment {
+/**
+ * The fallow-emitted `signal_id` (verified against the allowlist).
+ */
+signal_id: string
+/**
+ * The agent's framing, FENCED: this is non-deterministic agent prose.
+ */
+agent_framing: string
+/**
+ * The agent's optional concern category (advisory).
+ */
+concern?: (string | null)
+/**
+ * Hard fence: always `false`. The framing is agent prose, never a
+ * deterministic fallow result, so it never gates or auto-posts.
+ */
+deterministic: boolean
+}
+/**
+ * One rejected judgment plus the reason it was rejected.
+ */
+export interface RejectedJudgment {
+/**
+ * The `signal_id` the agent cited (fallow never emitted it).
+ */
+signal_id: string
+/**
+ * The rejection reason (e.g. `unanchored-signal-id`).
  */
 reason: string
 }

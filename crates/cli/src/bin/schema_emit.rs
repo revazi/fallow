@@ -32,6 +32,10 @@ use fallow_cli::audit_decision_surface::{
     Decision, DecisionAction, DecisionActionType, DecisionCategory, DecisionSurface,
     DecisionSurfaceOutput, DecisionSurfaceSchemaVersion, DecisionWithActions, TruncationNote,
 };
+use fallow_cli::audit_walkthrough::{
+    AcceptedJudgment, AgentSchema, DirectionUnit, RejectedJudgment, ReviewDirection,
+    WalkthroughGuide, WalkthroughValidation,
+};
 use fallow_cli::health_types::{
     ComplexityViolation, ContributorEntry, ContributorIdentifierFormat, CoverageGapSummary,
     CoverageGaps, CoverageModel, CoverageTier, ExceededThreshold, FileHealthScore, FindingSeverity,
@@ -321,6 +325,13 @@ const DERIVED_DEFINITION_NAMES: &[&str] = &[
     "DecisionSurfaceSchemaVersion",
     "DecisionWithActions",
     "TruncationNote",
+    "AcceptedJudgment",
+    "AgentSchema",
+    "DirectionUnit",
+    "RejectedJudgment",
+    "ReviewDirection",
+    "WalkthroughGuide",
+    "WalkthroughValidation",
     "CoverageSetupFileToEdit",
     "CoverageSetupMember",
     "CoverageSetupOutput",
@@ -477,6 +488,7 @@ fn derived_definitions() -> Map<String, Value> {
     register_meta_definitions(&mut generator);
     register_per_command_envelope_definitions(&mut generator);
     register_audit_brief_definitions(&mut generator);
+    register_walkthrough_definitions(&mut generator);
     register_impact_definitions(&mut generator);
     register_security_definitions(&mut generator);
     let _ = generator.subschema_for::<FallowOutput>();
@@ -651,6 +663,18 @@ fn register_audit_brief_definitions(generator: &mut schemars::SchemaGenerator) {
     let _ = generator.subschema_for::<DecisionSurface>();
     let _ = generator.subschema_for::<DecisionSurfaceSchemaVersion>();
     let _ = generator.subschema_for::<DecisionSurfaceOutput>();
+}
+
+/// Register the E5 `fallow review --walkthrough-guide` /
+/// `--walkthrough-file` envelopes (the agent-contract loop).
+fn register_walkthrough_definitions(generator: &mut schemars::SchemaGenerator) {
+    let _ = generator.subschema_for::<DirectionUnit>();
+    let _ = generator.subschema_for::<ReviewDirection>();
+    let _ = generator.subschema_for::<AgentSchema>();
+    let _ = generator.subschema_for::<WalkthroughGuide>();
+    let _ = generator.subschema_for::<AcceptedJudgment>();
+    let _ = generator.subschema_for::<RejectedJudgment>();
+    let _ = generator.subschema_for::<WalkthroughValidation>();
 }
 
 fn register_impact_definitions(generator: &mut schemars::SchemaGenerator) {
@@ -949,6 +973,16 @@ const FALLOW_OUTPUT_VARIANTS: &[(&str, &[&str], &str)] = &[
         "audit-brief",
         &["ReviewBriefOutput"],
         "`fallow audit --brief --format json` (alias `fallow review`). Required\n`schema_version`, `version`, `command: \"audit-brief\"`, `triage`, and\n`graph_facts`. Independently versioned via `ReviewBriefSchemaVersion`;\nalways emitted with exit 0.",
+    ),
+    (
+        "review-walkthrough-guide",
+        &["WalkthroughGuide"],
+        "`fallow review --walkthrough-guide --format json` (E5). The digest +\nschema the agent fetches: brief + decision surface, review direction, the\ngraph-snapshot pin, and the embedded agent schema. Graph-derived only\n(injection-resistant). Always exit 0.",
+    ),
+    (
+        "review-walkthrough-validation",
+        &["WalkthroughValidation"],
+        "`fallow review --walkthrough-file --format json` (E5). Post-validation\nof an agent's judgment JSON against the live graph: `accepted` (anchored,\nframing fenced), `rejected` (unanchored), and a `stale` flag. The verifier\nis the graph, not a second model. Always exit 0.",
     ),
 ];
 
@@ -1285,6 +1319,8 @@ mod drift_tests {
             ("Combined", "CombinedOutput"),
             ("AuditBrief", "ReviewBriefOutput"),
             ("DecisionSurface", "DecisionSurfaceOutput"),
+            ("WalkthroughGuide", "WalkthroughGuide"),
+            ("WalkthroughValidation", "WalkthroughValidation"),
         ];
 
         #[expect(
@@ -1315,6 +1351,8 @@ mod drift_tests {
                 FallowOutput::Combined(_) => "Combined",
                 FallowOutput::AuditBrief(_) => "AuditBrief",
                 FallowOutput::DecisionSurface(_) => "DecisionSurface",
+                FallowOutput::WalkthroughGuide(_) => "WalkthroughGuide",
+                FallowOutput::WalkthroughValidation(_) => "WalkthroughValidation",
             }
         }
 
