@@ -510,20 +510,7 @@ fn advance_chain_step(
     // chain can follow. A forward to >= 2 distinct children is a fan-out (not
     // a single drilling line); abstain to stay high-confidence.
     let targets = state.forwards.get(current_local)?;
-    let resolved: Vec<(CompKey, &ForwardTarget)> = targets
-        .iter()
-        .filter_map(|t| {
-            ctx.resolver
-                .resolve(current_key.file, &t.child_name)
-                .map(|k| (k, t))
-        })
-        .collect();
-    // Every written target must resolve (an unresolvable hop abstains), and
-    // they must all point at the SAME child receiving the SAME attr (a
-    // genuine single-line forward, possibly written twice).
-    if resolved.len() != targets.len() {
-        return None;
-    }
+    let resolved = resolved_forward_targets(current_key, targets, ctx.resolver)?;
     let (child_key, target) = single_child(&resolved)?;
     if !ctx.visited.insert(child_key.clone()) {
         // Cycle: abstain.
@@ -553,6 +540,27 @@ fn advance_chain_step(
             key: child_key,
             local: child_local,
         }),
+    }
+}
+
+fn resolved_forward_targets<'a>(
+    current_key: &CompKey,
+    targets: &'a [ForwardTarget],
+    resolver: &ChildResolver<'_>,
+) -> Option<Vec<(CompKey, &'a ForwardTarget)>> {
+    let resolved: Vec<(CompKey, &ForwardTarget)> = targets
+        .iter()
+        .filter_map(|t| {
+            resolver
+                .resolve(current_key.file, &t.child_name)
+                .map(|k| (k, t))
+        })
+        .collect();
+    // Every written target must resolve; an unresolvable hop abstains.
+    if resolved.len() == targets.len() {
+        Some(resolved)
+    } else {
+        None
     }
 }
 
