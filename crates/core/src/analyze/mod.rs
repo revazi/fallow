@@ -655,6 +655,42 @@ fn collect_declared_dependency_names(
     deps
 }
 
+struct DeadCodeRunContext<'a> {
+    suppressions: SuppressionContext<'a>,
+    line_offsets_by_file: LineOffsetsMap<'a>,
+    pkg: Option<PackageJson>,
+    public_api_entry_points: FxHashSet<FileId>,
+    declared_deps: FxHashSet<String>,
+}
+
+fn build_dead_code_run_context<'a>(
+    graph: &'a ModuleGraph,
+    config: &ResolvedConfig,
+    workspaces: &[fallow_config::WorkspaceInfo],
+    modules: &'a [ModuleInfo],
+) -> DeadCodeRunContext<'a> {
+    let suppressions = SuppressionContext::new(modules);
+    let line_offsets_by_file: LineOffsetsMap<'a> = modules
+        .iter()
+        .filter(|m| !m.line_offsets.is_empty())
+        .map(|m| (m.file_id, m.line_offsets.as_slice()))
+        .collect();
+
+    let pkg_path = config.root.join("package.json");
+    let pkg = PackageJson::load(&pkg_path).ok();
+    let public_api_entry_points =
+        public_api_package_entry_points(graph, config, pkg.as_ref(), workspaces);
+    let declared_deps = collect_declared_dependency_names(config, pkg.as_ref(), workspaces);
+
+    DeadCodeRunContext {
+        suppressions,
+        line_offsets_by_file,
+        pkg,
+        public_api_entry_points,
+        declared_deps,
+    }
+}
+
 /// Find all dead code, with optional resolved module data, plugin context, and workspace info.
 #[deprecated(
     since = "2.76.0",
@@ -671,19 +707,7 @@ pub fn find_dead_code_full(
 ) -> AnalysisResults {
     let _span = tracing::info_span!("find_dead_code").entered();
 
-    let suppressions = crate::suppress::SuppressionContext::new(modules);
-
-    let line_offsets_by_file: LineOffsetsMap<'_> = modules
-        .iter()
-        .filter(|m| !m.line_offsets.is_empty())
-        .map(|m| (m.file_id, m.line_offsets.as_slice()))
-        .collect();
-
-    let pkg_path = config.root.join("package.json");
-    let pkg = PackageJson::load(&pkg_path).ok();
-    let public_api_entry_points =
-        public_api_package_entry_points(graph, config, pkg.as_ref(), workspaces);
-    let declared_deps = collect_declared_dependency_names(config, pkg.as_ref(), workspaces);
+    let run_context = build_dead_code_run_context(graph, config, workspaces, modules);
 
     let mut results = run_setup_and_detect(&SetupAndDetectInput {
         graph,
@@ -692,11 +716,11 @@ pub fn find_dead_code_full(
         plugin_result,
         workspaces,
         modules,
-        suppressions: &suppressions,
-        line_offsets_by_file: &line_offsets_by_file,
-        pkg: pkg.as_ref(),
-        public_api_entry_points: &public_api_entry_points,
-        declared_deps: &declared_deps,
+        suppressions: &run_context.suppressions,
+        line_offsets_by_file: &run_context.line_offsets_by_file,
+        pkg: run_context.pkg.as_ref(),
+        public_api_entry_points: &run_context.public_api_entry_points,
+        declared_deps: &run_context.declared_deps,
         collect_usages,
     });
 
@@ -706,10 +730,10 @@ pub fn find_dead_code_full(
         resolved_modules,
         config,
         workspaces,
-        declared_deps: &declared_deps,
-        public_api_entry_points: &public_api_entry_points,
-        suppressions: &suppressions,
-        line_offsets_by_file: &line_offsets_by_file,
+        declared_deps: &run_context.declared_deps,
+        public_api_entry_points: &run_context.public_api_entry_points,
+        suppressions: &run_context.suppressions,
+        line_offsets_by_file: &run_context.line_offsets_by_file,
         results: &mut results,
     });
 
