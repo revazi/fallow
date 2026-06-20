@@ -19,7 +19,9 @@ use std::sync::LazyLock;
 use fallow_types::extract::FunctionComplexity;
 
 use super::build_template_complexity;
-use super::engine::{ScanError, TemplateComplexity, skip_quoted, skip_whitespace};
+use super::engine::{
+    ScanError, TemplateComplexity, find_tag_end, read_attribute_value, skip_whitespace,
+};
 
 /// HTML elements that never have a closing tag, so they must not push onto the
 /// tag stack even when written without a self-closing slash.
@@ -258,39 +260,6 @@ fn is_void_tag(tag_name: &str) -> bool {
     VOID_HTML_TAGS
         .iter()
         .any(|void| void.eq_ignore_ascii_case(tag_name))
-}
-
-fn find_tag_end(source: &str, tag_start: usize) -> Result<usize, ScanError> {
-    let mut offset = tag_start + 1;
-    while offset < source.len() {
-        match source.as_bytes()[offset] {
-            b'\'' | b'"' => offset = skip_quoted(source, offset)?,
-            b'>' => return Ok(offset),
-            _ => offset += source[offset..].chars().next().map_or(1, char::len_utf8),
-        }
-    }
-    Err(ScanError)
-}
-
-fn read_attribute_value(source: &str, offset: usize) -> Result<(usize, usize, usize), ScanError> {
-    if offset >= source.len() {
-        return Err(ScanError);
-    }
-    let byte = source.as_bytes()[offset];
-    if matches!(byte, b'\'' | b'"') {
-        let after = skip_quoted(source, offset)?;
-        Ok((offset + 1, after - 1, after))
-    } else {
-        let mut end = offset;
-        while end < source.len() {
-            let byte = source.as_bytes()[end];
-            if byte.is_ascii_whitespace() || matches!(byte, b'/' | b'>') {
-                break;
-            }
-            end += 1;
-        }
-        Ok((offset, end, end))
-    }
 }
 
 #[cfg(test)]

@@ -71,6 +71,42 @@ impl TemplateComplexity {
     }
 }
 
+pub(super) fn find_tag_end(source: &str, tag_start: usize) -> Result<usize, ScanError> {
+    let mut offset = tag_start + 1;
+    while offset < source.len() {
+        match source.as_bytes()[offset] {
+            b'\'' | b'"' => offset = skip_quoted(source, offset)?,
+            b'>' => return Ok(offset),
+            _ => offset += source[offset..].chars().next().map_or(1, char::len_utf8),
+        }
+    }
+    Err(ScanError)
+}
+
+pub(super) fn read_attribute_value(
+    source: &str,
+    offset: usize,
+) -> Result<(usize, usize, usize), ScanError> {
+    if offset >= source.len() {
+        return Err(ScanError);
+    }
+    let byte = source.as_bytes()[offset];
+    if matches!(byte, b'\'' | b'"') {
+        let after = skip_quoted(source, offset)?;
+        Ok((offset + 1, after - 1, after))
+    } else {
+        let mut end = offset;
+        while end < source.len() {
+            let byte = source.as_bytes()[end];
+            if byte.is_ascii_whitespace() || matches!(byte, b'/' | b'>') {
+                break;
+            }
+            end += 1;
+        }
+        Ok((offset, end, end))
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct ExpressionMetrics {
     cyclomatic: u16,

@@ -13,8 +13,8 @@ mod vue;
 use fallow_types::extract::{FunctionComplexity, byte_offset_to_line_col, compute_line_offsets};
 
 use engine::{
-    ScanError, TemplateComplexity, find_matching_delimiter, is_identifier_after,
-    is_identifier_before, read_identifier, skip_quoted, skip_whitespace,
+    ScanError, TemplateComplexity, find_matching_delimiter, find_tag_end, is_identifier_after,
+    is_identifier_before, read_attribute_value, read_identifier, skip_quoted, skip_whitespace,
 };
 
 pub use svelte::compute_svelte_template_complexity;
@@ -368,39 +368,6 @@ fn parse_parenthesized(source: &str, offset: usize) -> Result<(usize, usize, usi
     }
     let close = find_matching_delimiter(source, open, b'(', b')')?;
     Ok((open + 1, close, close + 1))
-}
-
-fn find_tag_end(source: &str, tag_start: usize) -> Result<usize, ScanError> {
-    let mut offset = tag_start + 1;
-    while offset < source.len() {
-        match source.as_bytes()[offset] {
-            b'\'' | b'"' => offset = skip_quoted(source, offset)?,
-            b'>' => return Ok(offset),
-            _ => offset += source[offset..].chars().next().map_or(1, char::len_utf8),
-        }
-    }
-    Err(ScanError)
-}
-
-fn read_attribute_value(source: &str, offset: usize) -> Result<(usize, usize, usize), ScanError> {
-    if offset >= source.len() {
-        return Err(ScanError);
-    }
-    let byte = source.as_bytes()[offset];
-    if matches!(byte, b'\'' | b'"') {
-        let after = skip_quoted(source, offset)?;
-        Ok((offset + 1, after - 1, after))
-    } else {
-        let mut end = offset;
-        while end < source.len() {
-            let byte = source.as_bytes()[end];
-            if byte.is_ascii_whitespace() || matches!(byte, b'/' | b'>') {
-                break;
-            }
-            end += 1;
-        }
-        Ok((offset, end, end))
-    }
 }
 
 fn find_word(source: &str, word: &str) -> Option<usize> {
