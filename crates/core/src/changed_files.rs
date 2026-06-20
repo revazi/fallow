@@ -471,14 +471,14 @@ pub fn filter_results_by_changed_files(
     } = &mut *results;
 
     let cf = normalize_changed_files_set(changed_files);
-    unused_files.retain(|f| contains_normalized(&cf, &f.file.path));
-    unused_exports.retain(|e| contains_normalized(&cf, &e.export.path));
-    unused_types.retain(|e| contains_normalized(&cf, &e.export.path));
-    private_type_leaks.retain(|e| contains_normalized(&cf, &e.leak.path));
-    unused_enum_members.retain(|m| contains_normalized(&cf, &m.member.path));
-    unused_class_members.retain(|m| contains_normalized(&cf, &m.member.path));
-    unused_store_members.retain(|m| contains_normalized(&cf, &m.member.path));
-    unresolved_imports.retain(|i| contains_normalized(&cf, &i.import.path));
+    retain_by_changed_path(unused_files, &cf, |f| &f.file.path);
+    retain_by_changed_path(unused_exports, &cf, |e| &e.export.path);
+    retain_by_changed_path(unused_types, &cf, |e| &e.export.path);
+    retain_by_changed_path(private_type_leaks, &cf, |e| &e.leak.path);
+    retain_by_changed_path(unused_enum_members, &cf, |m| &m.member.path);
+    retain_by_changed_path(unused_class_members, &cf, |m| &m.member.path);
+    retain_by_changed_path(unused_store_members, &cf, |m| &m.member.path);
+    retain_by_changed_path(unresolved_imports, &cf, |i| &i.import.path);
 
     unlisted_dependencies.retain(|d| {
         d.dep
@@ -498,47 +498,36 @@ pub fn filter_results_by_changed_files(
 
     re_export_cycles.retain(|c| c.cycle.files.iter().any(|f| contains_normalized(&cf, f)));
 
-    boundary_violations.retain(|v| contains_normalized(&cf, &v.violation.from_path));
-    boundary_coverage_violations.retain(|v| contains_normalized(&cf, &v.violation.path));
-    boundary_call_violations.retain(|v| contains_normalized(&cf, &v.violation.path));
-    policy_violations.retain(|v| contains_normalized(&cf, &v.violation.path));
+    retain_by_changed_path(boundary_violations, &cf, |v| &v.violation.from_path);
+    retain_by_changed_path(boundary_coverage_violations, &cf, |v| &v.violation.path);
+    retain_by_changed_path(boundary_call_violations, &cf, |v| &v.violation.path);
+    retain_by_changed_path(policy_violations, &cf, |v| &v.violation.path);
 
-    stale_suppressions.retain(|s| contains_normalized(&cf, &s.path));
+    retain_by_changed_path(stale_suppressions, &cf, |s| &s.path);
 
-    security_findings.retain(|f| {
-        contains_normalized(&cf, &f.path)
-            || f.trace
-                .iter()
-                .any(|hop| contains_normalized(&cf, &hop.path))
-            || f.reachability.as_ref().is_some_and(|reachability| {
-                reachability
-                    .untrusted_source_trace
-                    .iter()
-                    .any(|hop| contains_normalized(&cf, &hop.path))
-            })
-    });
-    security_unresolved_callee_diagnostics.retain(|d| contains_normalized(&cf, &d.path));
+    security_findings.retain(|f| security_finding_touches_changed_path(f, &cf));
+    retain_by_changed_path(security_unresolved_callee_diagnostics, &cf, |d| &d.path);
 
-    unresolved_catalog_references.retain(|r| contains_normalized(&cf, &r.reference.path));
+    retain_by_changed_path(unresolved_catalog_references, &cf, |r| &r.reference.path);
     empty_catalog_groups.retain(|g| normalized_set_contains_path(&cf, &g.group.path));
 
-    unused_dependency_overrides.retain(|o| contains_normalized(&cf, &o.entry.path));
-    misconfigured_dependency_overrides.retain(|o| contains_normalized(&cf, &o.entry.path));
+    retain_by_changed_path(unused_dependency_overrides, &cf, |o| &o.entry.path);
+    retain_by_changed_path(misconfigured_dependency_overrides, &cf, |o| &o.entry.path);
 
-    invalid_client_exports.retain(|e| contains_normalized(&cf, &e.export.path));
-    mixed_client_server_barrels.retain(|b| contains_normalized(&cf, &b.barrel.path));
-    misplaced_directives.retain(|d| contains_normalized(&cf, &d.directive_site.path));
-    unprovided_injects.retain(|i| contains_normalized(&cf, &i.inject.path));
-    unrendered_components.retain(|c| contains_normalized(&cf, &c.component.path));
-    route_collisions.retain(|c| contains_normalized(&cf, &c.collision.path));
-    dynamic_segment_name_conflicts.retain(|c| contains_normalized(&cf, &c.conflict.path));
-    unused_component_props.retain(|p| contains_normalized(&cf, &p.prop.path));
-    unused_component_emits.retain(|e| contains_normalized(&cf, &e.emit.path));
-    unused_component_inputs.retain(|i| contains_normalized(&cf, &i.input.path));
-    unused_component_outputs.retain(|o| contains_normalized(&cf, &o.output.path));
-    unused_svelte_events.retain(|e| contains_normalized(&cf, &e.event.path));
-    unused_server_actions.retain(|a| contains_normalized(&cf, &a.action.path));
-    unused_load_data_keys.retain(|k| contains_normalized(&cf, &k.key.path));
+    retain_by_changed_path(invalid_client_exports, &cf, |e| &e.export.path);
+    retain_by_changed_path(mixed_client_server_barrels, &cf, |b| &b.barrel.path);
+    retain_by_changed_path(misplaced_directives, &cf, |d| &d.directive_site.path);
+    retain_by_changed_path(unprovided_injects, &cf, |i| &i.inject.path);
+    retain_by_changed_path(unrendered_components, &cf, |c| &c.component.path);
+    retain_by_changed_path(route_collisions, &cf, |c| &c.collision.path);
+    retain_by_changed_path(dynamic_segment_name_conflicts, &cf, |c| &c.conflict.path);
+    retain_by_changed_path(unused_component_props, &cf, |p| &p.prop.path);
+    retain_by_changed_path(unused_component_emits, &cf, |e| &e.emit.path);
+    retain_by_changed_path(unused_component_inputs, &cf, |i| &i.input.path);
+    retain_by_changed_path(unused_component_outputs, &cf, |o| &o.output.path);
+    retain_by_changed_path(unused_svelte_events, &cf, |e| &e.event.path);
+    retain_by_changed_path(unused_server_actions, &cf, |a| &a.action.path);
+    retain_by_changed_path(unused_load_data_keys, &cf, |k| &k.key.path);
     // Anchor a chain on its source hop's file (the finding anchor).
     prop_drilling_chains.retain(|c| {
         c.chain
@@ -547,9 +536,34 @@ pub fn filter_results_by_changed_files(
             .is_some_and(|h| contains_normalized(&cf, &h.file))
     });
     // Anchor a thin wrapper on its component definition file.
-    thin_wrappers.retain(|w| contains_normalized(&cf, &w.wrapper.file));
+    retain_by_changed_path(thin_wrappers, &cf, |w| &w.wrapper.file);
     // Anchor a duplicate-prop-shape member on its component definition file.
-    duplicate_prop_shapes.retain(|d| contains_normalized(&cf, &d.shape.file));
+    retain_by_changed_path(duplicate_prop_shapes, &cf, |d| &d.shape.file);
+}
+
+fn retain_by_changed_path<T>(
+    items: &mut Vec<T>,
+    changed_files: &FxHashSet<PathBuf>,
+    path: impl Fn(&T) -> &Path,
+) {
+    items.retain(|item| contains_normalized(changed_files, path(item)));
+}
+
+fn security_finding_touches_changed_path(
+    finding: &fallow_types::results::SecurityFinding,
+    changed_files: &FxHashSet<PathBuf>,
+) -> bool {
+    contains_normalized(changed_files, &finding.path)
+        || finding
+            .trace
+            .iter()
+            .any(|hop| contains_normalized(changed_files, &hop.path))
+        || finding.reachability.as_ref().is_some_and(|reachability| {
+            reachability
+                .untrusted_source_trace
+                .iter()
+                .any(|hop| contains_normalized(changed_files, &hop.path))
+        })
 }
 
 /// Pre-normalise a `changed_files` set through `dunce::simplified` so each
