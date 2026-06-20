@@ -389,6 +389,30 @@ struct HealthCoreSectionsInput<'a> {
     pre_computed_analysis: Option<fallow_core::AnalysisOutput>,
 }
 
+struct HealthAnalysisPreludeInput<'a> {
+    opts: &'a HealthOptions<'a>,
+    config: &'a ResolvedConfig,
+    modules: &'a [fallow_core::extract::ModuleInfo],
+    scope: &'a HealthScope<'a>,
+    pre_computed_analysis: Option<fallow_core::AnalysisOutput>,
+}
+
+struct HealthScopedFindingsInput<'a> {
+    opts: &'a HealthOptions<'a>,
+    config: &'a ResolvedConfig,
+    modules: &'a [fallow_core::extract::ModuleInfo],
+    scope: &'a HealthScope<'a>,
+    score_output: Option<&'a scoring::FileScoreOutput>,
+}
+
+struct HealthAnalysisPrelude {
+    analysis_data: HealthAnalysisData,
+    report_coverage_gaps: bool,
+    enforce_coverage_gaps: bool,
+    has_istanbul_coverage: bool,
+    needs_file_scores: bool,
+}
+
 struct HealthPreparedCore {
     findings_data: HealthFindingsData,
     analysis_data: HealthAnalysisData,
@@ -400,9 +424,9 @@ struct HealthPreparedCore {
     needs_file_scores: bool,
 }
 
-fn prepare_health_core_sections(
-    input: HealthCoreSectionsInput<'_>,
-) -> Result<HealthPreparedCore, ExitCode> {
+fn prepare_health_analysis_prelude(
+    input: HealthAnalysisPreludeInput<'_>,
+) -> Result<HealthAnalysisPrelude, ExitCode> {
     let HealthCoverageSettings {
         report_coverage_gaps,
         enforce_coverage_gaps,
@@ -428,7 +452,19 @@ fn prepare_health_core_sections(
         needs_file_scores,
     })?;
 
-    let findings_data = prepare_health_findings(HealthFindingsInput {
+    Ok(HealthAnalysisPrelude {
+        analysis_data,
+        report_coverage_gaps,
+        enforce_coverage_gaps,
+        has_istanbul_coverage: istanbul_coverage.is_some(),
+        needs_file_scores,
+    })
+}
+
+fn prepare_health_scoped_findings(
+    input: &HealthScopedFindingsInput<'_>,
+) -> Result<HealthFindingsData, ExitCode> {
+    prepare_health_findings(HealthFindingsInput {
         opts: input.opts,
         config: input.config,
         modules: input.modules,
@@ -441,6 +477,41 @@ fn prepare_health_core_sections(
         max_cognitive: input.scope.max_cognitive,
         max_crap: input.scope.max_crap,
         enforce_crap: input.scope.enforce_crap,
+        score_output: input.score_output,
+    })
+}
+
+fn prepare_health_core_sections(
+    input: HealthCoreSectionsInput<'_>,
+) -> Result<HealthPreparedCore, ExitCode> {
+    let HealthCoreSectionsInput {
+        opts,
+        config,
+        files,
+        modules,
+        scope,
+        pre_computed_analysis,
+    } = input;
+
+    let HealthAnalysisPrelude {
+        analysis_data,
+        report_coverage_gaps,
+        enforce_coverage_gaps,
+        has_istanbul_coverage,
+        needs_file_scores,
+    } = prepare_health_analysis_prelude(HealthAnalysisPreludeInput {
+        opts,
+        config,
+        modules,
+        scope,
+        pre_computed_analysis,
+    })?;
+
+    let findings_data = prepare_health_scoped_findings(&HealthScopedFindingsInput {
+        opts,
+        config,
+        modules,
+        scope,
         score_output: analysis_data.score_output.as_ref(),
     })?;
 
@@ -449,20 +520,20 @@ fn prepare_health_core_sections(
         derived_sections,
         vital_data,
     } = prepare_health_runtime_sections(
-        input.opts,
+        opts,
         HealthRuntimeSectionsInput {
-            config: input.config,
-            files: input.files,
-            modules: input.modules,
-            file_paths: &input.scope.file_paths,
-            ignore_set: &input.scope.ignore_set,
-            changed_files: input.scope.changed_files.as_ref(),
-            ws_roots: input.scope.ws_roots.as_deref(),
-            diff_index: input.scope.diff_index,
+            config,
+            files,
+            modules,
+            file_paths: &scope.file_paths,
+            ignore_set: &scope.ignore_set,
+            changed_files: scope.changed_files.as_ref(),
+            ws_roots: scope.ws_roots.as_deref(),
+            diff_index: scope.diff_index,
             loaded_baseline: findings_data.loaded_baseline.as_ref(),
             findings: &findings_data.findings,
             analysis_data,
-            has_istanbul_coverage: istanbul_coverage.is_some(),
+            has_istanbul_coverage,
             needs_file_scores,
         },
     )?;
@@ -474,7 +545,7 @@ fn prepare_health_core_sections(
         vital_data,
         report_coverage_gaps,
         enforce_coverage_gaps,
-        has_istanbul_coverage: istanbul_coverage.is_some(),
+        has_istanbul_coverage,
         needs_file_scores,
     })
 }
