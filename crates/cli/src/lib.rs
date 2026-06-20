@@ -33,6 +33,14 @@ pub mod audit;
     reason = "shared CLI library compiles bin-oriented support modules for reuse"
 )]
 pub mod audit_brief;
+/// E4 decision-surface extractor (stage 6 / 6.G): the apex of the review brief.
+/// Public so the schema-emit binary can derive the `DecisionSurface` types.
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "shared CLI library compiles bin-oriented support modules for reuse"
+)]
+pub mod audit_decision_surface;
 #[allow(
     dead_code,
     unused_imports,

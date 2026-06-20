@@ -5,15 +5,15 @@ use rmcp::{ErrorData as McpError, ServerHandler, tool, tool_router};
 
 use crate::params::{
     AnalyzeParams, AuditParams, CheckChangedParams, CheckRuntimeCoverageParams, CodeExecuteParams,
-    ExplainParams, FeatureFlagsParams, FindDupesParams, FixParams, HealthParams, ImpactAllParams,
-    ImpactParams, InspectTargetParams, ListBoundariesParams, ProjectInfoParams,
-    SecurityCandidatesParams, TraceCloneParams, TraceDependencyParams, TraceExportParams,
-    TraceFileParams,
+    DecisionSurfaceParams, ExplainParams, FeatureFlagsParams, FindDupesParams, FixParams,
+    HealthParams, ImpactAllParams, ImpactParams, InspectTargetParams, ListBoundariesParams,
+    ProjectInfoParams, SecurityCandidatesParams, TraceCloneParams, TraceDependencyParams,
+    TraceExportParams, TraceFileParams,
 };
 use crate::tools::{
     build_analyze_args, build_audit_args, build_check_changed_args,
-    build_check_runtime_coverage_args, build_explain_args, build_feature_flags_args,
-    build_find_dupes_args, build_fix_apply_args, build_fix_preview_args,
+    build_check_runtime_coverage_args, build_decision_surface_args, build_explain_args,
+    build_feature_flags_args, build_find_dupes_args, build_fix_apply_args, build_fix_preview_args,
     build_get_blast_radius_args, build_get_cleanup_candidates_args, build_get_hot_paths_args,
     build_get_importance_args, build_health_args, build_impact_all_args, build_impact_args,
     build_list_boundaries_args, build_project_info_args, build_security_candidates_args,
@@ -263,6 +263,18 @@ impl FallowMcp {
     }
 
     #[tool(
+        description = "Surface the consequential structural DECISIONS a change embeds, each framed as a judgment question for a human with taste (`fallow decision-surface --format json`). The apex of the review brief and the single call that puts taste-decisions in front of a reviewer; separable and cheap, it runs the same changed-code analysis as the brief, NOT the full project pipeline. Returns `kind: \"decision-surface\"` with `schema_version`, a ranked `decisions[]` list, an optional `truncated` note, and `signal_count`. Each decision carries a `signal_id` (a deterministic anchor to the fallow-emitted candidate it frames; an agent decision whose `signal_id` fallow did not emit must be REJECTED, this is the anti-hallucination contract), a `category` (EXACTLY the SOLID-3: `coupling-boundary`, `public-api-contract`, `dependency`, nothing else), the framed `question`, the `anchor_file`/`anchor_line`, the `blast` (modules affected beyond the diff) and `consequence` rank, the routed `expert[]` (who to ask) with a `bus_factor_one` flag, and structured `actions[]` (`ask-expert`, `suppress`). The surface is CAPPED to a working-memory-sized handful (4 plus or minus 1, configurable via `max_decisions`, clamped to 3-5); decisions beyond the cap collapse into `truncated`. Every decision is suppressible with a `// fallow-ignore` comment on the anchor file (the `suppress` action carries the paste-ready comment). Always exits 0 (advisory, never a gate). Use `base` to pick the comparison point (defaults to the git merge-base). Use this to answer \"what are the few decisions in this change that actually need human judgment?\" rather than scanning the whole diff.",
+        annotations(read_only_hint = true, open_world_hint = true)
+    )]
+    async fn decision_surface(
+        &self,
+        params: Parameters<DecisionSurfaceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let args = build_decision_surface_args(&params.0);
+        run_tool(&self.binary, "decision_surface", &args).await
+    }
+
+    #[tool(
         description = "Explain one fallow issue type without running analysis. Returns the rule id, name, rationale, worked example, fix guidance, and docs URL as JSON. Use this before applying fixes when an agent or reviewer needs to understand what a finding means.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
@@ -401,6 +413,7 @@ impl ServerHandler for FallowMcp {
                  check_runtime_coverage (paid; merges a V8 or Istanbul runtime coverage dump into the health report), \
                  get_hot_paths / get_blast_radius / get_importance / get_cleanup_candidates (paid runtime context slices), \
                  audit (combined dead-code + complexity + duplication for changed files, returns verdict), \
+                 decision_surface (the few consequential structural decisions a change embeds, ranked, capped, and signal_id-anchored, each as a judgment question with the routed expert), \
                  fallow_explain (rule rationale and fix guidance without running analysis), \
                  list_boundaries (architecture boundary zones and access rules), \
                  feature_flags (detect feature flag patterns), \

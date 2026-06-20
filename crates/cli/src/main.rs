@@ -21,6 +21,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 mod api;
 mod audit;
 mod audit_brief;
+mod audit_decision_surface;
 mod base_worktree;
 mod baseline;
 mod cache_notice;
@@ -1144,6 +1145,39 @@ enum Command {
         /// Orthogonal to `--format`.
         #[arg(long)]
         brief: bool,
+
+        /// Cap on the number of consequential structural decisions surfaced in
+        /// the review brief's decision surface (the working-memory limit).
+        /// Default 4; clamped to the 3-5 band (4 plus or minus 1). Only
+        /// consulted on the brief path.
+        #[arg(
+            long,
+            value_name = "N",
+            default_value_t = audit_decision_surface::DEFAULT_DECISION_CAP
+        )]
+        max_decisions: usize,
+    },
+
+    /// Surface the consequential structural DECISIONS a change embeds (the apex
+    /// of the review brief), each framed as a judgment question with the routed
+    /// expert to ask.
+    ///
+    /// The product's decision surface: a ranked, capped (4 plus or minus 1),
+    /// signal_id-anchored set of the SOLID-3 decisions (coupling/boundary,
+    /// exports-aware public-API/contract, dependency). Runs the same changed-code
+    /// analysis as `fallow review` but emits ONLY the decisions, separable and
+    /// cheap. Every decision is suppressible with `// fallow-ignore`. Always
+    /// exits 0 (advisory, never a gate). Use `--base` / `--changed-since` to pick
+    /// the comparison point, exactly like `fallow audit`.
+    DecisionSurface {
+        /// Cap on the number of surfaced decisions (the working-memory limit).
+        /// Default 4; clamped to the 3-5 band (4 plus or minus 1).
+        #[arg(
+            long,
+            value_name = "N",
+            default_value_t = audit_decision_surface::DEFAULT_DECISION_CAP
+        )]
+        max_decisions: usize,
     },
 
     /// Show what fallow has done for you: how many issues it is surfacing, the
@@ -3481,6 +3515,9 @@ fn dispatch_subcommand(command: Command, dispatch: &DispatchContext<'_>) -> Exit
         Command::Flags { top } => dispatch_flags_command(dispatch, top),
         Command::Explain { issue_type } => explain::run_explain(&issue_type.join(" "), output),
         audit @ Command::Audit { .. } => dispatch_audit_command(audit, dispatch),
+        Command::DecisionSurface { max_decisions } => {
+            dispatch_decision_surface(dispatch, max_decisions)
+        }
         Command::Impact {
             subcommand,
             all,
@@ -4163,6 +4200,7 @@ fn dispatch_audit_command(command: Command, dispatch: &DispatchContext<'_>) -> E
         min_invocations_hot,
         gate_marker,
         brief,
+        max_decisions,
     } = command
     else {
         unreachable!("audit dispatcher only handles audit commands");
@@ -4185,6 +4223,7 @@ fn dispatch_audit_command(command: Command, dispatch: &DispatchContext<'_>) -> E
             min_invocations_hot,
             gate_marker,
             brief,
+            max_decisions,
         },
     )
 }
@@ -4429,7 +4468,7 @@ fn telemetry_workflow_for_command(
         Some(Command::Check { .. }) => telemetry::Workflow::DeadCode,
         Some(Command::Dupes { .. }) => telemetry::Workflow::Dupes,
         Some(Command::Health { .. }) => telemetry::Workflow::Health,
-        Some(Command::Audit { .. }) => telemetry::Workflow::Audit,
+        Some(Command::Audit { .. } | Command::DecisionSurface { .. }) => telemetry::Workflow::Audit,
         Some(Command::Inspect { .. }) => telemetry::Workflow::ProjectInventory,
         Some(Command::Ci { .. }) => match output {
             fallow_config::OutputFormat::ReviewGitlab
@@ -5015,6 +5054,7 @@ struct AuditDispatchArgs {
     min_invocations_hot: u64,
     gate_marker: Option<String>,
     brief: bool,
+    max_decisions: usize,
 }
 
 struct ResolvedAuditInputs {
@@ -5141,9 +5181,72 @@ fn run_resolved_audit(
             runtime_coverage: args.runtime_coverage.as_deref(),
             min_invocations_hot: args.min_invocations_hot,
             brief: args.brief,
+            max_decisions: args.max_decisions,
         },
         args.gate_marker.as_deref(),
     )
+}
+
+/// Dispatch `fallow decision-surface`: the separable E4 apex. Reuses the audit
+/// input resolution in brief mode (changed-code scope) with all gating /
+/// coverage / baseline knobs defaulted, then renders ONLY the decision surface.
+fn dispatch_decision_surface(dispatch: &DispatchContext<'_>, max_decisions: usize) -> ExitCode {
+    let cli = dispatch.cli;
+    // A defaulted audit-args bag: the decision surface takes only the global
+    // diff-scope flags (`--base`/`--changed-since`/`--workspace`) plus the cap.
+    let args = AuditDispatchArgs {
+        production_dead_code: false,
+        production_health: false,
+        production_dupes: false,
+        dead_code_baseline: None,
+        health_baseline: None,
+        dupes_baseline: None,
+        max_crap: None,
+        coverage: None,
+        coverage_root: None,
+        gate: None,
+        runtime_coverage: None,
+        min_invocations_hot: 0,
+        gate_marker: None,
+        brief: true,
+        max_decisions,
+    };
+    let inputs = match resolve_audit_inputs(dispatch, &args) {
+        Ok(inputs) => inputs,
+        Err(code) => return code,
+    };
+    audit::run_decision_surface(&audit::AuditOptions {
+        root: dispatch.root,
+        config_path: &cli.config,
+        cache_dir: &inputs.cache_dir,
+        output: dispatch.output,
+        no_cache: cli.no_cache,
+        threads: dispatch.threads,
+        quiet: dispatch.quiet,
+        changed_since: cli.changed_since.as_deref(),
+        production: cli.production,
+        production_dead_code: Some(inputs.production.dead_code),
+        production_health: Some(inputs.production.health),
+        production_dupes: Some(inputs.production.dupes),
+        workspace: cli.workspace.as_deref(),
+        changed_workspaces: cli.changed_workspaces.as_deref(),
+        explain: cli.explain,
+        explain_skipped: cli.explain_skipped,
+        performance: cli.performance,
+        group_by: cli.group_by,
+        dead_code_baseline: inputs.dead_code_baseline.as_deref(),
+        health_baseline: inputs.health_baseline.as_deref(),
+        dupes_baseline: inputs.dupes_baseline.as_deref(),
+        max_crap: None,
+        coverage: None,
+        coverage_root: None,
+        gate: inputs.audit_cfg.gate,
+        include_entry_exports: cli.include_entry_exports,
+        runtime_coverage: None,
+        min_invocations_hot: 0,
+        brief: true,
+        max_decisions,
+    })
 }
 
 struct HealthDispatchArgs<'a> {

@@ -28,6 +28,10 @@ use serde_json::{Map, Value};
 use fallow_cli::audit_brief::{
     DiffTriage, GraphFacts, ReviewBriefOutput, ReviewBriefSchemaVersion, ReviewEffort, RiskClass,
 };
+use fallow_cli::audit_decision_surface::{
+    Decision, DecisionAction, DecisionActionType, DecisionCategory, DecisionSurface,
+    DecisionSurfaceOutput, DecisionSurfaceSchemaVersion, DecisionWithActions, TruncationNote,
+};
 use fallow_cli::health_types::{
     ComplexityViolation, ContributorEntry, ContributorIdentifierFormat, CoverageGapSummary,
     CoverageGaps, CoverageModel, CoverageTier, ExceededThreshold, FileHealthScore, FindingSeverity,
@@ -308,6 +312,15 @@ const DERIVED_DEFINITION_NAMES: &[&str] = &[
     "ReviewEffort",
     "DiffTriage",
     "GraphFacts",
+    "Decision",
+    "DecisionAction",
+    "DecisionActionType",
+    "DecisionCategory",
+    "DecisionSurface",
+    "DecisionSurfaceOutput",
+    "DecisionSurfaceSchemaVersion",
+    "DecisionWithActions",
+    "TruncationNote",
     "CoverageSetupFileToEdit",
     "CoverageSetupMember",
     "CoverageSetupOutput",
@@ -629,6 +642,15 @@ fn register_audit_brief_definitions(generator: &mut schemars::SchemaGenerator) {
     let _ = generator.subschema_for::<DiffTriage>();
     let _ = generator.subschema_for::<GraphFacts>();
     let _ = generator.subschema_for::<ReviewBriefOutput>();
+    let _ = generator.subschema_for::<DecisionCategory>();
+    let _ = generator.subschema_for::<Decision>();
+    let _ = generator.subschema_for::<DecisionAction>();
+    let _ = generator.subschema_for::<DecisionActionType>();
+    let _ = generator.subschema_for::<DecisionWithActions>();
+    let _ = generator.subschema_for::<TruncationNote>();
+    let _ = generator.subschema_for::<DecisionSurface>();
+    let _ = generator.subschema_for::<DecisionSurfaceSchemaVersion>();
+    let _ = generator.subschema_for::<DecisionSurfaceOutput>();
 }
 
 fn register_impact_definitions(generator: &mut schemars::SchemaGenerator) {
@@ -1262,6 +1284,7 @@ mod drift_tests {
             ("Check", "CheckOutput"),
             ("Combined", "CombinedOutput"),
             ("AuditBrief", "ReviewBriefOutput"),
+            ("DecisionSurface", "DecisionSurfaceOutput"),
         ];
 
         #[expect(
@@ -1291,6 +1314,7 @@ mod drift_tests {
                 FallowOutput::Check(_) => "Check",
                 FallowOutput::Combined(_) => "Combined",
                 FallowOutput::AuditBrief(_) => "AuditBrief",
+                FallowOutput::DecisionSurface(_) => "DecisionSurface",
             }
         }
 

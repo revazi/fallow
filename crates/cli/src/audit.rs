@@ -91,6 +91,10 @@ pub struct AuditResult {
     pub review_deltas: Option<crate::audit_brief::ReviewDeltas>,
     pub weakening_signals: Vec<weakening::WeakeningSignal>,
     pub routing: Option<routing::RoutingFacts>,
+    /// E4 decision surface (the apex): the ranked, capped, signal_id-anchored set
+    /// of consequential structural decisions, each framed as a judgment question.
+    /// Populated only on the brief path; `None` otherwise.
+    pub decision_surface: Option<crate::audit_decision_surface::DecisionSurface>,
 }
 
 pub struct AuditOptions<'a> {
@@ -141,6 +145,10 @@ pub struct AuditOptions<'a> {
     /// audit analysis still runs and the verdict is still computed and carried
     /// informationally; it just never drives the exit code on this path.
     pub brief: bool,
+    /// E4 decision-surface cap (the working-memory limit). Default 4; clamped to
+    /// [3, 5] (4 plus or minus 1) by the extractor. Only consulted on the brief
+    /// path.
+    pub max_decisions: usize,
 }
 
 /// A base ref resolved by auto-detection: the git ref to diff against plus a
@@ -929,6 +937,7 @@ fn build_base_audit_options<'a>(
         runtime_coverage: None,
         min_invocations_hot: opts.min_invocations_hot,
         brief: false,
+        max_decisions: 4,
     }
 }
 
@@ -1293,6 +1302,7 @@ struct AuditResultParts {
     review_deltas: Option<crate::audit_brief::ReviewDeltas>,
     weakening_signals: Vec<weakening::WeakeningSignal>,
     routing: Option<routing::RoutingFacts>,
+    decision_surface: Option<crate::audit_decision_surface::DecisionSurface>,
 }
 
 /// Run the three HEAD-side analyses with intra-pipeline sharing intact:
@@ -1517,6 +1527,20 @@ fn assemble_audit_result(input: AuditAssemblyInput<'_>) -> Result<AuditResult, E
         (None, Vec::new(), None)
     };
 
+    // E4 decision surface (the apex): classify the SOLID-3 candidates from the E3
+    // deltas + E2 coordination gaps, anchor each `signal_id`, rank, cap, and pair
+    // the routed expert. Brief-path only.
+    let decision_surface = if opts.brief {
+        Some(compute_decision_surface(
+            opts,
+            check_result.as_ref(),
+            review_deltas.as_ref(),
+            routing.as_ref(),
+        ))
+    } else {
+        None
+    };
+
     Ok(build_audit_result(AuditResultParts {
         verdict,
         summary,
@@ -1537,7 +1561,110 @@ fn assemble_audit_result(input: AuditAssemblyInput<'_>) -> Result<AuditResult, E
         review_deltas,
         weakening_signals,
         routing,
+        decision_surface,
     }))
+}
+
+/// Compute the E4 decision surface from the assembled brief inputs: gather the
+/// boundary anchors (one representative per introduced zone-pair), the E2
+/// coordination gaps, and the impact-closure blast magnitude, then run the
+/// extractor. The cap is taken from the audit options (clamped to [3, 5] by the
+/// extractor). Returns an empty surface when no check result is available.
+fn compute_decision_surface(
+    opts: &AuditOptions<'_>,
+    check: Option<&CheckResult>,
+    review_deltas: Option<&crate::audit_brief::ReviewDeltas>,
+    routing: Option<&routing::RoutingFacts>,
+) -> crate::audit_decision_surface::DecisionSurface {
+    use crate::audit_decision_surface::{
+        BoundaryAnchor, CoordinationAnchor, DecisionInputs, extract_decision_surface,
+    };
+
+    let (Some(check), Some(deltas)) = (check, review_deltas) else {
+        return crate::audit_decision_surface::DecisionSurface::default();
+    };
+    let root = &check.config.root;
+
+    // One representative boundary anchor per introduced zone-pair: pick the first
+    // violation whose zone-pair key matches an introduced edge, for the file +
+    // line suppression/routing anchor.
+    let mut boundary_anchors: Vec<BoundaryAnchor> = Vec::new();
+    let mut seen_pairs: FxHashSet<String> = FxHashSet::default();
+    for finding in &check.results.boundary_violations {
+        let key = review_deltas::boundary_edge_key(finding);
+        if !deltas.boundary_introduced.contains(&key) || !seen_pairs.insert(key.clone()) {
+            continue;
+        }
+        boundary_anchors.push(BoundaryAnchor {
+            zone_pair_key: key,
+            from_file: keys::relative_key_path(&finding.violation.from_path, root),
+            from_zone: finding.violation.from_zone.clone(),
+            to_zone: finding.violation.to_zone.clone(),
+            line: finding.violation.line,
+        });
+    }
+
+    // E2 coordination gaps projected to the public-API/contract decision shape.
+    // Aggregate per changed file: ONE contract decision per changed file (R1
+    // batch-consolidate), counting its distinct non-diff consumers as the blast.
+    let closure = check.impact_closure.as_ref();
+    let coordination: Vec<CoordinationAnchor> = closure
+        .map(|c| aggregate_coordination_gaps(&c.coordination_gap))
+        .unwrap_or_default();
+    let affected_not_shown = closure.map_or(0, |c| c.affected_not_shown.len() as u64);
+
+    let empty_routing = routing::RoutingFacts::default();
+    let routing = routing.unwrap_or(&empty_routing);
+
+    // Head-source reader for suppression checks: read the on-disk (head) content
+    // of an anchor file by its root-relative path. Best-effort; a file that
+    // cannot be read is simply not suppressed.
+    let root_owned = root.clone();
+    let head_source = move |rel: &str| std::fs::read_to_string(root_owned.join(rel)).ok();
+
+    extract_decision_surface(&DecisionInputs {
+        deltas,
+        boundary_anchors: &boundary_anchors,
+        coordination: &coordination,
+        affected_not_shown,
+        routing,
+        head_source: &head_source,
+        cap: opts.max_decisions,
+    })
+}
+
+/// Aggregate per-(changed, consumer) coordination gaps into ONE contract anchor
+/// per changed file (R1 batch-consolidate), with the distinct-consumer count as
+/// the blast and the union of consumed symbols as the contract. Sorted by changed
+/// file for deterministic output.
+fn aggregate_coordination_gaps(
+    gaps: &[fallow_core::graph::CoordinationGapPaths],
+) -> Vec<crate::audit_decision_surface::CoordinationAnchor> {
+    use crate::audit_decision_surface::CoordinationAnchor;
+    let mut by_file: FxHashMap<String, (u64, FxHashSet<String>)> = FxHashMap::default();
+    for gap in gaps {
+        let entry = by_file
+            .entry(gap.changed_file.clone())
+            .or_insert_with(|| (0, FxHashSet::default()));
+        entry.0 += 1;
+        for symbol in &gap.consumed_symbols {
+            entry.1.insert(symbol.clone());
+        }
+    }
+    let mut anchors: Vec<CoordinationAnchor> = by_file
+        .into_iter()
+        .map(|(changed_file, (consumer_count, symbols))| {
+            let mut consumed_symbols: Vec<String> = symbols.into_iter().collect();
+            consumed_symbols.sort_unstable();
+            CoordinationAnchor {
+                changed_file,
+                consumed_symbols,
+                consumer_count,
+            }
+        })
+        .collect();
+    anchors.sort_by(|a, b| a.changed_file.cmp(&b.changed_file));
+    anchors
 }
 
 /// Compute the E3 review-brief data: the diff-aware deltas (head sets vs base
@@ -1742,6 +1869,7 @@ fn build_audit_result(parts: AuditResultParts) -> AuditResult {
         review_deltas: parts.review_deltas,
         weakening_signals: parts.weakening_signals,
         routing: parts.routing,
+        decision_surface: parts.decision_surface,
     }
 }
 
@@ -1839,6 +1967,7 @@ fn empty_audit_result(
         review_deltas: None,
         weakening_signals: Vec::new(),
         routing: None,
+        decision_surface: None,
     }
 }
 
@@ -2155,6 +2284,27 @@ pub fn run_audit(opts: &AuditOptions<'_>, gate_marker: Option<&str>) -> ExitCode
                 print_audit_result(&result, opts.quiet, opts.explain)
             }
         }
+        Err(code) => code,
+    }
+}
+
+/// Run the standalone `fallow decision-surface` command: the separable, cheap
+/// E4 apex. Executes the SAME changed-code analysis the review brief runs (it is
+/// the brief path, NOT the full project pipeline), then emits ONLY the decision
+/// surface envelope. Always exit 0 (the surface is advisory, never a gate).
+///
+/// The MCP `decision_surface` tool wraps this command. It is callable without the
+/// full pipeline because it reuses `execute_audit` in brief mode (changed-code
+/// scope), not bare `fallow`.
+#[must_use]
+pub fn run_decision_surface(opts: &AuditOptions<'_>) -> ExitCode {
+    // Force brief mode: the decision surface is only computed on the brief path.
+    let brief_opts = AuditOptions {
+        brief: true,
+        ..*opts
+    };
+    match execute_audit(&brief_opts) {
+        Ok(result) => crate::audit_brief::print_decision_surface_result(&result, opts.quiet),
         Err(code) => code,
     }
 }
@@ -3349,6 +3499,7 @@ mod tests {
             runtime_coverage: None,
             min_invocations_hot: 100,
             brief: false,
+            max_decisions: 4,
         };
         let key = AuditBaseSnapshotCacheKey {
             hash: 0xfeed,
@@ -3410,6 +3561,7 @@ mod tests {
             runtime_coverage: None,
             min_invocations_hot: 100,
             brief: false,
+            max_decisions: 4,
         };
         let key = AuditBaseSnapshotCacheKey {
             hash: 0xbeef,
@@ -3485,6 +3637,7 @@ mod tests {
             runtime_coverage: None,
             min_invocations_hot: 100,
             brief: false,
+            max_decisions: 4,
         };
 
         let first = config_file_fingerprint(&opts).expect("fingerprint should be computed");
@@ -3558,6 +3711,7 @@ mod tests {
             runtime_coverage: None,
             min_invocations_hot: 100,
             brief: false,
+            max_decisions: 4,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3636,6 +3790,7 @@ mod tests {
             runtime_coverage: None,
             min_invocations_hot: 100,
             brief: false,
+            max_decisions: 4,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3730,6 +3885,7 @@ mod tests {
             runtime_coverage: None,
             min_invocations_hot: 100,
             brief: false,
+            max_decisions: 4,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3808,6 +3964,7 @@ mod tests {
             runtime_coverage: None,
             min_invocations_hot: 100,
             brief: false,
+            max_decisions: 4,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3965,6 +4122,7 @@ mod tests {
             runtime_coverage: None,
             min_invocations_hot: 100,
             brief: false,
+            max_decisions: 4,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -4096,6 +4254,7 @@ export function App() {
             runtime_coverage: None,
             min_invocations_hot: 100,
             brief: false,
+            max_decisions: 4,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -4234,6 +4393,7 @@ export function App() {
             runtime_coverage: None,
             min_invocations_hot: 100,
             brief: false,
+            max_decisions: 4,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -4317,6 +4477,7 @@ export function App() {
             runtime_coverage: None,
             min_invocations_hot: 100,
             brief: false,
+            max_decisions: 4,
         };
 
         let result = execute_audit(&opts).expect("audit should execute with a new explicit config");
@@ -4394,6 +4555,7 @@ export function App() {
             runtime_coverage: None,
             min_invocations_hot: 100,
             brief: false,
+            max_decisions: 4,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -4477,6 +4639,7 @@ export function App() {
             runtime_coverage: None,
             min_invocations_hot: 100,
             brief: false,
+            max_decisions: 4,
         };
 
         let first = execute_audit(&opts).expect("first audit should execute");
@@ -4583,6 +4746,7 @@ export function App() {
             runtime_coverage: None,
             min_invocations_hot: 100,
             brief: false,
+            max_decisions: 4,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");

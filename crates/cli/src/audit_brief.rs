@@ -240,6 +240,11 @@ pub struct ReviewBriefOutput {
     pub weakening: Vec<crate::audit::weakening::WeakeningSignal>,
     /// E3 (6.D): ownership-aware reviewer routing (per-file expert + bus-factor).
     pub routing: crate::audit::routing::RoutingFacts,
+    /// E4 (6.G, the APEX): the decision surface. The ranked, capped,
+    /// signal_id-anchored set of consequential structural decisions, each framed
+    /// as a judgment question with its routed expert. This is the only thing the
+    /// brief visibly leads with; the stages above are its drill-down derivation.
+    pub decisions: crate::audit_decision_surface::DecisionSurface,
 }
 
 /// Classify a changeset's risk purely from its size. `net_lines` is consulted
@@ -381,6 +386,7 @@ pub fn build_brief_output(result: &AuditResult) -> ReviewBriefOutput {
         deltas,
         weakening: result.weakening_signals.clone(),
         routing: result.routing.clone().unwrap_or_default(),
+        decisions: result.decision_surface.clone().unwrap_or_default(),
     }
 }
 
@@ -427,6 +433,16 @@ fn insert_brief_e3_json(
     }
     if let Ok(value) = serde_json::to_value(&brief.routing) {
         obj.insert("routing".into(), value);
+    }
+}
+
+/// Insert the E4 decision surface (the apex) into the brief JSON map.
+fn insert_brief_decisions_json(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    brief: &ReviewBriefOutput,
+) {
+    if let Ok(value) = serde_json::to_value(&brief.decisions) {
+        obj.insert("decisions".into(), value);
     }
 }
 
@@ -484,6 +500,9 @@ fn build_brief_json(result: &AuditResult) -> Result<serde_json::Value, ExitCode>
         serde_json::Value::String(brief.command.clone()),
     );
 
+    // E4: the decision surface is the apex; it leads the JSON (collapse-by-
+    // default), with the stages below as its drill-down derivation.
+    insert_brief_decisions_json(&mut obj, &brief);
     insert_brief_triage_json(&mut obj, &brief);
     insert_brief_graph_facts_json(&mut obj, &brief);
     insert_brief_impact_closure_json(&mut obj, &brief);
@@ -515,8 +534,11 @@ fn print_brief_human(result: &AuditResult, quiet: bool, explain: bool) {
 
     if !quiet {
         eprintln!();
+        // E4: the decision surface is the apex; it LEADS (collapse-by-default).
+        print_decision_surface_human(&brief.decisions);
+        // The upstream stages are the decision surface's drill-down derivation.
         eprintln!(
-            "Review brief: {} changed file{} vs {} \u{00b7} risk {} \u{00b7} effort {}",
+            "Review brief (drill-down): {} changed file{} vs {} \u{00b7} risk {} \u{00b7} effort {}",
             result.changed_files_count,
             crate::report::plural(result.changed_files_count),
             result.base_ref,
@@ -619,6 +641,38 @@ fn print_routing_human(routing: &crate::audit::routing::RoutingFacts) {
     }
 }
 
+/// Print the E4 decision surface (the apex, 6.G): the ranked, capped set of
+/// consequential structural decisions, each as a framed judgment question with
+/// its routed expert. Caller has already gated on `!quiet`. Leads the brief.
+fn print_decision_surface_human(surface: &crate::audit_decision_surface::DecisionSurface) {
+    if surface.decisions.is_empty() {
+        eprintln!("Decisions: none (no consequential structural decision in this change)");
+        eprintln!();
+        return;
+    }
+    eprintln!("Decisions to make ({}):", surface.decisions.len());
+    for (i, decision) in surface.decisions.iter().enumerate() {
+        eprintln!(
+            "  {}. [{}] {}",
+            i + 1,
+            decision.category.tag(),
+            decision.question
+        );
+        if !decision.expert.is_empty() {
+            let bus = if decision.bus_factor_one {
+                " (bus-factor 1)"
+            } else {
+                ""
+            };
+            eprintln!("     ask: {}{bus}", decision.expert.join(", "));
+        }
+    }
+    if let Some(note) = &surface.truncated {
+        eprintln!("  ... {}", note.reason);
+    }
+    eprintln!();
+}
+
 fn weakening_label(kind: crate::audit::weakening::WeakeningKind) -> &'static str {
     use crate::audit::weakening::WeakeningKind;
     match kind {
@@ -675,6 +729,41 @@ pub fn print_brief_result(result: &AuditResult, quiet: bool, explain: bool) -> E
     }
 }
 
+/// Render the SEPARABLE decision-surface envelope (the `decision_surface` MCP
+/// tool's output + `fallow decision-surface`). Emits ONLY the ranked, capped
+/// decisions with structured `actions[]`, never the full brief. Always exit 0.
+///
+/// JSON renders the `FallowOutput::DecisionSurface` envelope (`kind:
+/// "decision-surface"`); human / compact / markdown render the apex header.
+#[must_use]
+pub fn print_decision_surface_result(result: &AuditResult, quiet: bool) -> ExitCode {
+    use fallow_config::OutputFormat;
+
+    let surface = result.decision_surface.clone().unwrap_or_default();
+    match result.output {
+        OutputFormat::Json => {
+            let envelope = crate::output_envelope::FallowOutput::DecisionSurface(
+                crate::audit_decision_surface::build_decision_surface_output(&surface),
+            );
+            match serde_json::to_value(&envelope) {
+                Ok(mut value) => {
+                    crate::output_envelope::apply_root_kind(&mut value, "decision-surface");
+                    crate::output_envelope::attach_telemetry_meta(&mut value);
+                    let _ = crate::report::emit_json(&value, "decision-surface");
+                    ExitCode::SUCCESS
+                }
+                Err(_) => ExitCode::SUCCESS,
+            }
+        }
+        _ => {
+            if !quiet {
+                print_decision_surface_human(&surface);
+            }
+            ExitCode::SUCCESS
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -715,6 +804,7 @@ mod tests {
             review_deltas: None,
             weakening_signals: Vec::new(),
             routing: None,
+            decision_surface: None,
         }
     }
 

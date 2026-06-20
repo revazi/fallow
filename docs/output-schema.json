@@ -15809,6 +15809,10 @@
         "routing": {
           "description": "E3 (6.D): ownership-aware reviewer routing (per-file expert + bus-factor).",
           "$ref": "#/definitions/RoutingFacts"
+        },
+        "decisions": {
+          "description": "E4 (6.G, the APEX): the decision surface. The ranked, capped,\nsignal_id-anchored set of consequential structural decisions, each framed\nas a judgment question with its routed expert. This is the only thing the\nbrief visibly leads with; the stages above are its drill-down derivation.",
+          "$ref": "#/definitions/DecisionSurface"
         }
       },
       "required": [
@@ -15820,7 +15824,8 @@
         "impact_closure",
         "deltas",
         "weakening",
-        "routing"
+        "routing",
+        "decisions"
       ],
       "title": "fallow audit --brief --format json",
       "description": "The full `fallow audit --brief --format json` envelope. Carries the\ninformational verdict, the triage and graph-facts orientation stages, plus\nthe reused \"subtract\" section (the same dead-code / duplication / complexity\npayload `fallow audit --format json` emits)."
@@ -16115,6 +16120,304 @@
         "expert"
       ],
       "description": "One routed unit (a changed file) with its experts and bus-factor flag."
+    },
+    "Decision": {
+      "type": "object",
+      "properties": {
+        "signal_id": {
+          "type": "string",
+          "description": "Deterministic anchor to the fallow-emitted candidate this decision frames.\n`accept_signal_id` rejects any id not in the emitted set."
+        },
+        "category": {
+          "description": "One of the SOLID-3 categories.",
+          "$ref": "#/definitions/DecisionCategory"
+        },
+        "question": {
+          "type": "string",
+          "description": "The decision framed as a judgment question for the human."
+        },
+        "anchor_file": {
+          "type": "string",
+          "description": "Root-relative file the decision is anchored at (for suppression + routing)."
+        },
+        "anchor_line": {
+          "type": "integer",
+          "description": "1-based anchor line, when the underlying signal carries one (0 = file head)."
+        },
+        "signal_key": {
+          "type": "string",
+          "description": "The raw fallow-emitted candidate key the `signal_id` hashes (the evidence)."
+        },
+        "blast": {
+          "type": "integer",
+          "description": "Blast radius: count of modules affected beyond the diff by this decision."
+        },
+        "consequence": {
+          "type": "integer",
+          "description": "`blast * reversibility_weight`: the rank key (sorted descending)."
+        },
+        "expert": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The routed expert(s) to ask, from E3 ownership routing. Empty when no\nownership signal is available for the anchor file."
+        },
+        "bus_factor_one": {
+          "type": "boolean",
+          "description": "Whether the anchor file's only qualified owner is one person (bus-factor-1)."
+        }
+      },
+      "required": [
+        "signal_id",
+        "category",
+        "question",
+        "anchor_file",
+        "anchor_line",
+        "signal_key",
+        "blast",
+        "consequence",
+        "expert"
+      ],
+      "description": "One consequential structural decision, framed as a judgment question for a\nhuman with taste, anchored to a fallow-emitted signal."
+    },
+    "DecisionAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "Stable action discriminator (`ask-expert`, `suppress`).",
+          "$ref": "#/definitions/DecisionActionType"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the action."
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A runnable command or a paste-ready suppression comment, when applicable."
+        },
+        "auto_fixable": {
+          "type": "boolean",
+          "description": "Whether fallow can carry the action out automatically. Always `false`:\na decision is a human judgment, never auto-applied."
+        }
+      },
+      "required": [
+        "type",
+        "description",
+        "auto_fixable"
+      ],
+      "description": "A structured action attached to a surfaced decision (the agent-actionable\nsurface). Mirrors the typed-action shape the rest of fallow emits."
+    },
+    "DecisionActionType": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "ask-expert",
+          "description": "Route the decision to the named expert(s) for a judgment call."
+        },
+        {
+          "type": "string",
+          "const": "suppress",
+          "description": "Suppress the decision with a `// fallow-ignore` comment."
+        }
+      ],
+      "description": "The discriminated action kinds a decision can carry."
+    },
+    "DecisionCategory": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "coupling-boundary",
+          "description": "A new dependency edge between modules or zones that did not depend before."
+        },
+        {
+          "type": "string",
+          "const": "public-api-contract",
+          "description": "A new exported contract, or a changed contract consumed outside the diff."
+        },
+        {
+          "type": "string",
+          "const": "dependency",
+          "description": "A new third-party dependency (new maintenance + security surface).\n\nThe arm is part of the SOLID-3 surface, but its candidate source (a\n`package.json` dependency delta) is not yet threaded onto the brief path,\nso the extractor never constructs it from a live signal today. Reserved,\nnot dead: it ships the moment the dependency delta lands, with no category\nreframe. (The variant is referenced by the schema + `reversibility_weight`\n+ the no-cut-category test, so it is exercised, not orphaned.)"
+        }
+      ],
+      "description": "The exactly-three shippable decision categories (the SOLID-3). No cut category\n(abstraction / deletion / convention / irreversibility) is representable: this\nenum is the structural guarantee that confirmed-noise categories never ship."
+    },
+    "DecisionSurface": {
+      "type": "object",
+      "properties": {
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Decision"
+          },
+          "description": "Up to `cap` ranked decisions, highest consequence first."
+        },
+        "truncated": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TruncationNote"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present when more than `cap` decisions were extracted."
+        },
+        "emitted_signal_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Every signal_id the deterministic layer emitted, INCLUDING those whose\ndecision was collapsed below the cap or suppressed. The anti-hallucination\nallowlist: an agent decision whose id is absent is rejected."
+        }
+      },
+      "required": [
+        "decisions",
+        "emitted_signal_ids"
+      ],
+      "description": "The ranked, capped decision surface plus the set of signal_ids the\ndeterministic layer emitted (the anti-hallucination allowlist)."
+    },
+    "DecisionSurfaceOutput": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "description": "Independently-versioned schema version.",
+          "$ref": "#/definitions/DecisionSurfaceSchemaVersion"
+        },
+        "version": {
+          "type": "string",
+          "description": "Fallow CLI version that produced this output."
+        },
+        "command": {
+          "type": "string",
+          "description": "Command discriminator singleton: always `\"decision-surface\"`."
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DecisionWithActions"
+          },
+          "description": "The ranked, capped decisions, each with structured actions."
+        },
+        "truncated": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TruncationNote"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present when more than `cap` decisions were extracted."
+        },
+        "signal_count": {
+          "type": "integer",
+          "description": "Count of fallow-emitted signal_ids (the anti-hallucination allowlist size)."
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "command",
+        "decisions",
+        "signal_count"
+      ],
+      "title": "fallow decision-surface --format json",
+      "description": "The separable `decision-surface` envelope: the single call that puts taste-\ndecisions in front of a human, callable WITHOUT the full pipeline (the\n`decision_surface` MCP tool's output). Carries `kind`/`schema_version` plus\nstructured `actions[]` per decision."
+    },
+    "DecisionSurfaceSchemaVersion": {
+      "type": "integer",
+      "description": "Independently-versioned wire-version newtype. Serializes as the integer\n[`DECISION_SURFACE_SCHEMA_VERSION`]."
+    },
+    "DecisionWithActions": {
+      "type": "object",
+      "properties": {
+        "signal_id": {
+          "type": "string",
+          "description": "Deterministic anchor to the fallow-emitted candidate this decision frames.\n`accept_signal_id` rejects any id not in the emitted set."
+        },
+        "category": {
+          "description": "One of the SOLID-3 categories.",
+          "$ref": "#/definitions/DecisionCategory"
+        },
+        "question": {
+          "type": "string",
+          "description": "The decision framed as a judgment question for the human."
+        },
+        "anchor_file": {
+          "type": "string",
+          "description": "Root-relative file the decision is anchored at (for suppression + routing)."
+        },
+        "anchor_line": {
+          "type": "integer",
+          "description": "1-based anchor line, when the underlying signal carries one (0 = file head)."
+        },
+        "signal_key": {
+          "type": "string",
+          "description": "The raw fallow-emitted candidate key the `signal_id` hashes (the evidence)."
+        },
+        "blast": {
+          "type": "integer",
+          "description": "Blast radius: count of modules affected beyond the diff by this decision."
+        },
+        "consequence": {
+          "type": "integer",
+          "description": "`blast * reversibility_weight`: the rank key (sorted descending)."
+        },
+        "expert": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The routed expert(s) to ask, from E3 ownership routing. Empty when no\nownership signal is available for the anchor file."
+        },
+        "bus_factor_one": {
+          "type": "boolean",
+          "description": "Whether the anchor file's only qualified owner is one person (bus-factor-1)."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DecisionAction"
+          },
+          "description": "Structured actions: route to the expert, or suppress."
+        }
+      },
+      "required": [
+        "signal_id",
+        "category",
+        "question",
+        "anchor_file",
+        "anchor_line",
+        "signal_key",
+        "blast",
+        "consequence",
+        "expert",
+        "actions"
+      ],
+      "description": "One decision plus its structured `actions[]`, for the separable envelope."
+    },
+    "TruncationNote": {
+      "type": "object",
+      "properties": {
+        "collapsed": {
+          "type": "integer",
+          "description": "How many decisions were collapsed below the cap."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable collapse reason."
+        }
+      },
+      "required": [
+        "collapsed",
+        "reason"
+      ],
+      "description": "A note for the decisions collapsed below the cap."
     }
   }
 }

@@ -646,6 +646,7 @@ mod tests {
             review_deltas: None,
             weakening_signals: Vec::new(),
             routing: None,
+            decision_surface: None,
         }
     }
 

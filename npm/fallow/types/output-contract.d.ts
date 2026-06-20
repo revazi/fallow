@@ -784,6 +784,12 @@ export type ReviewEffort = ("glance" | "review" | "deep_dive")
  */
 export type WeakeningKind = ("test-weakened" | "threshold-lowered" | "suppression-added" | "security-check-removed")
 /**
+ * The exactly-three shippable decision categories (the SOLID-3). No cut category
+ * (abstraction / deletion / convention / irreversibility) is representable: this
+ * enum is the structural guarantee that confirmed-noise categories never ship.
+ */
+export type DecisionCategory = ("coupling-boundary" | "public-api-contract" | "dependency")
+/**
  * Discriminator value for [`CodeClimateIssue::kind`].
  */
 export type CodeClimateIssueKind = "issue"
@@ -8487,6 +8493,7 @@ deltas: ReviewDeltas
  */
 weakening: WeakeningSignal[]
 routing: RoutingFacts
+decisions: DecisionSurface
 }
 /**
  * Stage 0 of the brief: triage facts derived purely from the diff size.
@@ -8657,6 +8664,84 @@ expert: string[]
  * a knowledge-concentration risk worth a second reviewer.
  */
 bus_factor_one?: boolean
+}
+/**
+ * The ranked, capped decision surface plus the set of signal_ids the
+ * deterministic layer emitted (the anti-hallucination allowlist).
+ */
+export interface DecisionSurface {
+/**
+ * Up to `cap` ranked decisions, highest consequence first.
+ */
+decisions: Decision[]
+/**
+ * Present when more than `cap` decisions were extracted.
+ */
+truncated?: (TruncationNote | null)
+/**
+ * Every signal_id the deterministic layer emitted, INCLUDING those whose
+ * decision was collapsed below the cap or suppressed. The anti-hallucination
+ * allowlist: an agent decision whose id is absent is rejected.
+ */
+emitted_signal_ids: string[]
+}
+/**
+ * One consequential structural decision, framed as a judgment question for a
+ * human with taste, anchored to a fallow-emitted signal.
+ */
+export interface Decision {
+/**
+ * Deterministic anchor to the fallow-emitted candidate this decision frames.
+ * `accept_signal_id` rejects any id not in the emitted set.
+ */
+signal_id: string
+category: DecisionCategory
+/**
+ * The decision framed as a judgment question for the human.
+ */
+question: string
+/**
+ * Root-relative file the decision is anchored at (for suppression + routing).
+ */
+anchor_file: string
+/**
+ * 1-based anchor line, when the underlying signal carries one (0 = file head).
+ */
+anchor_line: number
+/**
+ * The raw fallow-emitted candidate key the `signal_id` hashes (the evidence).
+ */
+signal_key: string
+/**
+ * Blast radius: count of modules affected beyond the diff by this decision.
+ */
+blast: number
+/**
+ * `blast * reversibility_weight`: the rank key (sorted descending).
+ */
+consequence: number
+/**
+ * The routed expert(s) to ask, from E3 ownership routing. Empty when no
+ * ownership signal is available for the anchor file.
+ */
+expert: string[]
+/**
+ * Whether the anchor file's only qualified owner is one person (bus-factor-1).
+ */
+bus_factor_one?: boolean
+}
+/**
+ * A note for the decisions collapsed below the cap.
+ */
+export interface TruncationNote {
+/**
+ * How many decisions were collapsed below the cap.
+ */
+collapsed: number
+/**
+ * Human-readable collapse reason.
+ */
+reason: string
 }
 /**
  * Single CodeClimate-compatible issue inside [`CodeClimateOutput`].

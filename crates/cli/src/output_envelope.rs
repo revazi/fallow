@@ -1227,6 +1227,12 @@ pub enum FallowOutput {
     /// always emitted with exit 0.
     #[serde(rename = "audit-brief")]
     AuditBrief(crate::audit_brief::ReviewBriefOutput),
+    /// `fallow decision-surface --format json` (the `decision_surface` MCP tool's
+    /// output). The separable, cheap apex: a ranked, capped, signal_id-anchored
+    /// set of consequential structural decisions framed as judgment questions,
+    /// each with structured `actions[]`. Independently versioned; always exit 0.
+    #[serde(rename = "decision-surface")]
+    DecisionSurface(crate::audit_decision_surface::DecisionSurfaceOutput),
 }
 
 #[cfg(test)]
