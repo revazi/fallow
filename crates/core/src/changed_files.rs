@@ -20,7 +20,11 @@ use std::sync::OnceLock;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::duplicates::{DuplicationReport, DuplicationStats, families};
-use crate::results::AnalysisResults;
+use crate::results::{
+    AnalysisResults, CircularDependencyFinding, DuplicateExportFinding, DuplicatePropShapeFinding,
+    ReExportCycleFinding, SecurityFinding, UnlistedDependencyFinding,
+};
+use fallow_types::output_dead_code::PropDrillingChainFinding;
 
 /// Function pointer signature used by `set_spawn_hook` to intercept the
 /// short-running `git rev-parse` / `git diff` / `git ls-files` subprocesses
@@ -480,23 +484,10 @@ pub fn filter_results_by_changed_files(
     retain_by_changed_path(unused_store_members, &cf, |m| &m.member.path);
     retain_by_changed_path(unresolved_imports, &cf, |i| &i.import.path);
 
-    unlisted_dependencies.retain(|d| {
-        d.dep
-            .imported_from
-            .iter()
-            .any(|s| contains_normalized(&cf, &s.path))
-    });
-
-    for dup in &mut *duplicate_exports {
-        dup.export
-            .locations
-            .retain(|loc| contains_normalized(&cf, &loc.path));
-    }
-    duplicate_exports.retain(|d| d.export.locations.len() >= 2);
-
-    circular_dependencies.retain(|c| c.cycle.files.iter().any(|f| contains_normalized(&cf, f)));
-
-    re_export_cycles.retain(|c| c.cycle.files.iter().any(|f| contains_normalized(&cf, f)));
+    retain_unlisted_dependencies_by_import_site(unlisted_dependencies, &cf);
+    retain_duplicate_exports_by_changed_locations(duplicate_exports, &cf);
+    retain_circular_dependencies_by_changed_file(circular_dependencies, &cf);
+    retain_re_export_cycles_by_changed_file(re_export_cycles, &cf);
 
     retain_by_changed_path(boundary_violations, &cf, |v| &v.violation.from_path);
     retain_by_changed_path(boundary_coverage_violations, &cf, |v| &v.violation.path);
@@ -505,7 +496,7 @@ pub fn filter_results_by_changed_files(
 
     retain_by_changed_path(stale_suppressions, &cf, |s| &s.path);
 
-    security_findings.retain(|f| security_finding_touches_changed_path(f, &cf));
+    retain_security_findings_by_changed_path(security_findings, &cf);
     retain_by_changed_path(security_unresolved_callee_diagnostics, &cf, |d| &d.path);
 
     retain_by_changed_path(unresolved_catalog_references, &cf, |r| &r.reference.path);
@@ -528,17 +519,91 @@ pub fn filter_results_by_changed_files(
     retain_by_changed_path(unused_svelte_events, &cf, |e| &e.event.path);
     retain_by_changed_path(unused_server_actions, &cf, |a| &a.action.path);
     retain_by_changed_path(unused_load_data_keys, &cf, |k| &k.key.path);
-    // Anchor a chain on its source hop's file (the finding anchor).
-    prop_drilling_chains.retain(|c| {
-        c.chain
-            .hops
-            .first()
-            .is_some_and(|h| contains_normalized(&cf, &h.file))
-    });
+    retain_prop_drilling_chains_by_anchor(prop_drilling_chains, &cf);
     // Anchor a thin wrapper on its component definition file.
     retain_by_changed_path(thin_wrappers, &cf, |w| &w.wrapper.file);
+    retain_duplicate_prop_shapes_by_anchor(duplicate_prop_shapes, &cf);
+}
+
+fn retain_unlisted_dependencies_by_import_site(
+    dependencies: &mut Vec<UnlistedDependencyFinding>,
+    changed_files: &FxHashSet<PathBuf>,
+) {
+    dependencies.retain(|dependency| {
+        dependency
+            .dep
+            .imported_from
+            .iter()
+            .any(|site| contains_normalized(changed_files, &site.path))
+    });
+}
+
+fn retain_duplicate_exports_by_changed_locations(
+    duplicate_exports: &mut Vec<DuplicateExportFinding>,
+    changed_files: &FxHashSet<PathBuf>,
+) {
+    for duplicate in &mut *duplicate_exports {
+        duplicate
+            .export
+            .locations
+            .retain(|location| contains_normalized(changed_files, &location.path));
+    }
+    duplicate_exports.retain(|duplicate| duplicate.export.locations.len() >= 2);
+}
+
+fn retain_circular_dependencies_by_changed_file(
+    cycles: &mut Vec<CircularDependencyFinding>,
+    changed_files: &FxHashSet<PathBuf>,
+) {
+    cycles.retain(|cycle| {
+        cycle
+            .cycle
+            .files
+            .iter()
+            .any(|file| contains_normalized(changed_files, file))
+    });
+}
+
+fn retain_re_export_cycles_by_changed_file(
+    cycles: &mut Vec<ReExportCycleFinding>,
+    changed_files: &FxHashSet<PathBuf>,
+) {
+    cycles.retain(|cycle| {
+        cycle
+            .cycle
+            .files
+            .iter()
+            .any(|file| contains_normalized(changed_files, file))
+    });
+}
+
+fn retain_security_findings_by_changed_path(
+    findings: &mut Vec<SecurityFinding>,
+    changed_files: &FxHashSet<PathBuf>,
+) {
+    findings.retain(|finding| security_finding_touches_changed_path(finding, changed_files));
+}
+
+fn retain_prop_drilling_chains_by_anchor(
+    chains: &mut Vec<PropDrillingChainFinding>,
+    changed_files: &FxHashSet<PathBuf>,
+) {
+    // Anchor a chain on its source hop's file (the finding anchor).
+    chains.retain(|chain| {
+        chain
+            .chain
+            .hops
+            .first()
+            .is_some_and(|hop| contains_normalized(changed_files, &hop.file))
+    });
+}
+
+fn retain_duplicate_prop_shapes_by_anchor(
+    shapes: &mut Vec<DuplicatePropShapeFinding>,
+    changed_files: &FxHashSet<PathBuf>,
+) {
     // Anchor a duplicate-prop-shape member on its component definition file.
-    retain_by_changed_path(duplicate_prop_shapes, &cf, |d| &d.shape.file);
+    retain_by_changed_path(shapes, changed_files, |shape| &shape.shape.file);
 }
 
 fn retain_by_changed_path<T>(
@@ -550,7 +615,7 @@ fn retain_by_changed_path<T>(
 }
 
 fn security_finding_touches_changed_path(
-    finding: &fallow_types::results::SecurityFinding,
+    finding: &SecurityFinding,
     changed_files: &FxHashSet<PathBuf>,
 ) -> bool {
     contains_normalized(changed_files, &finding.path)
