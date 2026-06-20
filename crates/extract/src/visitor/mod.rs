@@ -1151,60 +1151,77 @@ impl ModuleInfoExtractor {
              merge step before relying on this assertion"
         );
         let namespace_object_aliases = self.finalize_resolution_phase();
-        info.imports.extend(self.imports);
-        info.exports.extend(self.exports);
-        info.re_exports.extend(self.re_exports);
-        info.dynamic_imports.extend(self.dynamic_imports);
+        self.merge_module_graph(info, namespace_object_aliases);
+        self.merge_security_info(info);
+        self.merge_framework_info(info);
+    }
+
+    fn merge_module_graph(
+        &mut self,
+        info: &mut ModuleInfo,
+        mut namespace_object_aliases: Vec<fallow_types::extract::NamespaceObjectAlias>,
+    ) {
+        info.imports.append(&mut self.imports);
+        info.exports.append(&mut self.exports);
+        info.re_exports.append(&mut self.re_exports);
+        info.dynamic_imports.append(&mut self.dynamic_imports);
         info.dynamic_import_patterns
-            .extend(self.dynamic_import_patterns);
-        info.require_calls.extend(self.require_calls);
+            .append(&mut self.dynamic_import_patterns);
+        info.require_calls.append(&mut self.require_calls);
         info.package_path_references
-            .extend(self.package_path_references);
-        info.member_accesses.extend(self.member_accesses);
-        info.whole_object_uses.extend(self.whole_object_uses);
+            .append(&mut self.package_path_references);
+        info.member_accesses.append(&mut self.member_accesses);
+        info.whole_object_uses.append(&mut self.whole_object_uses);
         info.has_cjs_exports |= self.has_cjs_exports;
         info.has_angular_component_template_url |= self.has_angular_component_template_url;
-        info.class_heritage.extend(self.class_heritage);
-        info.injection_tokens.extend(self.injection_tokens);
+        info.class_heritage.append(&mut self.class_heritage);
+        info.injection_tokens.append(&mut self.injection_tokens);
         info.local_type_declarations
-            .extend(self.local_type_declarations);
+            .append(&mut self.local_type_declarations);
         info.public_signature_type_references
-            .extend(self.public_signature_type_references);
+            .append(&mut self.public_signature_type_references);
         info.namespace_object_aliases
-            .extend(namespace_object_aliases);
-        info.directives.extend(self.directives);
+            .append(&mut namespace_object_aliases);
+        info.directives.append(&mut self.directives);
         info.client_only_dynamic_import_spans
-            .extend(self.client_only_dynamic_import_spans);
-        info.security_sinks.extend(self.security_sinks);
+            .append(&mut self.client_only_dynamic_import_spans);
+        info.callee_uses.append(&mut self.callee_uses);
+    }
+
+    fn merge_security_info(&mut self, info: &mut ModuleInfo) {
+        info.security_sinks.append(&mut self.security_sinks);
         info.security_sinks_skipped += self.security_sinks_skipped;
         info.security_unresolved_callee_sites
-            .extend(self.security_unresolved_callee_sites);
-        info.tainted_bindings.extend(self.tainted_bindings);
-        info.sanitized_sink_args.extend(self.sanitized_sink_args);
+            .append(&mut self.security_unresolved_callee_sites);
+        info.tainted_bindings.append(&mut self.tainted_bindings);
+        info.sanitized_sink_args
+            .append(&mut self.sanitized_sink_args);
         info.security_control_sites
-            .extend(self.security_control_sites);
-        info.callee_uses.extend(self.callee_uses);
-        info.misplaced_directives.extend(self.misplaced_directives);
+            .append(&mut self.security_control_sites);
+    }
+
+    fn merge_framework_info(&mut self, info: &mut ModuleInfo) {
+        info.misplaced_directives
+            .append(&mut self.misplaced_directives);
         info.inline_server_action_exports
-            .extend(self.inline_server_action_exports);
-        info.di_key_sites.extend(self.di_key_sites);
-        info.has_dynamic_provide = info.has_dynamic_provide || self.has_dynamic_provide;
-        info.load_return_keys.extend(self.load_return_keys);
-        info.has_unharvestable_load = info.has_unharvestable_load || self.has_unharvestable_load;
-        info.has_load_data_whole_use = info.has_load_data_whole_use || self.has_load_data_whole_use;
-        info.angular_inputs.extend(self.angular_inputs);
-        info.angular_outputs.extend(self.angular_outputs);
+            .append(&mut self.inline_server_action_exports);
+        info.di_key_sites.append(&mut self.di_key_sites);
+        info.has_dynamic_provide |= self.has_dynamic_provide;
+        info.load_return_keys.append(&mut self.load_return_keys);
+        info.has_unharvestable_load |= self.has_unharvestable_load;
+        info.has_load_data_whole_use |= self.has_load_data_whole_use;
+        info.angular_inputs.append(&mut self.angular_inputs);
+        info.angular_outputs.append(&mut self.angular_outputs);
         info.angular_component_selectors
-            .extend(self.angular_component_selectors);
+            .append(&mut self.angular_component_selectors);
         info.angular_used_selectors
-            .extend(self.angular_used_selectors);
+            .append(&mut self.angular_used_selectors);
         info.angular_entry_component_refs
-            .extend(self.angular_entry_component_refs);
-        info.has_dynamic_component_render =
-            info.has_dynamic_component_render || self.has_dynamic_component_render;
+            .append(&mut self.angular_entry_component_refs);
+        info.has_dynamic_component_render |= self.has_dynamic_component_render;
         info.svelte_dispatched_events
-            .extend(self.svelte_dispatched_events);
-        info.has_dynamic_dispatch = info.has_dynamic_dispatch || self.has_dynamic_dispatch;
+            .append(&mut self.svelte_dispatched_events);
+        info.has_dynamic_dispatch |= self.has_dynamic_dispatch;
     }
 }
 
