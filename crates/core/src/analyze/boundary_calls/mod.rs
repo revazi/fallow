@@ -5,7 +5,7 @@ use fallow_types::extract::{ImportedName, ModuleInfo};
 use fallow_types::results::BoundaryCallViolation;
 
 use crate::discover::FileId;
-use crate::graph::ModuleGraph;
+use crate::graph::{ModuleGraph, ModuleNode};
 use crate::suppress::{IssueKind, SuppressionContext};
 
 use super::security::CalleePattern;
@@ -60,52 +60,88 @@ pub fn find_boundary_call_violations(
 
     let mut violations = Vec::new();
     for node in &graph.modules {
-        if !node.is_reachable() && !node.is_entry_point() {
-            continue;
-        }
-
-        let Ok(relative) = node.path.strip_prefix(&config.root) else {
-            continue;
-        };
-        let relative = relative.to_string_lossy().replace('\\', "/");
-        let Some(zone) = config.boundaries.classify_zone(&relative) else {
+        let Some((zone, patterns, module)) = boundary_call_scan_target(
+            node,
+            config,
+            &patterns_by_zone,
+            &modules_by_id,
+            &mut zone_file_counts,
+        ) else {
             continue;
         };
-        if let Some(count) = zone_file_counts.get_mut(zone) {
-            *count += 1;
-        }
-        let Some(patterns) = patterns_by_zone.get(zone) else {
-            continue;
-        };
-        let Some(module) = modules_by_id.get(&node.file_id) else {
-            continue;
-        };
-        if suppressions.is_file_suppressed(node.file_id, IssueKind::BoundaryViolation) {
-            continue;
-        }
-
-        for callee_use in &module.callee_uses {
-            let Some(pattern) = first_matching_pattern(patterns, &callee_use.callee_path, module)
-            else {
-                continue;
-            };
-            let (line, col) =
-                byte_offset_to_line_col(line_offsets_by_file, node.file_id, callee_use.span_start);
-            if suppressions.is_suppressed(node.file_id, line, IssueKind::BoundaryViolation) {
-                continue;
-            }
-            violations.push(BoundaryCallViolation {
-                path: node.path.clone(),
-                line,
-                col,
-                zone: zone.to_owned(),
-                callee: callee_use.callee_path.clone(),
-                pattern: pattern.raw().to_owned(),
-            });
-        }
+        violations.extend(boundary_call_violations_for_module(
+            node,
+            module,
+            zone,
+            patterns,
+            suppressions,
+            line_offsets_by_file,
+        ));
     }
 
-    for (zone, count) in &zone_file_counts {
+    warn_empty_boundary_call_zones(&zone_file_counts);
+    violations
+}
+
+fn boundary_call_scan_target<'a>(
+    node: &ModuleNode,
+    config: &'a ResolvedConfig,
+    patterns_by_zone: &'a FxHashMap<&str, Vec<CalleePattern>>,
+    modules_by_id: &'a FxHashMap<FileId, &ModuleInfo>,
+    zone_file_counts: &mut FxHashMap<&'a str, usize>,
+) -> Option<(&'a str, &'a [CalleePattern], &'a ModuleInfo)> {
+    if !node.is_reachable() && !node.is_entry_point() {
+        return None;
+    }
+
+    let relative = node.path.strip_prefix(&config.root).ok()?;
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    let zone = config.boundaries.classify_zone(&relative)?;
+    if let Some(count) = zone_file_counts.get_mut(zone) {
+        *count += 1;
+    }
+    let patterns = patterns_by_zone.get(zone)?;
+    let module = modules_by_id.get(&node.file_id).copied()?;
+    Some((zone, patterns, module))
+}
+
+fn boundary_call_violations_for_module(
+    node: &ModuleNode,
+    module: &ModuleInfo,
+    zone: &str,
+    patterns: &[CalleePattern],
+    suppressions: &SuppressionContext<'_>,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+) -> Vec<BoundaryCallViolation> {
+    if suppressions.is_file_suppressed(node.file_id, IssueKind::BoundaryViolation) {
+        return Vec::new();
+    }
+
+    let mut violations = Vec::new();
+    for callee_use in &module.callee_uses {
+        let Some(pattern) = first_matching_pattern(patterns, &callee_use.callee_path, module)
+        else {
+            continue;
+        };
+        let (line, col) =
+            byte_offset_to_line_col(line_offsets_by_file, node.file_id, callee_use.span_start);
+        if suppressions.is_suppressed(node.file_id, line, IssueKind::BoundaryViolation) {
+            continue;
+        }
+        violations.push(BoundaryCallViolation {
+            path: node.path.clone(),
+            line,
+            col,
+            zone: zone.to_owned(),
+            callee: callee_use.callee_path.clone(),
+            pattern: pattern.raw().to_owned(),
+        });
+    }
+    violations
+}
+
+fn warn_empty_boundary_call_zones(zone_file_counts: &FxHashMap<&str, usize>) {
+    for (zone, count) in zone_file_counts {
         if *count == 0 {
             tracing::warn!(
                 "boundaries.calls.forbidden references zone '{zone}', but no analyzed file \
@@ -114,8 +150,6 @@ pub fn find_boundary_call_violations(
             );
         }
     }
-
-    violations
 }
 
 /// First pattern (in config order) matching the written callee path or its
