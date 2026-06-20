@@ -13,7 +13,6 @@
 //! (`kind: "audit-brief"`) so the brief shape evolves on its own cadence
 //! without bumping the main `--format json` contract.
 
-use std::path::Path;
 use std::process::ExitCode;
 
 use fallow_types::results::AnalysisResults;
@@ -105,11 +104,12 @@ pub struct DiffTriage {
 
 /// Stage 1 of the brief: graph-derived orientation facts.
 ///
-/// v1 is best-effort: `boundaries_touched` is derived from the run's
-/// boundary-violation zones; `exports_added` and `reachable_from` are honestly
-/// stubbed (`0` / empty) because the file-level audit does not yet diff the
-/// export surface or compute reachability. The fields are present and correctly
-/// typed so values fill in later without a schema bump.
+/// `boundaries_touched` is derived from the run's boundary-violation zones;
+/// `reachable_from` is populated by the E2 impact closure (the affected-not-shown
+/// set: modules the changed code is reachable from / affects, none in the diff).
+/// `exports_added` / `api_width_delta` stay honestly stubbed (`0`) until the
+/// export-surface delta lands (E3). The fields are present and correctly typed so
+/// values fill in later without a schema bump.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GraphFacts {
@@ -118,13 +118,50 @@ pub struct GraphFacts {
     /// Change in public API width (added minus removed exports). Stubbed to `0`
     /// in v1.
     pub api_width_delta: i64,
-    /// Entry points or modules the changed code is reachable from. Empty in v1
-    /// (reachability is not yet computed on the file-level audit path).
+    /// Root-relative paths of modules the changed code is reachable from / affects
+    /// (the impact closure's affected-but-not-in-diff set), deduped and sorted.
+    /// Empty when no graph was retained or nothing depends on the changed files.
     pub reachable_from: Vec<String>,
     /// Architecture boundary zones touched by the changeset, deduped and sorted.
     /// Derived from the run's boundary-violation findings.
     pub boundaries_touched: Vec<String>,
 }
+
+/// Stage 3 of the brief: the impact closure (E2). The transitive
+/// affected-but-not-in-diff set plus the coordination gap. The differentiator a
+/// diff tool fundamentally cannot do, because it has no graph.
+///
+/// Honest scope (ADR-001, syntactic): the coordination gap is an attention
+/// pointer at the exact inter-module failure mode, NOT a correctness proof.
+#[derive(Debug, Clone, Default, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ImpactClosureFacts {
+    /// Root-relative paths transitively affected by the changeset (reverse-deps +
+    /// re-export chains) that are NOT in the diff, deduped and sorted.
+    pub affected_not_shown: Vec<String>,
+    /// Coordination gaps: a changed file exports a contract consumed by a module
+    /// absent from the diff. One entry per (changed file, consumer) pair.
+    pub coordination_gap: Vec<CoordinationGapFact>,
+}
+
+/// One coordination-gap entry: a changed file exports symbols consumed by a
+/// `consumer_file` that is NOT in the diff. Deduped per (changed, consumer) pair
+/// (firing-precision rule R2).
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CoordinationGapFact {
+    /// Root-relative path of the changed file whose contract is consumed elsewhere.
+    pub changed_file: String,
+    /// Root-relative path of the consumer module that is NOT in the diff.
+    pub consumer_file: String,
+    /// The exported symbol names the consumer references, sorted.
+    pub consumed_symbols: Vec<String>,
+    /// Honest scope note: this is a syntactic attention pointer, not a proof.
+    pub note: String,
+}
+
+/// The honest-scope note stamped on every coordination-gap entry (ADR-001).
+const COORDINATION_GAP_NOTE: &str = "syntactic attention pointer, not a correctness proof";
 
 /// The full `fallow audit --brief --format json` envelope. Carries the
 /// informational verdict, the triage and graph-facts orientation stages, plus
@@ -147,6 +184,8 @@ pub struct ReviewBriefOutput {
     pub triage: DiffTriage,
     /// Stage 1: graph orientation facts.
     pub graph_facts: GraphFacts,
+    /// Stage 3: the impact closure (affected-not-shown + coordination gap).
+    pub impact_closure: ImpactClosureFacts,
 }
 
 /// Classify a changeset's risk purely from its size. `net_lines` is consulted
@@ -191,14 +230,18 @@ pub fn build_triage(result: &AuditResult) -> DiffTriage {
     }
 }
 
-/// Derive the Stage 1 graph facts from the analysis results.
+/// Derive the Stage 1 graph facts from the analysis results plus the E2 impact
+/// closure.
 ///
-/// v1 best-effort: only `boundaries_touched` carries real data (deduped,
-/// sorted boundary-violation zone names). `exports_added` / `api_width_delta` /
-/// `reachable_from` are stubbed until the audit path threads an export-surface
-/// diff and reachability pass; the `_root` argument is reserved for that wiring.
+/// `boundaries_touched` is the deduped, sorted boundary-violation zone set;
+/// `reachable_from` is the impact closure's affected-not-shown set (modules the
+/// changed code reaches / affects, none in the diff). `exports_added` /
+/// `api_width_delta` stay stubbed until the export-surface delta (E3).
 #[must_use]
-pub fn derive_graph_facts(results: &AnalysisResults, _root: &Path) -> GraphFacts {
+pub fn derive_graph_facts(
+    results: &AnalysisResults,
+    closure: Option<&fallow_core::graph::ImpactClosurePaths>,
+) -> GraphFacts {
     let mut zones: FxHashSet<String> = FxHashSet::default();
     for finding in &results.boundary_violations {
         zones.insert(finding.violation.from_zone.clone());
@@ -207,11 +250,43 @@ pub fn derive_graph_facts(results: &AnalysisResults, _root: &Path) -> GraphFacts
     let mut boundaries_touched: Vec<String> = zones.into_iter().collect();
     boundaries_touched.sort();
 
+    let reachable_from = closure
+        .map(|c| c.affected_not_shown.clone())
+        .unwrap_or_default();
+
     GraphFacts {
         exports_added: 0,
         api_width_delta: 0,
-        reachable_from: Vec::new(),
+        reachable_from,
         boundaries_touched,
+    }
+}
+
+/// Build the Stage 3 impact-closure facts from the audit result's retained
+/// closure (computed on the brief path). Returns an empty closure when no graph
+/// was retained (the closure is `None`).
+#[must_use]
+fn build_impact_closure_facts(result: &AuditResult) -> ImpactClosureFacts {
+    let Some(closure) = result
+        .check
+        .as_ref()
+        .and_then(|c| c.impact_closure.as_ref())
+    else {
+        return ImpactClosureFacts::default();
+    };
+    let coordination_gap = closure
+        .coordination_gap
+        .iter()
+        .map(|gap| CoordinationGapFact {
+            changed_file: gap.changed_file.clone(),
+            consumer_file: gap.consumer_file.clone(),
+            consumed_symbols: gap.consumed_symbols.clone(),
+            note: COORDINATION_GAP_NOTE.to_string(),
+        })
+        .collect();
+    ImpactClosureFacts {
+        affected_not_shown: closure.affected_not_shown.clone(),
+        coordination_gap,
     }
 }
 
@@ -221,6 +296,10 @@ pub fn derive_graph_facts(results: &AnalysisResults, _root: &Path) -> GraphFacts
 #[must_use]
 pub fn build_brief_output(result: &AuditResult) -> ReviewBriefOutput {
     let triage = build_triage(result);
+    let closure = result
+        .check
+        .as_ref()
+        .and_then(|c| c.impact_closure.as_ref());
     let graph_facts = result.check.as_ref().map_or_else(
         || GraphFacts {
             exports_added: 0,
@@ -228,14 +307,16 @@ pub fn build_brief_output(result: &AuditResult) -> ReviewBriefOutput {
             reachable_from: Vec::new(),
             boundaries_touched: Vec::new(),
         },
-        |check| derive_graph_facts(&check.results, &check.config.root),
+        |check| derive_graph_facts(&check.results, closure),
     );
+    let impact_closure = build_impact_closure_facts(result);
     ReviewBriefOutput {
         schema_version: ReviewBriefSchemaVersion::default(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         command: "audit-brief".to_string(),
         triage,
         graph_facts,
+        impact_closure,
     }
 }
 
@@ -256,6 +337,16 @@ fn insert_brief_graph_facts_json(
 ) {
     if let Ok(value) = serde_json::to_value(&brief.graph_facts) {
         obj.insert("graph_facts".into(), value);
+    }
+}
+
+/// Insert the Stage 3 impact-closure object into the brief JSON map.
+fn insert_brief_impact_closure_json(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    brief: &ReviewBriefOutput,
+) {
+    if let Ok(value) = serde_json::to_value(&brief.impact_closure) {
+        obj.insert("impact_closure".into(), value);
     }
 }
 
@@ -315,6 +406,7 @@ fn build_brief_json(result: &AuditResult) -> Result<serde_json::Value, ExitCode>
 
     insert_brief_triage_json(&mut obj, &brief);
     insert_brief_graph_facts_json(&mut obj, &brief);
+    insert_brief_impact_closure_json(&mut obj, &brief);
     insert_brief_subtract_json(&mut obj, result)?;
 
     Ok(serde_json::Value::Object(obj))
@@ -356,12 +448,34 @@ fn print_brief_human(result: &AuditResult, quiet: bool, explain: bool) {
                 brief.graph_facts.boundaries_touched.join(", ")
             );
         }
+        print_impact_closure_human(&brief.impact_closure);
     }
 
     // Always render the findings sections so the brief shows WHERE to look, even
     // when the underlying verdict is a fail. Headers stay off (the brief owns its
     // own header line above).
     crate::audit::print_audit_findings(result, quiet, explain, false);
+}
+
+/// Print the Stage 3 impact-closure summary on the human brief: the count of
+/// affected-but-not-shown files and each coordination gap (the precise
+/// inter-module attention pointer). Caller has already gated on `!quiet`.
+fn print_impact_closure_human(closure: &ImpactClosureFacts) {
+    if !closure.affected_not_shown.is_empty() {
+        eprintln!(
+            "  impact closure: {} file{} affected beyond the diff",
+            closure.affected_not_shown.len(),
+            crate::report::plural(closure.affected_not_shown.len()),
+        );
+    }
+    for gap in &closure.coordination_gap {
+        eprintln!(
+            "  coordination gap: {} consumes {} from {} (not in this diff)",
+            gap.consumer_file,
+            gap.consumed_symbols.join(", "),
+            gap.changed_file,
+        );
+    }
 }
 
 fn risk_label(risk: RiskClass) -> &'static str {
@@ -491,5 +605,54 @@ mod tests {
         assert_eq!(classify_risk(RISK_HIGH_FILES, None), RiskClass::High);
         assert_eq!(classify_risk(1, Some(RISK_HIGH_LINES)), RiskClass::High);
         assert_eq!(review_effort_for(RiskClass::High), ReviewEffort::DeepDive);
+    }
+
+    #[test]
+    fn brief_json_includes_empty_impact_closure_when_no_graph_retained() {
+        // check: None -> no closure; the impact_closure object must still be
+        // present and empty so consumers can rely on its presence.
+        let result = audit_result(AuditVerdict::Warn, OutputFormat::Json);
+        let value = build_brief_json(&result).expect("brief json must build");
+        assert!(value.get("impact_closure").is_some(), "{value}");
+        assert_eq!(
+            value["impact_closure"]["affected_not_shown"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            value["impact_closure"]["coordination_gap"],
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn derive_graph_facts_populates_reachable_from_from_closure() {
+        use fallow_core::graph::{CoordinationGapPaths, ImpactClosurePaths};
+        let results = AnalysisResults::default();
+        let closure = ImpactClosurePaths {
+            in_diff: vec!["src/core.ts".to_string()],
+            affected_not_shown: vec!["src/app.ts".to_string(), "src/mid.ts".to_string()],
+            coordination_gap: vec![CoordinationGapPaths {
+                changed_file: "src/core.ts".to_string(),
+                consumer_file: "src/mid.ts".to_string(),
+                consumed_symbols: vec!["compute".to_string()],
+            }],
+        };
+        let facts = derive_graph_facts(&results, Some(&closure));
+        assert_eq!(
+            facts.reachable_from,
+            vec!["src/app.ts".to_string(), "src/mid.ts".to_string()]
+        );
+    }
+
+    #[test]
+    fn coordination_gap_fact_carries_honest_scope_note() {
+        let gap = CoordinationGapFact {
+            changed_file: "src/core.ts".to_string(),
+            consumer_file: "src/mid.ts".to_string(),
+            consumed_symbols: vec!["compute".to_string()],
+            note: COORDINATION_GAP_NOTE.to_string(),
+        };
+        assert!(gap.note.contains("attention pointer"));
+        assert!(gap.note.contains("not a correctness proof"));
     }
 }

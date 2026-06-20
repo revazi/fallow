@@ -161,6 +161,12 @@ fn build_inspect_evidence(
             InspectEvidenceScope::File,
             |value| value,
         ),
+        impact_closure: optional_section(
+            opts,
+            impact_closure_args(target_file),
+            InspectEvidenceScope::ProjectFilteredToFile,
+            |value| value,
+        ),
     }
 }
 
@@ -239,6 +245,7 @@ fn print_human(bundle: &InspectOutput, quiet: bool) {
     print_evidence_summary("duplication", &bundle.evidence.duplication);
     print_evidence_summary("complexity", &bundle.evidence.complexity);
     print_evidence_summary("security", &bundle.evidence.security);
+    print_evidence_summary("impact_closure", &bundle.evidence.impact_closure);
     if !bundle.warnings.is_empty() && !quiet {
         outln!();
         for warning in &bundle.warnings {
@@ -411,6 +418,14 @@ fn security_args(file: &str) -> Vec<String> {
     ]
 }
 
+fn impact_closure_args(file: &str) -> Vec<String> {
+    vec![
+        "dead-code".to_string(),
+        "--impact-closure".to_string(),
+        file.to_string(),
+    ]
+}
+
 fn filter_path_array(value: &Value, file: &str, key: &str) -> Value {
     let matched = value
         .get(key)
@@ -531,6 +546,7 @@ fn push_inspect_warnings(warnings: &mut Vec<String>, evidence: &InspectEvidence)
     push_warning(warnings, "duplication", &evidence.duplication);
     push_warning(warnings, "complexity", &evidence.complexity);
     push_warning(warnings, "security", &evidence.security);
+    push_warning(warnings, "impact_closure", &evidence.impact_closure);
 }
 
 fn push_warning(warnings: &mut Vec<String>, section: &str, evidence: &InspectEvidenceSection) {

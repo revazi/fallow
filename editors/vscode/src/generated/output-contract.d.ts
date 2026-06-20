@@ -6469,6 +6469,7 @@ dead_code: InspectEvidenceSection
 duplication: InspectEvidenceSection
 complexity: InspectEvidenceSection
 security: InspectEvidenceSection
+impact_closure: InspectEvidenceSection
 }
 export interface InspectEvidenceSection {
 status: InspectSectionStatus
@@ -8473,6 +8474,7 @@ version: string
 command: string
 triage: DiffTriage
 graph_facts: GraphFacts
+impact_closure: ImpactClosureFacts
 }
 /**
  * Stage 0 of the brief: triage facts derived purely from the diff size.
@@ -8500,11 +8502,12 @@ review_effort: ReviewEffort
 /**
  * Stage 1 of the brief: graph-derived orientation facts.
  *
- * v1 is best-effort: `boundaries_touched` is derived from the run's
- * boundary-violation zones; `exports_added` and `reachable_from` are honestly
- * stubbed (`0` / empty) because the file-level audit does not yet diff the
- * export surface or compute reachability. The fields are present and correctly
- * typed so values fill in later without a schema bump.
+ * `boundaries_touched` is derived from the run's boundary-violation zones;
+ * `reachable_from` is populated by the E2 impact closure (the affected-not-shown
+ * set: modules the changed code is reachable from / affects, none in the diff).
+ * `exports_added` / `api_width_delta` stay honestly stubbed (`0`) until the
+ * export-surface delta lands (E3). The fields are present and correctly typed so
+ * values fill in later without a schema bump.
  */
 export interface GraphFacts {
 /**
@@ -8517,8 +8520,9 @@ exports_added: number
  */
 api_width_delta: number
 /**
- * Entry points or modules the changed code is reachable from. Empty in v1
- * (reachability is not yet computed on the file-level audit path).
+ * Root-relative paths of modules the changed code is reachable from / affects
+ * (the impact closure's affected-but-not-in-diff set), deduped and sorted.
+ * Empty when no graph was retained or nothing depends on the changed files.
  */
 reachable_from: string[]
 /**
@@ -8526,6 +8530,49 @@ reachable_from: string[]
  * Derived from the run's boundary-violation findings.
  */
 boundaries_touched: string[]
+}
+/**
+ * Stage 3 of the brief: the impact closure (E2). The transitive
+ * affected-but-not-in-diff set plus the coordination gap. The differentiator a
+ * diff tool fundamentally cannot do, because it has no graph.
+ *
+ * Honest scope (ADR-001, syntactic): the coordination gap is an attention
+ * pointer at the exact inter-module failure mode, NOT a correctness proof.
+ */
+export interface ImpactClosureFacts {
+/**
+ * Root-relative paths transitively affected by the changeset (reverse-deps +
+ * re-export chains) that are NOT in the diff, deduped and sorted.
+ */
+affected_not_shown: string[]
+/**
+ * Coordination gaps: a changed file exports a contract consumed by a module
+ * absent from the diff. One entry per (changed file, consumer) pair.
+ */
+coordination_gap: CoordinationGapFact[]
+}
+/**
+ * One coordination-gap entry: a changed file exports symbols consumed by a
+ * `consumer_file` that is NOT in the diff. Deduped per (changed, consumer) pair
+ * (firing-precision rule R2).
+ */
+export interface CoordinationGapFact {
+/**
+ * Root-relative path of the changed file whose contract is consumed elsewhere.
+ */
+changed_file: string
+/**
+ * Root-relative path of the consumer module that is NOT in the diff.
+ */
+consumer_file: string
+/**
+ * The exported symbol names the consumer references, sorted.
+ */
+consumed_symbols: string[]
+/**
+ * Honest scope note: this is a syntactic attention pointer, not a proof.
+ */
+note: string
 }
 /**
  * Single CodeClimate-compatible issue inside [`CodeClimateOutput`].

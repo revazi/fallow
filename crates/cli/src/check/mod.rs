@@ -250,6 +250,11 @@ pub struct TraceOptions {
     pub trace_export: Option<String>,
     pub trace_file: Option<String>,
     pub trace_dependency: Option<String>,
+    /// E2 impact closure for a single file as the seed: walk `reverse_deps` +
+    /// re-export chains to the transitive affected set and report the
+    /// coordination gap. Powers the `inspect_target` MCP tool's `impact_closure`
+    /// evidence section.
+    pub impact_closure: Option<String>,
     pub performance: bool,
 }
 
@@ -258,6 +263,7 @@ impl TraceOptions {
         self.trace_export.is_some()
             || self.trace_file.is_some()
             || self.trace_dependency.is_some()
+            || self.impact_closure.is_some()
             || self.performance
     }
 }
@@ -315,6 +321,12 @@ pub struct CheckResult {
     pub timings: Option<fallow_core::trace::PipelineTimings>,
     /// Retained parse data for sharing with health (only populated when retain_modules_for_health=true).
     pub shared_parse: Option<crate::health::SharedParseData>,
+    /// Impact closure (E2) for the review brief: the transitive
+    /// affected-but-not-in-diff set plus coordination gaps. Populated by the
+    /// audit brief path from the retained graph against the changed-file set;
+    /// `None` outside the brief path. Holds root-relative paths so it survives
+    /// the graph drop and serializes directly.
+    pub impact_closure: Option<fallow_core::graph::ImpactClosurePaths>,
 }
 
 struct CheckAnalysisData {
@@ -672,6 +684,7 @@ pub fn execute_check(opts: &CheckOptions<'_>) -> Result<CheckResult, ExitCode> {
         baseline_matched,
         timings: trace_timings,
         shared_parse,
+        impact_closure: None,
     })
 }
 
@@ -1216,6 +1229,7 @@ mod tests {
             trace_export: None,
             trace_file: None,
             trace_dependency: None,
+            impact_closure: None,
             performance: false,
         };
         assert!(!t.any_active());
@@ -1227,6 +1241,7 @@ mod tests {
             trace_export: Some("src/foo.ts:bar".into()),
             trace_file: None,
             trace_dependency: None,
+            impact_closure: None,
             performance: false,
         };
         assert!(t.any_active());
@@ -1238,6 +1253,7 @@ mod tests {
             trace_export: None,
             trace_file: Some("src/foo.ts".into()),
             trace_dependency: None,
+            impact_closure: None,
             performance: false,
         };
         assert!(t.any_active());
@@ -1249,6 +1265,16 @@ mod tests {
             trace_export: None,
             trace_file: None,
             trace_dependency: Some("lodash".into()),
+            impact_closure: None,
+            performance: false,
+        };
+        assert!(t.any_active());
+
+        let t = TraceOptions {
+            trace_export: None,
+            trace_file: None,
+            trace_dependency: None,
+            impact_closure: Some("src/foo.ts".into()),
             performance: false,
         };
         assert!(t.any_active());
@@ -1260,6 +1286,7 @@ mod tests {
             trace_export: None,
             trace_file: None,
             trace_dependency: None,
+            impact_closure: None,
             performance: true,
         };
         assert!(t.any_active());

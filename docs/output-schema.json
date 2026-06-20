@@ -15588,6 +15588,10 @@
         },
         "security": {
           "$ref": "#/definitions/InspectEvidenceSection"
+        },
+        "impact_closure": {
+          "description": "E2 impact closure scoped to the inspected file as the seed: the transitive\naffected-but-not-in-diff set + coordination gap.",
+          "$ref": "#/definitions/InspectEvidenceSection"
         }
       },
       "required": [
@@ -15595,7 +15599,8 @@
         "dead_code",
         "duplication",
         "complexity",
-        "security"
+        "security",
+        "impact_closure"
       ]
     },
     "InspectEvidenceSection": {
@@ -15785,6 +15790,10 @@
         "graph_facts": {
           "description": "Stage 1: graph orientation facts.",
           "$ref": "#/definitions/GraphFacts"
+        },
+        "impact_closure": {
+          "description": "Stage 3: the impact closure (affected-not-shown + coordination gap).",
+          "$ref": "#/definitions/ImpactClosureFacts"
         }
       },
       "required": [
@@ -15792,7 +15801,8 @@
         "version",
         "command",
         "triage",
-        "graph_facts"
+        "graph_facts",
+        "impact_closure"
       ],
       "title": "fallow audit --brief --format json",
       "description": "The full `fallow audit --brief --format json` envelope. Carries the\ninformational verdict, the triage and graph-facts orientation stages, plus\nthe reused \"subtract\" section (the same dead-code / duplication / complexity\npayload `fallow audit --format json` emits)."
@@ -15894,7 +15904,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Entry points or modules the changed code is reachable from. Empty in v1\n(reachability is not yet computed on the file-level audit path)."
+          "description": "Root-relative paths of modules the changed code is reachable from / affects\n(the impact closure's affected-but-not-in-diff set), deduped and sorted.\nEmpty when no graph was retained or nothing depends on the changed files."
         },
         "boundaries_touched": {
           "type": "array",
@@ -15910,7 +15920,62 @@
         "reachable_from",
         "boundaries_touched"
       ],
-      "description": "Stage 1 of the brief: graph-derived orientation facts.\n\nv1 is best-effort: `boundaries_touched` is derived from the run's\nboundary-violation zones; `exports_added` and `reachable_from` are honestly\nstubbed (`0` / empty) because the file-level audit does not yet diff the\nexport surface or compute reachability. The fields are present and correctly\ntyped so values fill in later without a schema bump."
+      "description": "Stage 1 of the brief: graph-derived orientation facts.\n\n`boundaries_touched` is derived from the run's boundary-violation zones;\n`reachable_from` is populated by the E2 impact closure (the affected-not-shown\nset: modules the changed code is reachable from / affects, none in the diff).\n`exports_added` / `api_width_delta` stay honestly stubbed (`0`) until the\nexport-surface delta lands (E3). The fields are present and correctly typed so\nvalues fill in later without a schema bump."
+    },
+    "ImpactClosureFacts": {
+      "type": "object",
+      "properties": {
+        "affected_not_shown": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Root-relative paths transitively affected by the changeset (reverse-deps +\nre-export chains) that are NOT in the diff, deduped and sorted."
+        },
+        "coordination_gap": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CoordinationGapFact"
+          },
+          "description": "Coordination gaps: a changed file exports a contract consumed by a module\nabsent from the diff. One entry per (changed file, consumer) pair."
+        }
+      },
+      "required": [
+        "affected_not_shown",
+        "coordination_gap"
+      ],
+      "description": "Stage 3 of the brief: the impact closure (E2). The transitive\naffected-but-not-in-diff set plus the coordination gap. The differentiator a\ndiff tool fundamentally cannot do, because it has no graph.\n\nHonest scope (ADR-001, syntactic): the coordination gap is an attention\npointer at the exact inter-module failure mode, NOT a correctness proof."
+    },
+    "CoordinationGapFact": {
+      "type": "object",
+      "properties": {
+        "changed_file": {
+          "type": "string",
+          "description": "Root-relative path of the changed file whose contract is consumed elsewhere."
+        },
+        "consumer_file": {
+          "type": "string",
+          "description": "Root-relative path of the consumer module that is NOT in the diff."
+        },
+        "consumed_symbols": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The exported symbol names the consumer references, sorted."
+        },
+        "note": {
+          "type": "string",
+          "description": "Honest scope note: this is a syntactic attention pointer, not a proof."
+        }
+      },
+      "required": [
+        "changed_file",
+        "consumer_file",
+        "consumed_symbols",
+        "note"
+      ],
+      "description": "One coordination-gap entry: a changed file exports symbols consumed by a\n`consumer_file` that is NOT in the diff. Deduped per (changed, consumer) pair\n(firing-precision rule R2)."
     }
   }
 }

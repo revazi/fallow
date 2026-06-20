@@ -558,6 +558,9 @@ pub struct InspectEvidence {
     pub duplication: InspectEvidenceSection,
     pub complexity: InspectEvidenceSection,
     pub security: InspectEvidenceSection,
+    /// E2 impact closure scoped to the inspected file as the seed: the transitive
+    /// affected-but-not-in-diff set + coordination gap.
+    pub impact_closure: InspectEvidenceSection,
 }
 
 #[derive(Debug, Clone, Serialize)]

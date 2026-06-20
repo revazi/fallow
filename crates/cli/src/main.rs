@@ -582,6 +582,12 @@ enum Command {
         #[arg(long, value_name = "PACKAGE")]
         trace_dependency: Option<String>,
 
+        /// Compute the impact closure for a file (the transitive
+        /// affected-but-not-in-diff set + coordination gap). Walks reverse-deps
+        /// and re-export chains; powers the `inspect_target` MCP tool.
+        #[arg(long, value_name = "PATH")]
+        impact_closure: Option<String>,
+
         /// Show only the top N items per category
         #[arg(long)]
         top: Option<usize>,
@@ -3501,6 +3507,7 @@ fn dispatch_check_command(command: Command, dispatch: &DispatchContext<'_>) -> E
         trace,
         trace_file,
         trace_dependency,
+        impact_closure,
         top,
         file,
         ..
@@ -3517,6 +3524,7 @@ fn dispatch_check_command(command: Command, dispatch: &DispatchContext<'_>) -> E
                 trace_export: trace,
                 trace_file,
                 trace_dependency,
+                impact_closure,
                 performance: dispatch.cli.performance,
             },
             include_dupes,

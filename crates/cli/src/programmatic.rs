@@ -700,6 +700,7 @@ pub fn detect_dead_code(options: &DeadCodeOptions) -> ProgrammaticResult<serde_j
             trace_export: None,
             trace_file: None,
             trace_dependency: None,
+            impact_closure: None,
             performance: false,
         };
         let check_options = build_check_options(&resolved, options, &filters, &trace_opts);
@@ -729,6 +730,7 @@ pub fn detect_circular_dependencies(
             trace_export: None,
             trace_file: None,
             trace_dependency: None,
+            impact_closure: None,
             performance: false,
         };
         let check_options = build_check_options(&resolved, options, &filters, &trace_opts);
@@ -760,6 +762,7 @@ pub fn detect_boundary_violations(
             trace_export: None,
             trace_file: None,
             trace_dependency: None,
+            impact_closure: None,
             performance: false,
         };
         let check_options = build_check_options(&resolved, options, &filters, &trace_opts);

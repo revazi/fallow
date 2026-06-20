@@ -5,6 +5,7 @@
 
 mod build;
 mod cycles;
+mod impact_closure;
 mod namespace_aliases;
 mod namespace_re_exports;
 mod narrowing;
@@ -22,6 +23,9 @@ use crate::resolve::ResolvedModule;
 use fallow_types::discover::{DiscoveredFile, EntryPoint, FileId};
 use fallow_types::extract::ImportedName;
 
+pub use impact_closure::{
+    CoordinationGap, CoordinationGapPaths, ImpactClosure, ImpactClosurePaths,
+};
 pub use re_exports::GraphReExportCycle;
 pub use types::{ExportSymbol, ModuleNode, ReExportEdge, ReferenceKind, SymbolReference};
 

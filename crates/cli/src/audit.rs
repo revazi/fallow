@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use fallow_config::{AuditGate, OutputFormat};
 use fallow_core::git_env::clear_ambient_git_env;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::base_worktree::{
@@ -1236,6 +1236,14 @@ fn run_audit_head_analyses(
         None
     };
     let dupes = run_audit_dupes(opts, changed_since, Some(changed_files), dupes_files)?;
+    // Compute the E2 impact closure for the review brief BEFORE health consumes
+    // the shared parse (which owns the retained graph). Stored on the check result
+    // as root-relative paths so it survives the graph drop.
+    if opts.brief
+        && let Some(ref mut check) = check
+    {
+        check.impact_closure = compute_brief_impact_closure(opts.root, check, changed_files);
+    }
     let shared_parse = if share_dead_code_parse_with_health {
         check.as_mut().and_then(|r| r.shared_parse.take())
     } else {
@@ -1247,6 +1255,50 @@ fn run_audit_head_analyses(
         dupes,
         health,
     })
+}
+
+/// Compute the E2 impact closure for the review brief from the check result's
+/// retained graph against the changed-file set.
+///
+/// Maps each changed absolute path to its graph `FileId`, walks `reverse_deps` +
+/// re-export chains to the transitive affected set, and partitions into
+/// `{ in_diff, affected_not_shown, coordination_gap }`. Returns `None` when the
+/// graph was not retained (off the brief path) or no changed file maps to a
+/// known module (e.g. every changed file is non-source / outside the graph).
+fn compute_brief_impact_closure(
+    root: &std::path::Path,
+    check: &CheckResult,
+    changed_files: &FxHashSet<PathBuf>,
+) -> Option<fallow_core::graph::ImpactClosurePaths> {
+    let graph = check
+        .shared_parse
+        .as_ref()
+        .and_then(|sp| sp.analysis_output.as_ref())
+        .and_then(|out| out.graph.as_ref())?;
+
+    // Build an absolute-path -> FileId index from the graph's modules, normalizing
+    // separators so the git-diff changed set (which can carry either separator on
+    // Windows) matches the canonical module paths.
+    let path_to_id: FxHashMap<String, fallow_types::discover::FileId> = graph
+        .modules
+        .iter()
+        .map(|m| (m.path.to_string_lossy().replace('\\', "/"), m.file_id))
+        .collect();
+
+    let changed_ids: Vec<fallow_types::discover::FileId> = changed_files
+        .iter()
+        .filter_map(|p| {
+            let key = p.to_string_lossy().replace('\\', "/");
+            path_to_id.get(&key).copied()
+        })
+        .collect();
+
+    if changed_ids.is_empty() {
+        return None;
+    }
+
+    let closure = graph.impact_closure(&changed_ids);
+    Some(graph.closure_with_paths(&closure, root))
 }
 
 /// Run the audit pipeline: resolve base ref, run analyses, compute verdict.
@@ -1567,10 +1619,16 @@ fn run_audit_check<'a>(
     retain_modules_for_health: bool,
 ) -> Result<Option<CheckResult>, ExitCode> {
     let filters = IssueFilters::default();
+    // The review brief needs the module graph for the E2 impact closure, which
+    // rides the retained-modules path. Force retention on the brief path even
+    // when health does not share the dead-code parse (mismatched production
+    // modes), so the graph is available before health consumes the shared parse.
+    let retain_modules_for_health = retain_modules_for_health || opts.brief;
     let trace_opts = TraceOptions {
         trace_export: None,
         trace_file: None,
         trace_dependency: None,
+        impact_closure: None,
         performance: opts.performance,
     };
     match crate::check::execute_check(&CheckOptions {
