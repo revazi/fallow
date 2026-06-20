@@ -17,6 +17,13 @@ pub fn apply_rules(results: &mut fallow_core::results::AnalysisResults, config: 
         apply_base_file_rules(results, rules);
     }
 
+    apply_base_collection_rules(results, rules);
+}
+
+fn apply_base_collection_rules(
+    results: &mut fallow_core::results::AnalysisResults,
+    rules: &RulesConfig,
+) {
     if rules.unused_dependencies == Severity::Off {
         results.unused_dependencies.clear();
     }
