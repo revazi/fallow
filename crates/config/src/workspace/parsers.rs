@@ -252,12 +252,14 @@ pub(super) fn expand_workspace_glob_with_diagnostics(
             for path in paths.filter_map(Result::ok) {
                 collect_globbed_workspace_dir(
                     path,
-                    root,
-                    raw_pattern,
-                    canonical_root,
-                    ignore_patterns,
-                    &mut results,
-                    diagnostics,
+                    &mut GlobbedWorkspaceContext {
+                        root,
+                        raw_pattern,
+                        canonical_root,
+                        ignore_patterns,
+                        results: &mut results,
+                        diagnostics,
+                    },
                 );
             }
             results
@@ -269,18 +271,19 @@ pub(super) fn expand_workspace_glob_with_diagnostics(
     }
 }
 
+struct GlobbedWorkspaceContext<'a, 'b> {
+    root: &'a Path,
+    raw_pattern: &'a str,
+    canonical_root: &'a Path,
+    ignore_patterns: &'a globset::GlobSet,
+    results: &'b mut Vec<(PathBuf, PathBuf)>,
+    diagnostics: &'b mut Vec<WorkspaceDiagnostic>,
+}
+
 /// Process one non-recursive glob match: keep package directories, recover named
 /// packages under a bare grouping directory, or emit a no-package.json
 /// diagnostic. See issue #842 for the recovery path.
-fn collect_globbed_workspace_dir(
-    path: PathBuf,
-    root: &Path,
-    raw_pattern: &str,
-    canonical_root: &Path,
-    ignore_patterns: &globset::GlobSet,
-    results: &mut Vec<(PathBuf, PathBuf)>,
-    diagnostics: &mut Vec<WorkspaceDiagnostic>,
-) {
+fn collect_globbed_workspace_dir(path: PathBuf, ctx: &mut GlobbedWorkspaceContext<'_, '_>) {
     if !path.is_dir() {
         return;
     }
@@ -290,16 +293,23 @@ fn collect_globbed_workspace_dir(
     if path.join("package.json").exists() {
         if let Some(cp) = dunce::canonicalize(&path)
             .ok()
-            .filter(|cp| cp.starts_with(canonical_root))
+            .filter(|cp| cp.starts_with(ctx.canonical_root))
         {
-            results.push((path, cp));
+            ctx.results.push((path, cp));
         }
         return;
     }
-    let recovered = recover_nested_packages(&path, canonical_root, ignore_patterns);
+    let recovered = recover_nested_packages(&path, ctx.canonical_root, ctx.ignore_patterns);
     if recovered.is_empty() {
-        maybe_emit_glob_no_pkg_diag(root, raw_pattern, &path, ignore_patterns, diagnostics);
+        maybe_emit_glob_no_pkg_diag(
+            ctx.root,
+            ctx.raw_pattern,
+            &path,
+            ctx.ignore_patterns,
+            ctx.diagnostics,
+        );
     } else {
+        let raw_pattern = ctx.raw_pattern;
         // The user's glob is one level too shallow: it named the bare grouping
         // directory, not the package below it. Recovery keeps the deep package
         // discovered, but nudge the user toward the glob the package manager
@@ -311,7 +321,7 @@ fn collect_globbed_workspace_dir(
             path.display(),
             recovered.len()
         );
-        results.extend(recovered);
+        ctx.results.extend(recovered);
     }
 }
 
