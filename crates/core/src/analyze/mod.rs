@@ -851,6 +851,12 @@ fn populate_post_detection_findings(input: &mut PostDetectionInput<'_, '_>) {
         );
     }
 
+    populate_configured_security_findings(input);
+    populate_package_and_framework_findings(input);
+    populate_stale_suppression_findings(input);
+}
+
+fn populate_configured_security_findings(input: &mut PostDetectionInput<'_, '_>) {
     let request_receivers = input
         .config
         .security
@@ -871,7 +877,9 @@ fn populate_post_detection_findings(input: &mut PostDetectionInput<'_, '_>) {
         },
         input.results,
     );
+}
 
+fn populate_package_and_framework_findings(input: &mut PostDetectionInput<'_, '_>) {
     // Framework-convention detectors run BEFORE stale-suppression detection so
     // any inline suppression they consume (e.g. a `// fallow-ignore-next-line
     // unused-component-prop` honored by the prop/emit/component detectors) is
@@ -891,8 +899,6 @@ fn populate_post_detection_findings(input: &mut PostDetectionInput<'_, '_>) {
         line_offsets_by_file: input.line_offsets_by_file,
         results: input.results,
     });
-
-    populate_stale_suppression_findings(input);
 }
 
 /// Append stale-suppression and missing-reason findings, then record the
