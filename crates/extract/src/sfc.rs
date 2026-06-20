@@ -433,15 +433,15 @@ pub(crate) fn parse_sfc_to_module(
         combined.has_props_attrs_fallthrough = true;
     }
 
-    apply_template_usage(
+    apply_template_usage(TemplateUsageInput {
         kind,
         source,
-        &template_visible_imports,
-        &template_visible_bound_targets,
-        props_return_binding.as_deref(),
-        kind == SfcKind::Svelte && is_sveltekit_route_data_component(path),
-        &mut combined,
-    );
+        template_visible_imports: &template_visible_imports,
+        template_visible_bound_targets: &template_visible_bound_targets,
+        props_return_binding: props_return_binding.as_deref(),
+        credit_load_data: kind == SfcKind::Svelte && is_sveltekit_route_data_component(path),
+        combined: &mut combined,
+    });
 
     if need_complexity {
         append_template_complexity(kind, source, &mut combined);
@@ -934,15 +934,26 @@ fn build_generic_attr_probe_source(script: &SfcScript) -> Option<String> {
     ))
 }
 
-fn apply_template_usage(
+struct TemplateUsageInput<'a> {
     kind: SfcKind,
-    source: &str,
-    template_visible_imports: &FxHashSet<String>,
-    template_visible_bound_targets: &FxHashMap<String, String>,
-    props_return_binding: Option<&str>,
+    source: &'a str,
+    template_visible_imports: &'a FxHashSet<String>,
+    template_visible_bound_targets: &'a FxHashMap<String, String>,
+    props_return_binding: Option<&'a str>,
     credit_load_data: bool,
-    combined: &mut ModuleInfo,
-) {
+    combined: &'a mut ModuleInfo,
+}
+
+fn apply_template_usage(input: TemplateUsageInput<'_>) {
+    let TemplateUsageInput {
+        kind,
+        source,
+        template_visible_imports,
+        template_visible_bound_targets,
+        props_return_binding,
+        credit_load_data,
+        combined,
+    } = input;
     let credited = build_template_credited_set(
         template_visible_imports,
         props_return_binding,
