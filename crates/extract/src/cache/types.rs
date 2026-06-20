@@ -542,7 +542,15 @@ use crate::MemberKind;
 /// `toRefs(useStore())` destructures now record store member accesses. Warm
 /// caches from 180 can miss those synthetic `member_accesses` and surface false
 /// `unused-store-member` findings.
-pub(super) const CACHE_VERSION: u32 = 182;
+///
+/// Bumped to 183 for E11 (LLM-call sinks): the security sink argument collectors
+/// (`collect_arg_idents` / `collect_arg_source_paths`) now recurse into array
+/// elements (and the source-path collector into object properties), so taint
+/// riding an object-in-array argument (`messages: [{ content: userInput }]`, the
+/// canonical OpenAI / Anthropic chat shape) surfaces on `SinkSite.arg_idents` /
+/// `arg_source_paths`. Warm caches from 182 lack those captured identifiers and
+/// would miss source-backed candidates on the array-nested prompt shape.
+pub(super) const CACHE_VERSION: u32 = 183;
 
 /// Duplication token cache version. Bump when duplicate tokenization,
 /// normalization, or the on-disk token cache schema changes.

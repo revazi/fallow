@@ -23,8 +23,7 @@ fn trace_fixture(
     directions: TraceDirections,
     depth: u32,
 ) -> fallow_core::trace_chain::SymbolChainTrace {
-    let root = fixture_path(fixture);
-    let config = create_config(root.clone());
+    let config = create_config(fixture_path(fixture));
     let output = fallow_core::analyze_retaining_modules(&config, true, true)
         .expect("analysis should succeed");
     let graph = output.graph.as_ref().expect("graph should be retained");
