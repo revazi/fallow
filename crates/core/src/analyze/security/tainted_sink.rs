@@ -503,23 +503,11 @@ fn build_tainted_sink_finding(input: &TaintedSinkFindingInput<'_>) -> SecurityFi
     let node = input.node;
     let source = input.source;
     let (line, col) = input.sink_line_col;
-    let line_offsets_by_file = input.line_offsets_by_file;
-    let file_id = input.file_id;
     let url_shape = candidate_url_shape(&matcher.id, sink);
     let source_backed = source.is_some();
     let evidence =
         tainted_sink_evidence(matcher, sink, source.map(|(_, title, _)| title), url_shape);
-
-    // Arg-level source-read anchor (issue #1093): for a source-backed
-    // finding, point the trace's source node at the real read. The
-    // binding path carries the read's byte offset (`Some(span)`); a `0`
-    // span (synthetic framework-param / helper-return source) and the
-    // direct path (`None`, the read sits inside the sink statement) both
-    // fall back to the sink line/col rather than a spurious line. `None`
-    // for module-level findings keeps the trace honest (role
-    // `ModuleSource`, set by the ranking pass).
-    let source_read = source
-        .map(|(_, _, span)| source_read_location(span, line_offsets_by_file, file_id, (line, col)));
+    let source_read = tainted_sink_source_read(input);
 
     // Slot 1 (source kind) is the stable catalogue source id; slot 2
     // (sink) carries the callee path the evidence already names. The
@@ -555,6 +543,24 @@ fn build_tainted_sink_finding(input: &TaintedSinkFindingInput<'_>) -> SecurityFi
         runtime: None,
         attack_surface: None,
     }
+}
+
+fn tainted_sink_source_read(input: &TaintedSinkFindingInput<'_>) -> Option<(u32, u32)> {
+    // Arg-level source-read anchor (issue #1093): for a source-backed finding,
+    // point the trace's source node at the real read. The binding path carries
+    // the read's byte offset (`Some(span)`); a `0` span (synthetic
+    // framework-param / helper-return source) and the direct path (`None`, the
+    // read sits inside the sink statement) both fall back to the sink line/col
+    // rather than a spurious line. `None` for module-level findings keeps the
+    // trace honest (role `ModuleSource`, set by the ranking pass).
+    input.source.map(|(_, _, span)| {
+        source_read_location(
+            span,
+            input.line_offsets_by_file,
+            input.file_id,
+            input.sink_line_col,
+        )
+    })
 }
 
 /// Run the catalogue-driven tainted-sink detector. Returns the findings plus the
