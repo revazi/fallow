@@ -2233,29 +2233,7 @@ fn collect_propagated_member_accesses(
         mut whole_object_used_exports,
     } = collect_direct_member_accesses(input.resolved_modules);
 
-    propagate_playwright_fixture_accesses(
-        input.graph,
-        input.resolved_modules,
-        &mut accessed_members,
-    );
-    propagate_factory_call_accesses(input.graph, input.resolved_modules, &mut accessed_members);
-    propagate_fluent_chain_accesses(input.graph, input.resolved_modules, &mut accessed_members);
-    propagate_fluent_chain_new_accesses(input.graph, input.resolved_modules, &mut accessed_members);
-    propagate_accesses_through_typed_instance_bindings(
-        input.graph,
-        input.resolved_modules,
-        input.modules,
-        &mut accessed_members,
-        &mut whole_object_used_exports,
-    );
-    propagate_accesses_through_re_exports(input.graph, &mut accessed_members);
-    propagate_whole_object_through_re_exports(input.graph, &mut whole_object_used_exports);
-    let instance_targets = build_instance_export_targets(input.graph, input.resolved_modules);
-    propagate_accesses_through_instance_exports(
-        &instance_targets,
-        &mut accessed_members,
-        &mut whole_object_used_exports,
-    );
+    propagate_common_member_accesses(input, &mut accessed_members, &mut whole_object_used_exports);
 
     propagate_interface_member_accesses(
         &heritage_context.interface_to_implementers,
@@ -2281,6 +2259,32 @@ fn collect_propagated_member_accesses(
         self_accessed_members,
         whole_object_used_exports,
     }
+}
+
+fn propagate_common_member_accesses(
+    input: UnusedMemberScanInput<'_>,
+    accessed_members: &mut FxHashMap<ExportKey, FxHashSet<String>>,
+    whole_object_used_exports: &mut FxHashSet<ExportKey>,
+) {
+    propagate_playwright_fixture_accesses(input.graph, input.resolved_modules, accessed_members);
+    propagate_factory_call_accesses(input.graph, input.resolved_modules, accessed_members);
+    propagate_fluent_chain_accesses(input.graph, input.resolved_modules, accessed_members);
+    propagate_fluent_chain_new_accesses(input.graph, input.resolved_modules, accessed_members);
+    propagate_accesses_through_typed_instance_bindings(
+        input.graph,
+        input.resolved_modules,
+        input.modules,
+        accessed_members,
+        whole_object_used_exports,
+    );
+    propagate_accesses_through_re_exports(input.graph, accessed_members);
+    propagate_whole_object_through_re_exports(input.graph, whole_object_used_exports);
+    let instance_targets = build_instance_export_targets(input.graph, input.resolved_modules);
+    propagate_accesses_through_instance_exports(
+        &instance_targets,
+        accessed_members,
+        whole_object_used_exports,
+    );
 }
 
 fn should_skip_export_member_scan(
