@@ -279,7 +279,11 @@ impl ConfigCandidateIndex {
         Self { dirs }
     }
 
-    fn dir_contains(&self, dir: &Path, name: &OsStr) -> bool {
+    /// Whether the directory `dir` contains a file named `name`, per the files
+    /// the discovery walk collected. Used by file-based plugin activation to
+    /// avoid a per-directory filesystem `read` probe.
+    #[must_use]
+    pub fn dir_contains(&self, dir: &Path, name: &OsStr) -> bool {
         self.dirs.get(dir).is_some_and(|names| names.contains(name))
     }
 

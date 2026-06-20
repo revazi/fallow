@@ -454,8 +454,14 @@ impl PluginRegistry {
 
         let all_deps = pkg.all_dependency_names();
         let script_packages = script_activation_packages(pkg, root, &all_deps, production_mode);
-        let active =
-            self.collect_active_plugins(pkg, root, discovered_files, &all_deps, &script_packages);
+        let active = self.collect_active_plugins(
+            pkg,
+            root,
+            discovered_files,
+            &all_deps,
+            &script_packages,
+            candidate_index,
+        );
 
         log_active_plugins(&active);
 
@@ -573,8 +579,14 @@ impl PluginRegistry {
             .map(|(abs_path, _)| abs_path.clone())
             .collect();
 
-        let active =
-            self.collect_active_plugins(pkg, root, &workspace_files, &all_deps, &script_packages);
+        let active = self.collect_active_plugins(
+            pkg,
+            root,
+            &workspace_files,
+            &all_deps,
+            &script_packages,
+            candidate_index,
+        );
 
         log_active_plugins(&active);
 
@@ -671,11 +683,12 @@ impl PluginRegistry {
         discovered_files: &[PathBuf],
         all_deps: &[String],
         script_packages: &FxHashSet<String>,
+        candidate_index: Option<&ConfigCandidateIndex>,
     ) -> Vec<&'a dyn Plugin> {
         self.plugins
             .iter()
             .filter(|p| {
-                p.is_enabled_with_files(all_deps, root, discovered_files)
+                p.is_enabled_with_files(all_deps, root, discovered_files, candidate_index)
                     || p.is_enabled_with_scripts(script_packages, root)
                     || p.is_enabled_with_package_json(pkg, root)
             })

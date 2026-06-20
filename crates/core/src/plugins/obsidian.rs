@@ -47,6 +47,7 @@ impl Plugin for ObsidianPlugin {
         deps: &[String],
         root: &Path,
         discovered_files: &[PathBuf],
+        candidate_index: Option<&super::registry::ConfigCandidateIndex>,
     ) -> bool {
         if self.is_enabled_with_deps(deps, root) {
             return true;
@@ -54,6 +55,16 @@ impl Plugin for ObsidianPlugin {
 
         manifest_candidates(root, discovered_files)
             .into_iter()
+            // See browser_extension: outside production mode, only read the
+            // `manifest.json` files the discovery walk actually found instead of
+            // probing every candidate directory. In production (`None`) fall
+            // back to probing every candidate.
+            .filter(|path| match candidate_index {
+                Some(index) => path.parent().is_some_and(|dir| {
+                    index.dir_contains(dir, std::ffi::OsStr::new("manifest.json"))
+                }),
+                None => true,
+            })
             .any(|path| {
                 let Ok(source) = std::fs::read_to_string(path) else {
                     return false;
@@ -231,7 +242,42 @@ mod tests {
         )
         .expect("manifest");
 
-        assert!(plugin.is_enabled_with_files(&[], tmp.path(), &[tmp.path().join("src/main.ts")]));
+        assert!(plugin.is_enabled_with_files(
+            &[],
+            tmp.path(),
+            &[tmp.path().join("src/main.ts")],
+            None
+        ));
+    }
+
+    #[test]
+    fn index_activation_matches_filesystem_when_manifest_is_captured() {
+        // Mirrors the browser_extension parity test: the non-production fast path
+        // (Some(index)) reaches the same verdict as the production filesystem path
+        // (None) when the walk captured the manifest, and a manifest present on
+        // disk but absent from the index does NOT activate on the index path.
+        let plugin = ObsidianPlugin;
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let manifest = tmp.path().join("manifest.json");
+        std::fs::write(
+            &manifest,
+            r#"{"id":"work-terminal","name":"Work Terminal","version":"1.0.0","minAppVersion":"1.5.0"}"#,
+        )
+        .expect("manifest");
+        let discovered = [tmp.path().join("src/main.ts")];
+
+        let index_with = crate::plugins::registry::ConfigCandidateIndex::build(std::iter::once(
+            manifest.as_path(),
+        ));
+        let index_without =
+            crate::plugins::registry::ConfigCandidateIndex::build(std::iter::empty());
+
+        // Filesystem path activates (manifest exists on disk).
+        assert!(plugin.is_enabled_with_files(&[], tmp.path(), &discovered, None));
+        // Index path with the manifest captured: same verdict.
+        assert!(plugin.is_enabled_with_files(&[], tmp.path(), &discovered, Some(&index_with)));
+        // Index path WITHOUT the manifest (e.g. gitignored): does not activate.
+        assert!(!plugin.is_enabled_with_files(&[], tmp.path(), &discovered, Some(&index_without)));
     }
 
     #[test]

@@ -33,6 +33,7 @@ impl Plugin for VarlockPlugin {
         deps: &[String],
         root: &Path,
         discovered_files: &[PathBuf],
+        _candidate_index: Option<&super::registry::ConfigCandidateIndex>,
     ) -> bool {
         self.is_enabled_with_deps(deps, root)
             || discovered_files.iter().any(|path| is_env_schema_path(path))
@@ -163,7 +164,7 @@ mod tests {
         let plugin = VarlockPlugin;
         let files = vec![PathBuf::from("/repo/apps/web/.env.schema")];
 
-        assert!(plugin.is_enabled_with_files(&[], Path::new("/repo"), &files));
+        assert!(plugin.is_enabled_with_files(&[], Path::new("/repo"), &files, None));
     }
 
     #[test]

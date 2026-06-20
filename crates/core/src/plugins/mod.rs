@@ -653,11 +653,19 @@ pub trait Plugin: Send + Sync {
     /// Most plugins only need dependency/config activation. Convention-only tools
     /// can override this to activate from discovered source filenames without
     /// forcing a separate filesystem walk.
+    ///
+    /// `candidate_index` is the discovery walk's in-memory listing of source +
+    /// non-source config-candidate files (`Some` outside production mode, `None`
+    /// in production). A plugin that activates on a non-source sentinel file
+    /// (`manifest.json`, `.env.schema`) can consult it to avoid a per-directory
+    /// filesystem probe; when it is `None`, the plugin falls back to the
+    /// filesystem.
     fn is_enabled_with_files(
         &self,
         deps: &[String],
         root: &Path,
         _discovered_files: &[PathBuf],
+        _candidate_index: Option<&registry::ConfigCandidateIndex>,
     ) -> bool {
         self.is_enabled_with_deps(deps, root)
     }
