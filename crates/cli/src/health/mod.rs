@@ -2893,28 +2893,14 @@ fn build_health_output_parts(
     let report = build_health_report_from_pipeline(
         opts,
         &action_ctx,
-        HealthReportPipelineInput {
-            report_coverage_gaps: build.report_coverage_gaps,
-            findings,
-            threshold_overrides: build.threshold_overrides.clone(),
-            files_analyzed: build.files_analyzed,
-            total_functions: build.total_functions,
-            total_above_threshold: build.total_above_threshold,
-            max_cyclomatic: build.max_cyclomatic,
-            max_cognitive: build.max_cognitive,
-            max_crap: build.max_crap,
+        build_health_report_pipeline_input(
+            build,
             analysis_data,
             vital_data,
-            hotspots: derived_sections.hotspots,
-            hotspot_summary: derived_sections.hotspot_summary,
-            targets: derived_sections.targets,
-            target_thresholds: derived_sections.target_thresholds,
-            has_istanbul_coverage: build.has_istanbul_coverage,
+            derived_sections,
+            findings,
             framework_health,
-            sev_critical: build.sev_critical,
-            sev_high: build.sev_high,
-            sev_moderate: build.sev_moderate,
-        },
+        ),
     );
 
     HealthOutputParts {
@@ -2922,6 +2908,38 @@ fn build_health_output_parts(
         grouping,
         timings,
         coverage_gaps_has_findings,
+    }
+}
+
+fn build_health_report_pipeline_input(
+    build: &HealthOutputBuildInput<'_>,
+    analysis_data: HealthAnalysisData,
+    vital_data: HealthVitalData,
+    derived_sections: HealthDerivedSections,
+    findings: Vec<ComplexityViolation>,
+    framework_health: Option<crate::health_types::FrameworkHealthDiagnostics>,
+) -> HealthReportPipelineInput {
+    HealthReportPipelineInput {
+        report_coverage_gaps: build.report_coverage_gaps,
+        findings,
+        threshold_overrides: build.threshold_overrides.clone(),
+        files_analyzed: build.files_analyzed,
+        total_functions: build.total_functions,
+        total_above_threshold: build.total_above_threshold,
+        max_cyclomatic: build.max_cyclomatic,
+        max_cognitive: build.max_cognitive,
+        max_crap: build.max_crap,
+        analysis_data,
+        vital_data,
+        hotspots: derived_sections.hotspots,
+        hotspot_summary: derived_sections.hotspot_summary,
+        targets: derived_sections.targets,
+        target_thresholds: derived_sections.target_thresholds,
+        has_istanbul_coverage: build.has_istanbul_coverage,
+        framework_health,
+        sev_critical: build.sev_critical,
+        sev_high: build.sev_high,
+        sev_moderate: build.sev_moderate,
     }
 }
 
