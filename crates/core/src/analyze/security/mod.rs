@@ -93,6 +93,39 @@ fn build_actions() -> Vec<IssueAction> {
     })]
 }
 
+fn build_client_server_leak_finding(
+    evidence: String,
+    trace: Vec<TraceHop>,
+    candidate: SecurityCandidate,
+) -> SecurityFinding {
+    let category = candidate.sink.category.clone();
+
+    SecurityFinding {
+        finding_id: String::new(),
+        kind: SecurityFindingKind::ClientServerLeak,
+        category,
+        cwe: None,
+        path: candidate.sink.path.clone(),
+        line: candidate.sink.line,
+        col: candidate.sink.col,
+        evidence,
+        // The client-server-leak rule is graph-structural, not source-to-sink;
+        // source-backing is a tainted-sink concept (issue #859).
+        source_backed: false,
+        // client-server-leak is module-level by construction (no arg-level read).
+        source_read: None,
+        severity: SecuritySeverity::Low,
+        trace,
+        actions: build_actions(),
+        dead_code: None,
+        reachability: None,
+        candidate,
+        taint_flow: None,
+        runtime: None,
+        attack_surface: None,
+    }
+}
+
 /// The React Server Components client-boundary directive.
 const USE_CLIENT: &str = "use client";
 
@@ -539,30 +572,7 @@ fn build_leak_finding(
     // the client boundary file; the boundary slot is filled by the ranking pass.
     let candidate = client_leak_candidate(anchor.path.clone(), anchor.line, anchor.col, None);
 
-    SecurityFinding {
-        finding_id: String::new(),
-        kind: SecurityFindingKind::ClientServerLeak,
-        category: None,
-        cwe: None,
-        path: candidate.sink.path.clone(),
-        line: candidate.sink.line,
-        col: candidate.sink.col,
-        evidence,
-        // The client-server-leak rule is graph-structural, not source-to-sink;
-        // source-backing is a tainted-sink concept (issue #859).
-        source_backed: false,
-        // client-server-leak is module-level by construction (no arg-level read).
-        source_read: None,
-        severity: SecuritySeverity::Low,
-        trace,
-        actions: build_actions(),
-        dead_code: None,
-        reachability: None,
-        candidate,
-        taint_flow: None,
-        runtime: None,
-        attack_surface: None,
-    }
+    build_client_server_leak_finding(evidence, trace, candidate)
 }
 
 /// Build a finding for the SERVER-ONLY sink: a `"use client"` file whose
@@ -609,27 +619,7 @@ fn build_server_only_finding(
         Some(SERVER_ONLY_CATEGORY.to_owned()),
     );
 
-    SecurityFinding {
-        finding_id: String::new(),
-        kind: SecurityFindingKind::ClientServerLeak,
-        category: Some(SERVER_ONLY_CATEGORY.to_owned()),
-        cwe: None,
-        path: candidate.sink.path.clone(),
-        line: candidate.sink.line,
-        col: candidate.sink.col,
-        evidence,
-        source_backed: false,
-        source_read: None,
-        severity: SecuritySeverity::Low,
-        trace,
-        actions: build_actions(),
-        dead_code: None,
-        reachability: None,
-        candidate,
-        taint_flow: None,
-        runtime: None,
-        attack_surface: None,
-    }
+    build_client_server_leak_finding(evidence, trace, candidate)
 }
 
 /// Build the candidate record for a `client-server-leak` finding. These findings
@@ -679,33 +669,13 @@ fn build_direct_finding(
          code (it may be guarded, server-only, or build-time-stripped)."
     );
     let candidate = client_leak_candidate(path.clone(), 1, 0, None);
-    SecurityFinding {
-        finding_id: String::new(),
-        kind: SecurityFindingKind::ClientServerLeak,
-        category: None,
-        cwe: None,
-        path: path.clone(),
+    let trace = vec![TraceHop {
+        path,
         line: 1,
         col: 0,
-        evidence,
-        source_backed: false,
-        // client-server-leak is module-level by construction (no arg-level read).
-        source_read: None,
-        severity: SecuritySeverity::Low,
-        trace: vec![TraceHop {
-            path,
-            line: 1,
-            col: 0,
-            role: TraceHopRole::SecretSource,
-        }],
-        actions: build_actions(),
-        dead_code: None,
-        reachability: None,
-        candidate,
-        taint_flow: None,
-        runtime: None,
-        attack_surface: None,
-    }
+        role: TraceHopRole::SecretSource,
+    }];
+    build_client_server_leak_finding(evidence, trace, candidate)
 }
 
 /// Build a finding for the direct SERVER-ONLY case: a `"use client"` file that is
@@ -723,32 +693,13 @@ fn build_direct_server_only_finding(graph: &ModuleGraph, client_id: FileId) -> S
         .to_owned();
     let candidate =
         client_leak_candidate(path.clone(), 1, 0, Some(SERVER_ONLY_CATEGORY.to_owned()));
-    SecurityFinding {
-        finding_id: String::new(),
-        kind: SecurityFindingKind::ClientServerLeak,
-        category: Some(SERVER_ONLY_CATEGORY.to_owned()),
-        cwe: None,
-        path: path.clone(),
+    let trace = vec![TraceHop {
+        path,
         line: 1,
         col: 0,
-        evidence,
-        source_backed: false,
-        source_read: None,
-        severity: SecuritySeverity::Low,
-        trace: vec![TraceHop {
-            path,
-            line: 1,
-            col: 0,
-            role: TraceHopRole::Sink,
-        }],
-        actions: build_actions(),
-        dead_code: None,
-        reachability: None,
-        candidate,
-        taint_flow: None,
-        runtime: None,
-        attack_surface: None,
-    }
+        role: TraceHopRole::Sink,
+    }];
+    build_client_server_leak_finding(evidence, trace, candidate)
 }
 
 #[cfg(test)]
