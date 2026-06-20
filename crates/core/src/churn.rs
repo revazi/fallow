@@ -637,49 +637,104 @@ fn parse_git_log_events(stdout: &str, root: &Path) -> ChurnEventState {
         .unwrap_or_default()
         .as_secs();
 
-    let mut files: FxHashMap<PathBuf, FileEvents> = FxHashMap::default();
-    let mut author_pool: Vec<String> = Vec::new();
-    let mut author_index: FxHashMap<String, u32> = FxHashMap::default();
-    let mut current_timestamp: Option<u64> = None;
-    let mut current_author_idx: Option<u32> = None;
+    let mut parser = GitLogEventParser::new(root, now_secs);
 
     for line in stdout.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
+        parser.consume_line(line);
+    }
 
-        if let Some((ts_str, email)) = line.split_once('|')
-            && let Ok(ts) = ts_str.parse::<u64>()
-        {
-            current_timestamp = Some(ts);
-            current_author_idx = Some(intern_author(email, &mut author_pool, &mut author_index));
-            continue;
-        }
+    parser.finish()
+}
 
-        if let Ok(ts) = line.parse::<u64>() {
-            current_timestamp = Some(ts);
-            current_author_idx = None;
-            continue;
-        }
+struct GitLogEventParser<'a> {
+    root: &'a Path,
+    now_secs: u64,
+    files: FxHashMap<PathBuf, FileEvents>,
+    author_pool: Vec<String>,
+    author_index: FxHashMap<String, u32>,
+    current_timestamp: Option<u64>,
+    current_author_idx: Option<u32>,
+}
 
-        if let Some((added, deleted, path)) = parse_numstat_line(line) {
-            let abs_path = root.join(path);
-            let ts = current_timestamp.unwrap_or(now_secs);
-            files
-                .entry(abs_path)
-                .or_insert_with(|| FileEvents { events: Vec::new() })
-                .events
-                .push(CachedCommitEvent {
-                    timestamp: ts,
-                    lines_added: added,
-                    lines_deleted: deleted,
-                    author_idx: current_author_idx,
-                });
+impl<'a> GitLogEventParser<'a> {
+    fn new(root: &'a Path, now_secs: u64) -> Self {
+        Self {
+            root,
+            now_secs,
+            files: FxHashMap::default(),
+            author_pool: Vec::new(),
+            author_index: FxHashMap::default(),
+            current_timestamp: None,
+            current_author_idx: None,
         }
     }
 
-    ChurnEventState { files, author_pool }
+    fn consume_line(&mut self, line: &str) {
+        let line = line.trim();
+        if line.is_empty() {
+            return;
+        }
+
+        if self.record_commit_header(line) {
+            return;
+        }
+        if self.record_legacy_timestamp(line) {
+            return;
+        }
+        self.record_numstat(line);
+    }
+
+    fn record_commit_header(&mut self, line: &str) -> bool {
+        let Some((ts_str, email)) = line.split_once('|') else {
+            return false;
+        };
+        let Ok(ts) = ts_str.parse::<u64>() else {
+            return false;
+        };
+
+        self.current_timestamp = Some(ts);
+        self.current_author_idx = Some(intern_author(
+            email,
+            &mut self.author_pool,
+            &mut self.author_index,
+        ));
+        true
+    }
+
+    fn record_legacy_timestamp(&mut self, line: &str) -> bool {
+        let Ok(ts) = line.parse::<u64>() else {
+            return false;
+        };
+
+        self.current_timestamp = Some(ts);
+        self.current_author_idx = None;
+        true
+    }
+
+    fn record_numstat(&mut self, line: &str) {
+        let Some((added, deleted, path)) = parse_numstat_line(line) else {
+            return;
+        };
+
+        let ts = self.current_timestamp.unwrap_or(self.now_secs);
+        self.files
+            .entry(self.root.join(path))
+            .or_insert_with(|| FileEvents { events: Vec::new() })
+            .events
+            .push(CachedCommitEvent {
+                timestamp: ts,
+                lines_added: added,
+                lines_deleted: deleted,
+                author_idx: self.current_author_idx,
+            });
+    }
+
+    fn finish(self) -> ChurnEventState {
+        ChurnEventState {
+            files: self.files,
+            author_pool: self.author_pool,
+        }
+    }
 }
 
 /// Aggregate one file's raw commit events into a [`FileChurn`], applying
