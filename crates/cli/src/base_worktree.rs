@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use fallow_core::git_env::clear_ambient_git_env;
@@ -22,14 +23,7 @@ impl BaseWorktree {
         {
             return Some(worktree);
         }
-        let path = std::env::temp_dir().join(format!(
-            "fallow-audit-base-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()?
-                .as_nanos()
-        ));
+        let path = non_reusable_worktree_path()?;
         let mut guard = WorktreeCleanupGuard::new(repo_root, &path);
         let mut command = Command::new("git");
         command
@@ -108,6 +102,28 @@ impl BaseWorktree {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+/// Build a unique temp path for a non-reusable base worktree.
+///
+/// The pid stays the FIRST `-`-separated segment so [`audit_worktree_pid`] and
+/// the orphan sweep keep working. A process-global monotonic counter is the
+/// final segment: the wall-clock nanos read is NOT monotonic and repeats across
+/// threads, so two `audit` runs in one process (e.g. parallel unit tests, or a
+/// future in-process batch) could otherwise mint the same path and race on
+/// `git worktree add`, where the loser fails and the audit aborts with a generic
+/// error. The counter makes every path distinct regardless of clock resolution.
+fn non_reusable_worktree_path() -> Option<PathBuf> {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some(std::env::temp_dir().join(format!(
+        "fallow-audit-base-{}-{nanos}-{seq}",
+        std::process::id()
+    )))
 }
 
 /// RAII cleanup guard for a freshly-created git worktree directory.
@@ -780,5 +796,48 @@ impl Drop for BaseWorktree {
         }
         remove_audit_worktree(&self.repo_root, &self.path);
         let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Many threads minting a non-reusable worktree path at the same instant
+    /// must each get a distinct path. Before the monotonic counter, concurrent
+    /// callers read the same non-monotonic `nanos` and collided, so two parallel
+    /// `audit` runs in one process raced on `git worktree add` and one aborted
+    /// with a generic error (a flaky exit 2 under parallel unit tests).
+    #[test]
+    fn non_reusable_worktree_paths_are_unique_under_concurrency() {
+        const N: usize = 64;
+        let barrier = std::sync::Barrier::new(N);
+        let paths = std::sync::Mutex::new(Vec::with_capacity(N));
+        std::thread::scope(|s| {
+            for _ in 0..N {
+                let barrier = &barrier;
+                let paths = &paths;
+                s.spawn(move || {
+                    barrier.wait();
+                    let path = non_reusable_worktree_path().expect("path should build");
+                    paths.lock().unwrap().push(path);
+                });
+            }
+        });
+        let mut paths = paths.into_inner().unwrap();
+        assert_eq!(paths.len(), N);
+        paths.sort();
+        paths.dedup();
+        assert_eq!(paths.len(), N, "non-reusable worktree paths collided");
+    }
+
+    /// The pid stays the first segment so orphan-sweep parsing keeps working.
+    #[test]
+    fn non_reusable_worktree_path_pid_is_parseable() {
+        let path = non_reusable_worktree_path().expect("path should build");
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert!(is_fallow_audit_worktree_path(&path));
+        assert!(!is_reusable_audit_worktree_path(&path));
+        assert_eq!(audit_worktree_pid(name), Some(std::process::id()));
     }
 }
