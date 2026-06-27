@@ -8171,6 +8171,10 @@ mod tests {
             importance: vec![],
             watermark: None,
             warnings: vec![],
+            actionable: true,
+            actionability_reason: None,
+            actionability_verdict: None,
+            provenance: crate::health_types::RuntimeCoverageProvenance::default(),
         };
 
         apply_runtime_coverage_filters(
@@ -8229,6 +8233,10 @@ mod tests {
             importance: vec![],
             watermark: None,
             warnings: vec![],
+            actionable: true,
+            actionability_reason: None,
+            actionability_verdict: None,
+            provenance: crate::health_types::RuntimeCoverageProvenance::default(),
         };
 
         apply_runtime_coverage_filters(
@@ -8274,6 +8282,10 @@ mod tests {
             importance: vec![],
             watermark: None,
             warnings: vec![],
+            actionable: true,
+            actionability_reason: None,
+            actionability_verdict: None,
+            provenance: crate::health_types::RuntimeCoverageProvenance::default(),
         };
 
         apply_runtime_coverage_filters(
@@ -8313,6 +8325,10 @@ mod tests {
             importance: vec![],
             watermark: None,
             warnings: vec![],
+            actionable: true,
+            actionability_reason: None,
+            actionability_verdict: None,
+            provenance: crate::health_types::RuntimeCoverageProvenance::default(),
         };
 
         apply_runtime_coverage_filters(
@@ -8341,6 +8357,10 @@ mod tests {
             importance: vec![],
             watermark: None,
             warnings: vec![],
+            actionable: true,
+            actionability_reason: None,
+            actionability_verdict: None,
+            provenance: crate::health_types::RuntimeCoverageProvenance::default(),
         }
     }
 
@@ -8570,6 +8590,10 @@ mod tests {
             importance: vec![],
             watermark: None,
             warnings: vec![],
+            actionable: true,
+            actionability_reason: None,
+            actionability_verdict: None,
+            provenance: crate::health_types::RuntimeCoverageProvenance::default(),
         };
 
         apply_runtime_coverage_filters(
@@ -8617,6 +8641,10 @@ mod tests {
             importance: vec![],
             watermark: None,
             warnings: vec![],
+            actionable: true,
+            actionability_reason: None,
+            actionability_verdict: None,
+            provenance: crate::health_types::RuntimeCoverageProvenance::default(),
         };
 
         apply_runtime_coverage_filters(&mut report, &RuntimeCoverageFilterContext::new(root));
@@ -8648,6 +8676,10 @@ mod tests {
             importance: vec![],
             watermark: Some(crate::health_types::RuntimeCoverageWatermark::LicenseExpiredGrace),
             warnings: vec![],
+            actionable: true,
+            actionability_reason: None,
+            actionability_verdict: None,
+            provenance: crate::health_types::RuntimeCoverageProvenance::default(),
         };
 
         apply_runtime_coverage_filters(
@@ -8753,6 +8785,10 @@ mod tests {
                     importance: vec![],
                     watermark: None,
                     warnings: vec![],
+                    actionable: true,
+                    actionability_reason: None,
+                    actionability_verdict: None,
+                    provenance: crate::health_types::RuntimeCoverageProvenance::default(),
                 }),
                 ..crate::health_types::HealthReport::default()
             },
