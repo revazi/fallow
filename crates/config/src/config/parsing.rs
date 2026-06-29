@@ -930,6 +930,13 @@ impl FallowConfig {
                 threshold_override_errors.join("\n  - ")
             ));
         }
+        if let Some(pattern) = &config.unused_component_props.ignore_pattern
+            && let Err(e) = regex::Regex::new(pattern)
+        {
+            return Err(miette::miette!(
+                "invalid config:\n  - unusedComponentProps.ignorePattern is not a valid regex: {e}"
+            ));
+        }
 
         Ok(config)
     }
@@ -4465,6 +4472,56 @@ thresholdOverrides = [
         let config = FallowConfig::load(&path).unwrap();
         assert_eq!(config.ignore_catalog_references.len(), 1);
         assert!(config.ignore_catalog_references[0].consumer.is_none());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn load_accepts_unused_component_props_ignore_pattern() {
+        let dir = test_dir("unused-component-props-ignore-pattern");
+        let path = dir.path().join(".fallowrc.json");
+        std::fs::write(
+            &path,
+            r#"{"unusedComponentProps": {"ignorePattern": "^_"}}"#,
+        )
+        .unwrap();
+
+        let config = FallowConfig::load(&path).unwrap();
+        assert_eq!(
+            config.unused_component_props.ignore_pattern.as_deref(),
+            Some("^_")
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn load_rejects_invalid_unused_component_props_ignore_pattern() {
+        let dir = test_dir("unused-component-props-bad-regex");
+        let path = dir.path().join(".fallowrc.json");
+        // `[` opens an unterminated character class: invalid regex.
+        std::fs::write(&path, r#"{"unusedComponentProps": {"ignorePattern": "["}}"#).unwrap();
+
+        let result = FallowConfig::load(&path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("unusedComponentProps.ignorePattern"),
+            "error should mention the field: {err}"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn load_rejects_unknown_unused_component_props_field() {
+        let dir = test_dir("unused-component-props-unknown-field");
+        let path = dir.path().join(".fallowrc.json");
+        std::fs::write(
+            &path,
+            r#"{"unusedComponentProps": {"ignorePatterns": "^_"}}"#,
+        )
+        .unwrap();
+
+        // `deny_unknown_fields` rejects the plural typo.
+        assert!(FallowConfig::load(&path).is_err());
     }
 
     // ------------------------------------------------------------------
