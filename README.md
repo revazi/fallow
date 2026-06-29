@@ -777,6 +777,8 @@ Works out of the box. When you need to customize, create `.fallowrc.json` or run
 }
 ```
 
+See [Environment variables](docs/environment-variables.md) for the full list.
+
 Fallow recognizes four config file names. Precedence is first-match-wins per
 directory, walking up to the workspace root:
 
