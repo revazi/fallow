@@ -4006,3 +4006,62 @@ fn cache_save_atomic_write_leaves_no_tmp_on_success() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A result loaded from a warm cache must be byte-for-byte identical to the one
+/// produced by a fresh (cold) parse of the same source. Guards against a
+/// forgotten `CACHE_VERSION` bump or a serialization bug silently returning
+/// WRONG analysis results from disk.
+#[test]
+fn warm_cache_load_matches_cold_parse() {
+    let dir = test_cache_dir("warm_equals_cold");
+    let path = Path::new("src/warm.tsx");
+    let source = "import { useEffect } from 'react';\n\
+         import type { Props } from './types';\n\
+         export const App = ({ name }: Props) => {\n\
+           useEffect(() => {}, [name]);\n\
+           return <Child id={name} />;\n\
+         };\n\
+         export default App;";
+
+    // Cold parse -> the cache unit that a fresh run would write to disk.
+    let cold_module = parse_from_content(FileId(0), path, source);
+    let cold_cached = module_to_cached_from_parts(&cold_module, 10, 20);
+    let cold_bytes = bitcode::encode(&cold_cached);
+
+    // Warm path: store, persist, and reload through the on-disk cache.
+    let mut store = CacheStore::new();
+    store.insert(path, cold_cached);
+    store.save(&dir, 0, DEFAULT_CACHE_MAX_SIZE).unwrap();
+
+    let loaded = CacheStore::load(&dir, 0, DEFAULT_CACHE_MAX_SIZE).expect("warm cache loads");
+    let warm_cached = loaded
+        .get(path, cold_module.content_hash)
+        .expect("entry present in warm cache");
+
+    // The serialized cache unit recovered from disk must equal the cold-parse
+    // unit exactly (no dropped field, no reordered wire shape).
+    assert_eq!(
+        bitcode::encode(warm_cached),
+        cold_bytes,
+        "warm-cache entry must serialize identically to the cold-parse entry"
+    );
+
+    // And the reconstructed module must agree with the fresh parse on the
+    // analysis-bearing fields a consumer reads back.
+    let warm_module = cached_to_module(warm_cached, FileId(0));
+    assert_eq!(warm_module.content_hash, cold_module.content_hash);
+    assert_eq!(warm_module.exports.len(), cold_module.exports.len());
+    assert_eq!(warm_module.imports.len(), cold_module.imports.len());
+    assert_eq!(
+        warm_module.component_functions.len(),
+        cold_module.component_functions.len()
+    );
+    assert_eq!(warm_module.react_props.len(), cold_module.react_props.len());
+    assert_eq!(warm_module.hook_uses.len(), cold_module.hook_uses.len());
+    assert_eq!(
+        warm_module.render_edges.len(),
+        cold_module.render_edges.len()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
