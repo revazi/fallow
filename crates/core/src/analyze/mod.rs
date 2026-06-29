@@ -306,13 +306,26 @@ fn resolve_entry_via_scoped_canonical(
     package_root: &std::path::Path,
     canonical_entry: &std::path::Path,
 ) -> Option<FileId> {
-    graph
-        .modules
-        .iter()
-        .filter(|module| module.path.starts_with(package_root))
-        .find_map(|module| {
-            (dunce::canonicalize(&module.path).ok().as_deref() == Some(canonical_entry))
-                .then_some(module.file_id)
+    match_canonical_entry_under_package(
+        graph.modules.iter().map(|m| (m.path.as_path(), m.file_id)),
+        package_root,
+        canonical_entry,
+    )
+}
+
+/// Pure core of [`resolve_entry_via_scoped_canonical`], decoupled from
+/// `ModuleGraph` for direct unit testing of the symlink-resolution path. Returns
+/// the `FileId` of the first candidate under `package_root` whose canonical form
+/// equals `canonical_entry`.
+fn match_canonical_entry_under_package<'a>(
+    candidates: impl Iterator<Item = (&'a std::path::Path, FileId)>,
+    package_root: &std::path::Path,
+    canonical_entry: &std::path::Path,
+) -> Option<FileId> {
+    candidates
+        .filter(|(path, _)| path.starts_with(package_root))
+        .find_map(|(path, file_id)| {
+            (dunce::canonicalize(path).ok().as_deref() == Some(canonical_entry)).then_some(file_id)
         })
 }
 
@@ -2725,6 +2738,66 @@ mod tests {
     fn line_col(source: &str, byte_offset: u32) -> (u32, u32) {
         let offsets = compute_line_offsets(source);
         byte_offset_to_line_col(&offsets, byte_offset)
+    }
+
+    // Exercises the public-API entry-point fallback (`resolve_entry_via_scoped_canonical`)
+    // for the intra-project-symlink case it exists to handle: a module whose
+    // discovered (raw) path goes through a symlinked directory, so its raw path
+    // differs from the canonicalized entry-point path. The common no-symlink path
+    // is covered by the byte-identical integration corpus; this pins the residual
+    // branch that the raw-map lookup cannot reach.
+    #[cfg(unix)]
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn scoped_canonical_matches_module_reached_through_symlink() {
+        use fallow_types::discover::FileId;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real_dir = dir.path().join("real");
+        std::fs::create_dir(&real_dir).unwrap();
+        let real_file = real_dir.join("mod.ts");
+        std::fs::write(&real_file, "export const x = 1;\n").unwrap();
+        // `link/` resolves to `real/`, so the module discovered at `link/mod.ts`
+        // canonicalizes to `real/mod.ts`.
+        let link_dir = dir.path().join("link");
+        std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
+
+        let module_raw_path = link_dir.join("mod.ts");
+        let canonical_entry = dunce::canonicalize(&real_file).unwrap();
+        let package_root = dir.path();
+
+        // The symlinked module under the package is found by canonical match.
+        let candidates = [(module_raw_path.as_path(), FileId(7))];
+        assert_eq!(
+            super::match_canonical_entry_under_package(
+                candidates.iter().copied(),
+                package_root,
+                &canonical_entry,
+            ),
+            Some(FileId(7)),
+        );
+
+        // A candidate outside the package_root is filtered out, even on a match.
+        let outside_root = dir.path().join("other-package");
+        assert_eq!(
+            super::match_canonical_entry_under_package(
+                candidates.iter().copied(),
+                &outside_root,
+                &canonical_entry,
+            ),
+            None,
+        );
+
+        // A non-matching canonical target yields no entry point.
+        let unrelated = dunce::canonicalize(dir.path()).unwrap().join("nope.ts");
+        assert_eq!(
+            super::match_canonical_entry_under_package(
+                candidates.iter().copied(),
+                package_root,
+                &unrelated,
+            ),
+            None,
+        );
     }
 
     #[test]
