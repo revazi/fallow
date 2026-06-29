@@ -273,19 +273,52 @@ fn public_workspace_roots<'a>(
         .collect()
 }
 
+/// Build the raw (as-discovered) module-path -> `FileId` index.
+///
+/// Public-API entry-point resolution previously also canonicalized every module
+/// here (one `realpath` syscall per module, ~21k on a large monorepo) so the map
+/// could match an entry point expressed in a module's canonical form. That eager
+/// sweep is almost entirely wasted: the consumer
+/// ([`add_package_public_api_entry_points`]) already canonicalizes the ENTRY and
+/// matches it against raw module paths, which covers every project without
+/// intra-project symlinks. The residual symlinked-module case is handled lazily
+/// and package-scoped by [`resolve_entry_via_scoped_canonical`], so the common
+/// path pays zero canonicalize syscalls.
 fn graph_path_to_file_id(graph: &ModuleGraph) -> FxHashMap<std::path::PathBuf, FileId> {
-    let mut path_to_file_id = FxHashMap::default();
-    for module in &graph.modules {
-        path_to_file_id.insert(module.path.clone(), module.file_id);
-        if let Ok(canonical) = dunce::canonicalize(&module.path) {
-            path_to_file_id.insert(canonical, module.file_id);
-        }
-    }
-    path_to_file_id
+    graph
+        .modules
+        .iter()
+        .map(|module| (module.path.clone(), module.file_id))
+        .collect()
+}
+
+/// Resolve a canonicalized entry-point path against the canonical form of the
+/// modules UNDER `package_root`, without canonicalizing the whole project.
+///
+/// Only reached when an entry point matches neither a raw module path nor the
+/// canonicalized-entry-against-raw-map lookup, i.e. the module is reached through
+/// an intra-project symlink so its stored (raw) path differs from its canonical
+/// path. Scoping the scan to the entry's own package keeps a fruitless miss
+/// (e.g. a `bin` script that is not a discovered module) bounded by that
+/// package's file count instead of the entire graph.
+fn resolve_entry_via_scoped_canonical(
+    graph: &ModuleGraph,
+    package_root: &std::path::Path,
+    canonical_entry: &std::path::Path,
+) -> Option<FileId> {
+    graph
+        .modules
+        .iter()
+        .filter(|module| module.path.starts_with(package_root))
+        .find_map(|module| {
+            (dunce::canonicalize(&module.path).ok().as_deref() == Some(canonical_entry))
+                .then_some(module.file_id)
+        })
 }
 
 fn add_package_public_api_entry_points(
     public_api_entry_points: &mut FxHashSet<FileId>,
+    graph: &ModuleGraph,
     path_to_file_id: &FxHashMap<std::path::PathBuf, FileId>,
     package_root: &std::path::Path,
     package_json: &PackageJson,
@@ -308,7 +341,11 @@ fn add_package_public_api_entry_points(
         if let Some(file_id) = path_to_file_id.get(&entry_point.path).copied().or_else(|| {
             dunce::canonicalize(&entry_point.path)
                 .ok()
-                .and_then(|canonical| path_to_file_id.get(&canonical).copied())
+                .and_then(|canonical| {
+                    path_to_file_id.get(&canonical).copied().or_else(|| {
+                        resolve_entry_via_scoped_canonical(graph, package_root, &canonical)
+                    })
+                })
         }) {
             public_api_entry_points.insert(file_id);
         }
@@ -404,6 +441,7 @@ fn add_root_public_api_entry_points(
     if let Some(pkg) = root_pkg {
         add_package_public_api_entry_points(
             public_api_entry_points,
+            graph,
             path_to_file_id,
             &config.root,
             pkg,
@@ -426,6 +464,7 @@ fn add_workspace_public_api_entry_points(
         };
         add_package_public_api_entry_points(
             public_api_entry_points,
+            graph,
             path_to_file_id,
             &workspace.root,
             &pkg,
