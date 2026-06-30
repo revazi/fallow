@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CSS-in-JS first-class in `fallow health --css` (CSS program Phase 3).**
+  styled-components / emotion / linaria apps previously got `null` `css_analytics`
+  because their CSS lives in `styled`/`css`/`keyframes` tagged templates. A new
+  lexical lifter (`css_in_js_virtual_stylesheet`, the tagged-template analogue of
+  the SFC `<style>` lifter) extracts the CSS body from each template literal,
+  masks `${}` interpolations to a CSS-valid placeholder, and feeds it through the
+  existing structural analytics + styling-health, so a CSS-in-JS app now gets real
+  `css_analytics` + `styling_health` (duplicate styled blocks, structural metrics,
+  design-token sprawl) instead of `null`. Dep-gated on a declared CSS-in-JS library
+  (`styled-components` / `@emotion/styled` / `@emotion/react` / `@emotion/css` /
+  `@linaria/core` / `@linaria/react`), so a non-CSS-in-JS project is byte-unchanged.
+  Template-literal form only (the object form `css({...})` is a deferred follow-up);
+  descriptive-only, no `CACHE_VERSION` bump, no new wire field. (PR #1668)
+
 - **`get_token_blast_radius` MCP tool: query a design token's blast radius
   directly.** A focused, read-only MCP tool that runs `fallow health --css
   --format json` and surfaces `css_analytics.token_consumers` (the Tailwind v4
