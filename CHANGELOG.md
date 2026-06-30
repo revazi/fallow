@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Fuzzy CSS clones via CSS-aware value canonicalization (CSS program Phase 4).**
+  `fallow dupes` already tokenized CSS, but the lexer was character-naive, so
+  near-miss / value-drifted CSS clones (the same shadow / gradient / transition
+  recipe re-implemented with `0px` vs `0` or `#fff` vs `#ffffff` drift, the shape
+  of design-system erosion) never matched. The duplicate-detection tokenizer now
+  canonicalizes CSS values on the stylesheet path: a zero-with-unit collapses to a
+  bare `0` (`0px`/`0em`/`0%`) and a hex color expands to its long lowercased form
+  (`#fff` -> `#ffffff`, `#abcd` -> `#aabbccdd`), so semantically-equal CSS hashes
+  equal and the clone engine surfaces the fuzzy duplicates. Scoped to CSS-family
+  files and SFC/Astro `<style>` regions only; JS/TS clone detection is unchanged.
+  (PR #1669)
+
 - **CSS-in-JS first-class in `fallow health --css` (CSS program Phase 3).**
   styled-components / emotion / linaria apps previously got `null` `css_analytics`
   because their CSS lives in `styled`/`css`/`keyframes` tagged templates. A new
