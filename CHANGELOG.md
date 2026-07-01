@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.104.0] - 2026-07-01
+
 ### Added
 
 - **The GitLab CI template can reuse a pre-installed fallow binary.** Set
@@ -14,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fallow` already resolvable on `PATH`, for example a version pinned through
   a pnpm catalog and exposed on `PATH`, so CI runs the same binary as your
   local lint gate. The job fails fast with a clear error when no `fallow` is
-  found. Default behavior is unchanged.
+  found. Default behavior is unchanged. Thanks
+  [@Jerc92](https://github.com/Jerc92) for the patch in
+  [#1662](https://github.com/fallow-rs/fallow/pull/1662).
 
 - **Design-token blast-radius for CSS-in-JS tokens (CSS program Phase 3d).** The
   Phase 2 token blast-radius (`css_analytics.token_consumers` + the
@@ -148,7 +152,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`stage`); matching is unanchored like ESLint's `RegExp.test`, so anchor with
   `^_`; an invalid regex fails config load with a clear error. A human-output
   note reports how many props were exempted so a typo'd pattern that matches
-  nothing is not silently inert.
+  nothing is not silently inert. Thanks
+  [@hniedner](https://github.com/hniedner) for the request.
   (Closes [#1648](https://github.com/fallow-rs/fallow/issues/1648))
 
 - **`fallow review --walkthrough`: render the review walkthrough as a staged
@@ -316,7 +321,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `updater` module and `filename` target, from both the package.json key and
   standalone `.versionrc` / `.versionrc.{json,js,cjs}` configs. Crediting is
   gated on the file existing on disk, so non-source targets (gradle, plist,
-  version.txt) and phantom paths are never over-credited.
+  version.txt) and phantom paths are never over-credited. Thanks
+  [@rbalet](https://github.com/rbalet) for the report.
   (Closes [#1640](https://github.com/fallow-rs/fallow/issues/1640))
 - **`unused-files` no longer false-flags Next.js `page.mdx` (and other entries)
   when `next.config` wraps its config object.** fallow resolved a bare
@@ -327,7 +333,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never saw `pageExtensions`, so MDX App Router pages were reported as unused.
   The shared config resolver now follows the named const (including through
   nested wrapper calls), which also fixes the same class for any wrapped Vite /
-  Webpack / Jest config.
+  Webpack / Jest config. Thanks [@AlonMiz](https://github.com/AlonMiz) for the
+  report.
   (Closes [#1642](https://github.com/fallow-rs/fallow/issues/1642))
 
 - **`unused-class-members` no longer false-flags framework-dispatched OpenLayers
@@ -3861,7 +3868,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.103.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.104.0...HEAD
+[2.104.0]: https://github.com/fallow-rs/fallow/compare/v2.103.0...v2.104.0
 [2.103.0]: https://github.com/fallow-rs/fallow/compare/v2.102.0...v2.103.0
 [2.102.0]: https://github.com/fallow-rs/fallow/compare/v2.101.0...v2.102.0
 [2.101.0]: https://github.com/fallow-rs/fallow/compare/v2.100.0...v2.101.0

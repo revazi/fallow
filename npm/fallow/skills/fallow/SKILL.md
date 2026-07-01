@@ -1,6 +1,6 @@
 ---
 name: fallow
-description: Codebase intelligence for JavaScript and TypeScript. Free static layer reports quality, changed-code risk, cleanup opportunities (unused files, exports, types, dependencies), code duplication, circular dependencies, complexity hotspots, architecture boundary violations, feature flag patterns, and opt-in security candidates. Runtime coverage merges production execution data into the same health report for hot-path review, cold-path deletion confidence, and stale-flag evidence, with a single local capture available by default and continuous/cloud runtime monitoring available as an optional mode. 122 framework plugins, zero configuration, sub-second static analysis. Use when asked to analyze code health, audit PR risk, find cleanup opportunities or unused code, detect duplicates, check circular dependencies, audit complexity, check architecture boundaries, detect feature flags, surface security candidates, clean up the codebase, auto-fix issues, merge runtime coverage, or run fallow.
+description: Codebase intelligence for JavaScript and TypeScript. Free static layer reports quality, changed-code risk, cleanup opportunities (unused files, exports, types, dependencies), code duplication, circular dependencies, complexity hotspots, architecture boundary violations, feature flag patterns, and opt-in security candidates. Runtime coverage merges production execution data into the same health report for hot-path review, cold-path deletion confidence, and stale-flag evidence, with a single local capture available by default and continuous/cloud runtime monitoring available as an optional mode. 123 framework plugins, zero configuration, sub-second static analysis. Use when asked to analyze code health, audit PR risk, find cleanup opportunities or unused code, detect duplicates, check circular dependencies, audit complexity, check architecture boundaries, detect feature flags, surface security candidates, clean up the codebase, auto-fix issues, merge runtime coverage, or run fallow.
 license: MIT
 metadata:
   author: Bart Waardenburg
@@ -10,7 +10,7 @@ metadata:
 
 # Fallow: codebase intelligence for JavaScript and TypeScript
 
-Codebase intelligence for JavaScript and TypeScript. The free static layer reports quality, changed-code risk, cleanup opportunities, circular dependencies, code duplication, complexity hotspots, architecture boundary violations, feature flag patterns, and opt-in security candidates. Runtime coverage merges production execution data into the same `fallow health` report for hot-path review, cold-path deletion confidence, and stale-flag evidence, with a single local capture available by default and continuous/cloud runtime monitoring available as an optional mode. 122 framework plugins, zero configuration, sub-second static analysis.
+Codebase intelligence for JavaScript and TypeScript. The free static layer reports quality, changed-code risk, cleanup opportunities, circular dependencies, code duplication, complexity hotspots, architecture boundary violations, feature flag patterns, and opt-in security candidates. Runtime coverage merges production execution data into the same `fallow health` report for hot-path review, cold-path deletion confidence, and stale-flag evidence, with a single local capture available by default and continuous/cloud runtime monitoring available as an optional mode. 123 framework plugins, zero configuration, sub-second static analysis.
 
 ## When to Use
 - Finding cleanup opportunities (unused files, exports, types, enum/class members)
@@ -55,7 +55,7 @@ cargo install fallow-cli        # build from source
 1. **Always use `--format json --quiet 2>/dev/null`** for machine-readable output. The `2>/dev/null` discards stderr so progress messages and threshold warnings don't corrupt the JSON on stdout. Never use `2>&1`
 2. **Always append `|| true`** to every fallow command. Exit code 1 means "issues found" (normal), not a runtime error. Without `|| true`, the Bash tool treats exit 1 as failure and cancels parallel commands. Only exit code 2 is a real error (invalid config, parse failure)
 3. **Use `--explain`** to include a `_meta` object in JSON output with metric definitions, ranges, and interpretation hints. In human format, `--explain` prints a `Description:` line under each section header.
-4. **Use the root `kind` field** to identify typed JSON envelopes (`dead-code`, `dead-code-grouped`, `health`, `dupes`, `combined`, `audit`, etc.).
+4. **Use the root `kind` field** to identify typed JSON envelopes (`dead-code`, `dead-code-grouped`, `health`, `dupes`, `combined`, `audit`, etc.). `--legacy-envelope` exists only for one-cycle compatibility with older consumers.
 5. **Use issue type filters** (`--unused-exports`, `--unused-files`, etc.) to limit output scope
 6. **Always `--dry-run` before `fix`**, then `fix --yes` to apply
 7. **All output paths are relative** to the project root
@@ -66,7 +66,6 @@ cargo install fallow-cli        # build from source
 ## Onboarding And Insight
 Offer setup only after a human-requested analysis shows findings and all signals match: `fallow config --path` exits 3, not CI, not a pipeline format, `fallow impact --format json --quiet` has `onboarding_declined: false`, and no offer happened this session. Ask after showing value. Choices: guard commits and PRs, baseline the existing backlog and clean by category, add AGENTS.md guidance, or keep as-is. On decline, run `fallow init --decline --quiet` and stay silent for this project. Mutate only after consent. For guards, inspect `fallow hooks status --format json --quiet`, then use `fallow hooks install --target agent` and `fallow hooks install --target git`; for large backlogs, pair the gate with `--save-baseline` / new-only guidance. Offer `fallow impact enable` as local-only value tracking, never as telemetry; also offer it once on already-configured projects when `fallow impact status --format json` has `enabled: false` and `explicit_decision: false`, and record a no with `fallow impact disable --quiet`. Surface value on clear events: if the agent gate blocked a commit or push and a later retry succeeded, mention what was contained; when `next_steps` carries id `impact-report`, run its command and relay the non-zero numbers to the user in one line. On request, summarize non-zero Impact counts. Ask about telemetry only after such a win, only if `fallow telemetry status --format json` has `explicit_decision: false`, and never run `fallow telemetry enable`.
 ## Task Cheat Sheet
-
 Route by intent before reaching for the big analysis commands. Same matrix as `fallow schema` (`task_matrix`) and the generated AGENTS.md section.
 
 <!-- generated:task-matrix:start -->
@@ -211,7 +210,7 @@ When using fallow via MCP (`fallow-mcp`), the following tools are available:
 | `get_blast_radius` | runtime-coverage | freemium | `coverage`, `group_by` | Runtime-context slice for blast-radius review. Same params as `check_runtime_coverage`; read `runtime_coverage.blast_radius` for stable `fallow:blast:<hash>` IDs, caller counts, traffic-weighted caller reach, optional cloud deploy touch counts, and low/medium/high risk bands. |
 | `get_importance` | runtime-coverage | freemium | `coverage`, `group_by` | Runtime-context slice for production-importance review. Same params as `check_runtime_coverage`; read `runtime_coverage.importance` for stable `fallow:importance:<hash>` IDs, invocations, cyclomatic complexity, owner count, 0-100 score, and templated reason. |
 | `get_cleanup_candidates` | runtime-coverage | freemium | `coverage`, `group_by` | Runtime-context slice for cleanup review. Same params as `check_runtime_coverage`; read `runtime_coverage.findings` for `safe_to_delete`, `review_required`, `low_traffic`, and `coverage_unavailable`. |
-| `get_token_blast_radius` | analysis | free | - | Tailwind v4 design-token blast radius: per `@theme` token, a consumer_count (static lower bound) and a capped located consumers[] sample tagged theme-var/css-var/utility/apply; descriptive context for sizing a token change, never a deletion gate (the dead-token verdict stays on unused_theme_tokens) |
+| `get_token_blast_radius` | analysis | free | - | Design-token blast radius for Tailwind v4 @theme tokens AND CSS-in-JS defineVars/createTheme-family token definitions: per token, a consumer_count (static lower bound) and a capped located consumers[] sample tagged theme-var/css-var/utility/apply (Tailwind) or js-member (CSS-in-JS cross-module member access); descriptive context for sizing a token change, never a deletion gate |
 | `audit` | analysis | free | `gate`, `base`, `max_crap`, `coverage`, `runtime_coverage` | Combined dead-code + complexity + duplication for changed files, returns verdict. Set `gate` to `"new-only"` or `"all"`. Optional `runtime_coverage` (V8 dir / V8 JSON / Istanbul JSON) folds runtime findings into the same call; `min_invocations_hot` tunes the hot-path threshold (default 100). Runtime evidence appears under the audit `complexity` sub-result, including `coverage_intelligence` when combined evidence yields actionable recommendations. |
 | `decision_surface` | analysis | free | `base`, `max_decisions`, `workspace` | Surface the few consequential structural decisions a change embeds (coupling, public API, dependency), each as a judgment question with the routed expert; ranked, capped, and signal_id-anchored |
 | `fallow_explain` | introspection | free | `issue_type` | Explain one issue type without running analysis. Required `issue_type`; returns rationale, examples, fix guidance, and docs URL |
@@ -298,7 +297,7 @@ fallow list --entry-points --format json --quiet
 fallow list --plugins --format json --quiet
 ```
 
-Shows detected entry points and active framework plugins (122 built-in: Next.js, Vite, Ember, Wuchale, Jest, Storybook, Tailwind, PandaCSS, Contentlayer, tap, tsd, etc.).
+Shows detected entry points and active framework plugins (123 built-in: Next.js, Vite, Ember, Wuchale, Jest, Storybook, Tailwind, PandaCSS, Contentlayer, tap, tsd, etc.).
 
 ### Production-only analysis
 ```bash
@@ -444,7 +443,7 @@ When `--format json` is active and exit code is 2, errors are emitted as JSON on
 
 ## Configuration
 
-Fallow reads config from project root: `.fallowrc.json` > `.fallowrc.jsonc` > `fallow.toml` > `.fallow.toml`. Both `.fallowrc.json` and `.fallowrc.jsonc` accept JSON-with-comments syntax (same parser); the `.jsonc` extension lets editors auto-detect JSONC syntax highlighting. Most projects work with zero configuration thanks to 122 auto-detecting framework plugins.
+Fallow reads config from project root: `.fallowrc.json` > `.fallowrc.jsonc` > `fallow.toml` > `.fallow.toml`. Both `.fallowrc.json` and `.fallowrc.jsonc` accept JSON-with-comments syntax (same parser); the `.jsonc` extension lets editors auto-detect JSONC syntax highlighting. Most projects work with zero configuration thanks to 123 auto-detecting framework plugins.
 
 ```jsonc
 {
@@ -481,7 +480,7 @@ export const deprecatedHelper = () => {};
 ## Key Gotchas
 
 - **`fix --yes` is required** in non-TTY (agent) environments. Without it, `fix` exits with code 2
-- **Zero config by default.** 122 framework plugins auto-detect, including Wuchale config, Contentlayer content roots, tap and tsd test entry points. Don't create config unless customization is needed
+- **Zero config by default.** 123 framework plugins auto-detect, including Wuchale config, Contentlayer content roots, tap and tsd test entry points. Don't create config unless customization is needed
 - **Syntactic analysis only.** No TypeScript compiler, so fully dynamic `import(variable)` is not resolved
 - **Function overloads are deduplicated.** TypeScript function overload signatures are merged into a single export (not reported as separate unused exports)
 - **Re-export chains are resolved.** Exports through barrel files are tracked, not falsely flagged
@@ -494,6 +493,7 @@ For the full list with examples, see [references/gotchas.md](references/gotchas.
 2. **Run the appropriate command** with `--format json --quiet`
 3. **Use filter flags** to limit output when the user asks about specific issue types
 4. **Always dry-run before fix.** Show the user what will change, then apply
-5. **For false positives,** suggest inline suppression comments or config rule adjustments
+5. **Report results clearly.** Summarize issue counts, list specific findings, suggest next steps
+6. **For false positives,** suggest inline suppression comments or config rule adjustments
 
 If `$ARGUMENTS` is provided, use it as the `--root` path or pass it as the target for the appropriate fallow command.

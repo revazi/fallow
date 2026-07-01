@@ -118,7 +118,6 @@ const CLI_REFERENCE_FLAG_SECTIONS = {
       "--format",
       "--quiet",
       "--output-file",
-      "--legacy-envelope",
       "--changed-since",
       "--max-file-size",
       "--production",
