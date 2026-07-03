@@ -36,7 +36,7 @@ Check:
 
 ## Design system reference
 
-Read `.internal/design-system.md` for the terminal-brutalist design system: Radix Sand Dark palette, 3 output modes (human/compact/machine), 7 state prefixes.
+Use the existing terminal output patterns in `crates/cli/src/report/human/` as the design reference: clear section hierarchy, restrained ANSI color, readable spacing, progressive disclosure, and compatibility with compact and machine-readable modes.
 
 ## Key files
 
