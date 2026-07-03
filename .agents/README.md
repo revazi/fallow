@@ -8,9 +8,9 @@ The contents here are additive. They do not replace Fallow's existing tool-speci
 
 Fallow also keeps agent-specific configuration in these locations:
 
-- `CLAUDE.md` — general repository guidance and working conventions. Some agents, including Pi, can load this as startup context.
-- `.claude/agents/` — Claude-specific subagent definitions.
-- `.codex/agents/` — Codex-specific custom agent definitions.
+- `CLAUDE.md`: general repository guidance and working conventions. Some agents, including Pi, can load this as startup context.
+- `.claude/agents/`: Claude-specific subagent definitions.
+- `.codex/agents/`: Codex-specific custom agent definitions.
 
 Do not remove or rename those files when adding portable skills.
 
