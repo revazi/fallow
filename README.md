@@ -7,10 +7,10 @@
 </p>
 
 <p align="center">
-  <strong>Deterministic codebase intelligence for TypeScript, JavaScript, and styling.</strong><br>
-  Quality, risk, architecture, dependencies, duplication, design-system drift, and safe cleanup evidence for humans, CI, and agents.<br>
-  Static analysis is open source. Optional runtime intelligence (Fallow Runtime) adds production execution evidence.<br>
-  <strong>Rust-native. Zero config. Sub-second. No AI inside the analyzer.</strong>
+  <strong>Codebase intelligence for TypeScript and JavaScript.</strong><br>
+  Free static analysis of code and styles, optional paid runtime intelligence (Fallow Runtime).<br>
+  Quality, risk, architecture, dependencies, duplication, and design-system drift, for humans, CI, and the agents writing your code.<br>
+  <sub>Rust-native · zero-config · sub-second · no AI inside the analyzer</sub>
 </p>
 
 <p align="center">

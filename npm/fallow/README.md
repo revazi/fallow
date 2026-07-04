@@ -1,8 +1,8 @@
 # fallow
 
-**Deterministic codebase intelligence for TypeScript, JavaScript, and styling.**
+**Codebase intelligence for TypeScript and JavaScript.**
 
-Quality, risk, architecture, dependencies, duplication, design-system drift, and safe cleanup evidence for humans, CI, and agents.
+Free static analysis of code and styles, optional paid runtime intelligence (Fallow Runtime). Quality, risk, architecture, dependencies, duplication, and design-system drift, for humans, CI, and the agents writing your code.
 
 [![CI](https://github.com/fallow-rs/fallow/actions/workflows/ci.yml/badge.svg)](https://github.com/fallow-rs/fallow/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/fallow.svg)](https://www.npmjs.com/package/fallow)
