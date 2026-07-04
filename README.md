@@ -36,7 +36,7 @@ Fallow turns a frontend repository into a trusted quality report: health score, 
 
 Fallow is built for maintainers, CI pipelines, editors, and AI agents that need structured evidence instead of guesses. No AI inside the analyzer. Fallow produces deterministic findings, typed output contracts, and traceable explanations that downstream tools can trust.
 
-Fallow dogfoods its shipped JavaScript, TypeScript, and styling surfaces in CI: the VS Code extension, npm wrapper package, and authored CSS-facing fixtures are analyzed with fallow on every relevant change.
+Fallow dogfoods its shipped code and styling surfaces in CI: the VS Code extension, npm wrapper package, and authored CSS-facing fixtures are analyzed with fallow on every relevant change.
 
 ## Quick start
 
@@ -89,7 +89,7 @@ npx fallow dead-code
 
 ## What is Fallow?
 
-Fallow is a codebase intelligence engine for TypeScript, JavaScript, and frontend styling projects.
+Fallow is a codebase intelligence engine for TypeScript and JavaScript projects, code and the styles they ship.
 
 It analyzes your repository as a system, not just as a list of files. It connects static structure, dependency relationships, duplication, complexity, architecture boundaries, styling consistency, package hygiene, and optional runtime evidence into one quality report.
 
