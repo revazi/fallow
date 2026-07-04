@@ -8,7 +8,7 @@ homepage.workspace = true
 documentation.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Node.js bindings for fallow: deterministic codebase intelligence (quality, risk, duplication, architecture, dependencies, cleanup) for TypeScript and JavaScript"
+description = "Node.js bindings for fallow: deterministic codebase intelligence (quality, risk, duplication, architecture, dependencies, styling, cleanup) for TypeScript and JavaScript"
 publish = false
 
 [lints]
