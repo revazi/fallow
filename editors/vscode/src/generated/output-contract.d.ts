@@ -593,7 +593,7 @@ export type FrameworkHealthDetectorStatus = ("active" | "disabled_by_config" | "
 /**
  * Discriminant for [`CssCandidateAction::kind`].
  */
-export type CssCandidateActionType = ("verify-unused" | "verify-undefined" | "consolidate" | "replace-with-token" | "standardize")
+export type CssCandidateActionType = ("verify-unused" | "verify-undefined" | "consolidate" | "replace-with-token" | "standardize" | "simplify-selector")
 /**
  * Discriminant for [`UnusedAtRule::kind`].
  */
@@ -601,12 +601,12 @@ export type UnusedAtRuleKind = ("property-registration" | "layer")
 /**
  * The surface through which a design token is consumed. The `theme-var` /
  * `css-var` / `utility` / `apply` kinds are Tailwind v4 `@theme` consumption; the
- * `js-member` kind is CSS-in-JS consumption (a cross-module member access on an
- * imported StyleX/vanilla-extract token binding). The kind is the disjoint origin
- * signal that distinguishes a Tailwind token entry from a CSS-in-JS token entry in
- * the shared `token_consumers` list.
+ * `js-member` / `js-call` kinds are CSS-in-JS consumption (member access on an
+ * imported StyleX/vanilla-extract token binding, or a PandaCSS `token('...')`
+ * call). The kind is the disjoint origin signal that distinguishes a Tailwind
+ * token entry from a CSS-in-JS token entry in the shared `token_consumers` list.
  */
-export type ConsumerKind = ("theme-var" | "css-var" | "utility" | "apply" | "js-member")
+export type ConsumerKind = ("theme-var" | "css-var" | "utility" | "apply" | "js-member" | "js-call")
 /**
  * Trust level for a [`StylingHealth`] grade. TWO variants (not the three-tier
  * `high`/`medium`/`low` of [`crate::Confidence`] / `FeatureFlagConfidence`) ON
@@ -616,6 +616,18 @@ export type ConsumerKind = ("theme-var" | "css-var" | "utility" | "apply" | "js-
  * `"low"`), matching the sibling confidence enums' vocabulary.
  */
 export type StylingHealthConfidence = ("high" | "low")
+/**
+ * Effective configured severity for a styling finding.
+ */
+export type StylingFindingSeverity = ("warn" | "error")
+/**
+ * Confidence hint for a [`StylingFinding`].
+ */
+export type StylingFindingConfidence = ("high" | "low")
+/**
+ * Agent handling hint for a [`StylingFinding`].
+ */
+export type StylingAgentDisposition = ("fix-confidently" | "verify-first")
 export type InspectTargetDescriptor = ({
 file: string
 type: "file"
@@ -4042,6 +4054,15 @@ css_analytics?: (CssAnalyticsReport | null)
  * code score is never affected by this field.
  */
 styling_health?: (StylingHealth | null)
+/**
+ * Advisory STYLING FINDINGS: the graduation of the descriptive css
+ * candidates into first-class, severity-aware, suppressible findings
+ * surfaced in `fallow audit`. Verdict-neutral by default (the rule defaults
+ * to `warn`); the styling domain's OWN findings collection, not the dead-code
+ * `AnalysisResults`. Present only with `--css`; empty is skipped so a plain
+ * run is byte-unchanged.
+ */
+styling_findings?: StylingFinding[]
 }
 /**
  * Wire envelope for a single complexity finding.
@@ -5852,6 +5873,19 @@ undefined_keyframes?: UndefinedKeyframes[]
  */
 duplicate_declaration_blocks?: CssDuplicateBlock[]
 /**
+ * CVA / shadcn variant class strings that repeat the same normalized class
+ * block in several variant values. Kept separate from CSS declaration-block
+ * duplication because the source is JS config, not parsed CSS rules.
+ */
+cva_duplicate_variant_blocks?: CvaDuplicateVariantBlock[]
+/**
+ * CVA / shadcn variant class strings that hardcode a Tailwind arbitrary
+ * value even though an existing token has the same or nearest comparable
+ * value. Advisory: variants often encode product semantics, so agents
+ * should verify intent before replacing.
+ */
+cva_variant_token_drifts?: CvaVariantTokenDrift[]
+/**
  * Tailwind arbitrary-value utilities (`w-[13px]`, `bg-[#abc]`) found in
  * markup, which hardcode a one-off value instead of a configured scale
  * token (design-token bypass). Present only when the project uses Tailwind.
@@ -5859,6 +5893,13 @@ duplicate_declaration_blocks?: CssDuplicateBlock[]
  * value is sometimes the right call.
  */
 tailwind_arbitrary_values?: TailwindArbitraryValue[]
+/**
+ * Located raw CSS declaration values that bypass token surfaces (`var()`,
+ * `token()`, `theme()`) on scale-sensitive axes such as color, font-size,
+ * line-height, radius, and shadow. Conservative candidates: a raw value can
+ * be intentional, but introduced raw values are useful audit feedback.
+ */
+raw_style_values?: RawStyleValue[]
 /**
  * Unused CSS at-rule entities: an `@property` registered but never read via
  * `var()` in any stylesheet, or an `@layer` declared but never populated by
@@ -5907,6 +5948,12 @@ unused_font_faces?: UnusedFontFace[]
  * downstream repo. Sorted by `(path, line, token)`.
  */
 unused_theme_tokens?: UnusedThemeToken[]
+/**
+ * Tailwind v4 theme tokens whose comparable values are close to another
+ * token in the same theme dictionary. These are opt-in `--css-deep`
+ * candidates because they need whole-project token context.
+ */
+near_duplicate_theme_tokens?: NearDuplicateThemeToken[]
 /**
  * A location-aware reverse index of Tailwind v4 `@theme` token consumers:
  * per token, where it is consumed (`var()` reads, `@apply` bodies, generated
@@ -6227,6 +6274,22 @@ tailwind_arbitrary_values: number
  */
 tailwind_arbitrary_value_uses: number
 /**
+ * Preprocessor stylesheets (`.scss`, `.sass`, `.less`) seen by the styling
+ * scan. These are parsed textually for local candidates, not compiled.
+ */
+preprocessor_stylesheets: number
+/**
+ * True when project-wide class reachability was skipped because
+ * preprocessor stylesheets outnumber plain CSS, making generated classes
+ * invisible without a Sass/Less compiler.
+ */
+preprocessor_reachability_abstained: boolean
+/**
+ * Located raw CSS declaration values that bypass token surfaces on
+ * scale-sensitive axes. Located in `raw_style_values`.
+ */
+raw_style_values: number
+/**
  * `@property` registrations never referenced via `var()` in any stylesheet
  * (located in `unused_at_rules`). Cleanup candidates.
  */
@@ -6261,6 +6324,12 @@ unused_font_faces: number
  * partial-scope run gated the scan out.
  */
 unused_theme_tokens: number
+/**
+ * Tailwind v4 theme tokens whose comparable values are close to another
+ * token in the same theme dictionary. Located in
+ * `near_duplicate_theme_tokens`.
+ */
+near_duplicate_theme_tokens: number
 /**
  * Number of distinct `font-size` units (`px` / `rem` / `em` / `%`) authored
  * across the codebase. Mixing units is a type-scale consistency smell,
@@ -6411,6 +6480,85 @@ path: string
 line: number
 }
 /**
+ * A duplicated CVA / shadcn variant class block.
+ */
+export interface CvaDuplicateVariantBlock {
+/**
+ * Normalized class block shared by several variant values.
+ */
+value: string
+/**
+ * Number of variant values with this class block.
+ */
+occurrence_count: number
+/**
+ * First locations of the duplicate values, sorted by path and line.
+ */
+occurrences: CssBlockOccurrence[]
+/**
+ * Read-only guidance step(s), so consumers can iterate `actions`
+ * uniformly across every candidate type.
+ */
+actions: CssCandidateAction[]
+}
+/**
+ * A CVA / shadcn variant class value that can reuse an existing styling token.
+ */
+export interface CvaVariantTokenDrift {
+/**
+ * Tailwind arbitrary-value utility inside the variant class string.
+ */
+class_token: string
+/**
+ * Normalized value inside the arbitrary utility.
+ */
+value: string
+/**
+ * Full normalized variant class block containing the token.
+ */
+variant_classes: string
+/**
+ * Project-root-relative, forward-slash path to the variant definition.
+ */
+path: string
+/**
+ * 1-based line of the variant class string.
+ */
+line: number
+nearest_token: NearestStylingToken
+/**
+ * Read-only guidance step(s), so consumers can iterate `actions`
+ * uniformly across every candidate type.
+ */
+actions: CssCandidateAction[]
+}
+/**
+ * A styling token candidate that can replace or explain a finding.
+ */
+export interface NearestStylingToken {
+/**
+ * Token name, e.g. `--color-brand`.
+ */
+name: string
+/**
+ * Normalized token value.
+ */
+value: string
+/**
+ * Project-root-relative, forward-slash definition path.
+ */
+path: string
+/**
+ * 1-based definition line.
+ */
+line: number
+/**
+ * Distance from the finding value. Lower is closer; units depend on the
+ * comparable token namespace.
+ */
+distance: number
+}
+/**
  * A distinct Tailwind arbitrary-value utility token used in markup, with its
  * total use count and first location (a design-token-bypass candidate).
  */
@@ -6436,6 +6584,39 @@ line: number
  * Read-only action(s): a find-all-occurrences search so the token can be
  * replaced with a scale token. Always at least one entry, so consumers can
  * iterate `actions` uniformly across every finding type.
+ */
+actions: CssCandidateAction[]
+}
+/**
+ * A located raw CSS declaration value on a scale-sensitive styling axis.
+ */
+export interface RawStyleValue {
+/**
+ * Value axis, e.g. `color`, `font-size`, `line-height`, `radius`, or `shadow`.
+ */
+axis: string
+/**
+ * CSS property where the raw value appears.
+ */
+property: string
+/**
+ * Rendered declaration value.
+ */
+value: string
+/**
+ * Project-root-relative, forward-slash path to the stylesheet.
+ */
+path: string
+/**
+ * 1-based line of the containing style rule.
+ */
+line: number
+/**
+ * Concrete token with the same or nearest comparable value, when resolved.
+ */
+nearest_token?: (NearestStylingToken | null)
+/**
+ * Read-only guidance step(s). Never auto-fixable.
  */
 actions: CssCandidateAction[]
 }
@@ -6569,6 +6750,34 @@ line: number
 actions: CssCandidateAction[]
 }
 /**
+ * A Tailwind v4 `@theme` token that appears to duplicate an existing token by
+ * value. Emitted conservatively for comparable token namespaces, with the
+ * nearest existing token named so an agent has a concrete reuse target.
+ */
+export interface NearDuplicateThemeToken {
+/**
+ * The full custom property as authored, including the `--` prefix.
+ */
+token: string
+/**
+ * The normalized authored token value.
+ */
+value: string
+/**
+ * Project-root-relative, forward-slash path to the token definition.
+ */
+path: string
+/**
+ * 1-based line of the token definition inside the `@theme` block.
+ */
+line: number
+nearest_token: NearestStylingToken
+/**
+ * Read-only guidance step(s) before replacing the token reference.
+ */
+actions: CssCandidateAction[]
+}
+/**
  * A location-aware reverse index of where one design token is consumed, so an
  * agent editing the token can see its blast radius before changing or removing
  * it. Covers TWO token origins. The always-available discriminator is the `token`
@@ -6583,12 +6792,13 @@ actions: CssCandidateAction[]
  *   `apply`), built from the same gated candidate set as `unused_theme_tokens`
  *   (v4 + non-plugin + non-published + whole-scope), so a `consumer_count: 0`
  *   corroborates the `unused_theme_tokens` "nothing consumes this" finding.
- * - CSS-in-JS tokens (kind `js-member`) from StyleX `defineVars` /
- *   vanilla-extract `createTheme` family definitions, consumed via cross-module
- *   member access. NOTE: CSS-in-JS has NO corroborating dead-token finding (there
- *   is no `unused_theme_tokens` analogue), so a CSS-in-JS `consumer_count: 0` is a
- *   weaker signal than the Tailwind case (and the cross-file scan is relative-import
- *   only, so alias / bare-package imports are not counted).
+ * - CSS-in-JS tokens (kind `js-member` / `js-call`) from StyleX `defineVars`,
+ *   vanilla-extract `createTheme` family definitions, and PandaCSS `defineTokens`,
+ *   consumed via cross-module member access or PandaCSS `token('...')` calls. NOTE:
+ *   CSS-in-JS has NO corroborating dead-token finding (there is no
+ *   `unused_theme_tokens` analogue), so a CSS-in-JS `consumer_count: 0` is a weaker
+ *   signal than the Tailwind case (and the cross-file scan is relative-import or
+ *   generated-token-helper only, so alias / bare-package imports are not counted).
  *
  * This is DESCRIPTIVE context (a blast-radius lookup), not a finding, so it
  * deliberately carries no `actions` array (unlike the cleanup-candidate types in
@@ -6760,6 +6970,66 @@ token_erosion: number
  * deep style-rule nesting. Capped at 10pt.
  */
 structural: number
+}
+/**
+ * One advisory STYLING FINDING: the graduation of a descriptive css candidate
+ * into a first-class, severity-aware, suppressible finding surfaced in
+ * `fallow audit`. The styling domain's OWN finding type (not borrowed into the
+ * dead-code `AnalysisResults`, and not glued in the CLI). `code` is the kebab
+ * IssueKind code (e.g. `css-token-drift`), so severity / inline suppression /
+ * SARIF / MCP all resolve via the shared `issue_meta` contract through
+ * `IssueKind::parse(code)`. One `Vec<StylingFinding>` carries every styling
+ * family; the `code` discriminates.
+ */
+export interface StylingFinding {
+/**
+ * The kebab IssueKind code, e.g. `css-token-drift`.
+ */
+code: string
+/**
+ * The specific sub-kind within the family, e.g. `tailwind-arbitrary-value`.
+ */
+sub_kind: string
+/**
+ * Workspace-relative path of the finding.
+ */
+path: string
+/**
+ * 1-based line of the finding.
+ */
+line: number
+/**
+ * The offending literal value, e.g. `w-[13px]`.
+ */
+value: string
+effective_severity: StylingFindingSeverity
+/**
+ * Optional static lower-bound blast radius. For a dead design token this is
+ * `0`; for other styling findings it is omitted.
+ */
+blast_radius?: (number | null)
+/**
+ * Confidence hint for agents and review UIs. Structural findings are high,
+ * reachability findings are low because dynamic consumers may exist.
+ */
+confidence?: (StylingFindingConfidence | null)
+/**
+ * Suggested handling posture for agents. This is advisory data, fallow
+ * still never applies styling changes automatically.
+ */
+agent_disposition?: (StylingAgentDisposition | null)
+/**
+ * Concrete reuse target for token-drift findings, when one can be resolved.
+ */
+nearest_token?: (NearestStylingToken | null)
+/**
+ * One concise machine-readable edit hint for agent consumers.
+ */
+fix_hint?: (string | null)
+/**
+ * Suggested next steps (verify / suppress; never an auto-fix).
+ */
+actions: CssCandidateAction[]
 }
 /**
  * Envelope emitted by `fallow explain <issue-type> --format json`.
@@ -7196,6 +7466,15 @@ css_analytics?: (CssAnalyticsReport | null)
  * code score is never affected by this field.
  */
 styling_health?: (StylingHealth | null)
+/**
+ * Advisory STYLING FINDINGS: the graduation of the descriptive css
+ * candidates into first-class, severity-aware, suppressible findings
+ * surfaced in `fallow audit`. Verdict-neutral by default (the rule defaults
+ * to `warn`); the styling domain's OWN findings collection, not the dead-code
+ * `AnalysisResults`. Present only with `--css`; empty is skipped so a plain
+ * run is byte-unchanged.
+ */
+styling_findings?: StylingFinding[]
 grouped_by?: (GroupByMode | null)
 groups?: (HealthGroup[] | null)
 _meta?: (Meta | null)

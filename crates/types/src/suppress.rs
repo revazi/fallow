@@ -169,6 +169,30 @@ pub enum IssueKind {
     /// analyzed project. Cross-file dead-output direction: the component fires an
     /// event nothing handles.
     UnusedSvelteEvent,
+    /// A CSS / CSS-in-JS design-token DRIFT candidate surfaced in `fallow audit`
+    /// as an advisory styling finding: a hardcoded value where a design token
+    /// exists (a Tailwind arbitrary value like `w-[13px]`, or a near-duplicate
+    /// token). Styling-domain finding produced by the health-time css pass (not
+    /// dead-code); the rule defaults to `warn` and is verdict-neutral.
+    CssTokenDrift,
+    /// A CSS / CSS-in-JS DUPLICATE declaration block: a copy-pasted rule body
+    /// repeated across selectors, a consolidation candidate. Styling-domain
+    /// advisory (rule defaults to `warn`, verdict-neutral); the audit copy of
+    /// this is changed-file-local.
+    CssDuplicateBlock,
+    /// A CSS selector / nesting / important-density complexity finding surfaced
+    /// as advisory styling feedback. Styling-domain finding produced by the
+    /// health-time css pass; defaults to `warn` and is verdict-neutral.
+    CssSelectorComplexity,
+    /// A CSS dead-surface finding, such as unused scoped SFC classes. Styling-
+    /// domain advisory surfaced in `fallow audit`; defaults to `warn` and is
+    /// verdict-neutral.
+    CssDeadSurface,
+    /// A CSS broken-reference finding, such as a class or keyframes reference
+    /// that resolves to no stylesheet definition. Styling-domain advisory
+    /// surfaced by deep CSS audit mode; defaults to `warn` and is
+    /// verdict-neutral.
+    CssBrokenReference,
 }
 
 impl IssueKind {
@@ -221,6 +245,11 @@ impl IssueKind {
         Self::ThinWrapper,
         Self::DuplicatePropShape,
         Self::UnusedSvelteEvent,
+        Self::CssTokenDrift,
+        Self::CssDuplicateBlock,
+        Self::CssSelectorComplexity,
+        Self::CssDeadSurface,
+        Self::CssBrokenReference,
     ];
 
     /// Parse an issue kind from the string tokens used in CLI output and suppression comments.
@@ -280,6 +309,11 @@ impl IssueKind {
             Self::UnusedComponentInput => 45,
             Self::UnusedComponentOutput => 46,
             Self::UnusedSvelteEvent => 47,
+            Self::CssTokenDrift => 48,
+            Self::CssDuplicateBlock => 49,
+            Self::CssSelectorComplexity => 50,
+            Self::CssDeadSurface => 51,
+            Self::CssBrokenReference => 52,
         }
     }
 
@@ -334,6 +368,11 @@ impl IssueKind {
             45 => Some(Self::UnusedComponentInput),
             46 => Some(Self::UnusedComponentOutput),
             47 => Some(Self::UnusedSvelteEvent),
+            48 => Some(Self::CssTokenDrift),
+            49 => Some(Self::CssDuplicateBlock),
+            50 => Some(Self::CssSelectorComplexity),
+            51 => Some(Self::CssDeadSurface),
+            52 => Some(Self::CssBrokenReference),
             _ => None,
         }
     }

@@ -1431,6 +1431,13 @@
           ],
           "description": "Styling-health score and letter grade: a SECOND health axis derived from\nthe CSS analytics (the design-system axis), orthogonal to the JS/TS code\n`health_score`. Present only with `--css` (the same condition as\n`css_analytics`), so a plain `fallow health` run is byte-unchanged. The\ncode score is never affected by this field."
         },
+        "styling_findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/StylingFinding"
+          },
+          "description": "Advisory STYLING FINDINGS: the graduation of the descriptive css\ncandidates into first-class, severity-aware, suppressible findings\nsurfaced in `fallow audit`. Verdict-neutral by default (the rule defaults\nto `warn`); the styling domain's OWN findings collection, not the dead-code\n`AnalysisResults`. Present only with `--css`; empty is skipped so a plain\nrun is byte-unchanged."
+        },
         "grouped_by": {
           "anyOf": [
             {
@@ -2442,6 +2449,13 @@
             }
           ],
           "description": "Styling-health score and letter grade: a SECOND health axis derived from\nthe CSS analytics (the design-system axis), orthogonal to the JS/TS code\n`health_score`. Present only with `--css` (the same condition as\n`css_analytics`), so a plain `fallow health` run is byte-unchanged. The\ncode score is never affected by this field."
+        },
+        "styling_findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/StylingFinding"
+          },
+          "description": "Advisory STYLING FINDINGS: the graduation of the descriptive css\ncandidates into first-class, severity-aware, suppressible findings\nsurfaced in `fallow audit`. Verdict-neutral by default (the rule defaults\nto `warn`); the styling domain's OWN findings collection, not the dead-code\n`AnalysisResults`. Present only with `--css`; empty is skipped so a plain\nrun is byte-unchanged."
         }
       },
       "required": [
@@ -13926,12 +13940,33 @@
           },
           "description": "Groups of style rules across the project that share an identical\ndeclaration block (4+ declarations, sorted and `!important`-aware),\ngrouped by content: copy-paste consolidation candidates (fallow's\nduplication signal applied to CSS). Sorted by estimated savings\ndescending."
         },
+        "cva_duplicate_variant_blocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CvaDuplicateVariantBlock"
+          },
+          "description": "CVA / shadcn variant class strings that repeat the same normalized class\nblock in several variant values. Kept separate from CSS declaration-block\nduplication because the source is JS config, not parsed CSS rules."
+        },
+        "cva_variant_token_drifts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CvaVariantTokenDrift"
+          },
+          "description": "CVA / shadcn variant class strings that hardcode a Tailwind arbitrary\nvalue even though an existing token has the same or nearest comparable\nvalue. Advisory: variants often encode product semantics, so agents\nshould verify intent before replacing."
+        },
         "tailwind_arbitrary_values": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/TailwindArbitraryValue"
           },
           "description": "Tailwind arbitrary-value utilities (`w-[13px]`, `bg-[#abc]`) found in\nmarkup, which hardcode a one-off value instead of a configured scale\ntoken (design-token bypass). Present only when the project uses Tailwind.\nSorted by use count descending. Candidates, not findings: an arbitrary\nvalue is sometimes the right call."
+        },
+        "raw_style_values": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RawStyleValue"
+          },
+          "description": "Located raw CSS declaration values that bypass token surfaces (`var()`,\n`token()`, `theme()`) on scale-sensitive axes such as color, font-size,\nline-height, radius, and shadow. Conservative candidates: a raw value can\nbe intentional, but introduced raw values are useful audit feedback."
         },
         "unused_at_rules": {
           "type": "array",
@@ -13967,6 +14002,13 @@
             "$ref": "#/definitions/UnusedThemeToken"
           },
           "description": "Tailwind v4 `@theme` design tokens (`--color-brand`, `--radius-card`)\ndefined in a stylesheet but used by no generated utility, `var()` read,\n`@apply`, or arbitrary value anywhere in the project: dead design tokens\n(the `unused-export` of the token era). Present only when the project is\nTailwind v4 (a `tailwindcss` dependency plus at least one `@theme` block)\nand not a plugin / published-library / partial-scope run. Candidates,\nnever gated findings: the token may be consumed by a Tailwind plugin or a\ndownstream repo. Sorted by `(path, line, token)`."
+        },
+        "near_duplicate_theme_tokens": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/NearDuplicateThemeToken"
+          },
+          "description": "Tailwind v4 theme tokens whose comparable values are close to another\ntoken in the same theme dictionary. These are opt-in `--css-deep`\ncandidates because they need whole-project token context."
         },
         "token_consumers": {
           "type": "array",
@@ -14325,6 +14367,18 @@
           "type": "integer",
           "description": "Total Tailwind arbitrary-value occurrences across markup."
         },
+        "preprocessor_stylesheets": {
+          "type": "integer",
+          "description": "Preprocessor stylesheets (`.scss`, `.sass`, `.less`) seen by the styling\nscan. These are parsed textually for local candidates, not compiled."
+        },
+        "preprocessor_reachability_abstained": {
+          "type": "boolean",
+          "description": "True when project-wide class reachability was skipped because\npreprocessor stylesheets outnumber plain CSS, making generated classes\ninvisible without a Sass/Less compiler."
+        },
+        "raw_style_values": {
+          "type": "integer",
+          "description": "Located raw CSS declaration values that bypass token surfaces on\nscale-sensitive axes. Located in `raw_style_values`."
+        },
         "unused_property_registrations": {
           "type": "integer",
           "description": "`@property` registrations never referenced via `var()` in any stylesheet\n(located in `unused_at_rules`). Cleanup candidates."
@@ -14348,6 +14402,10 @@
         "unused_theme_tokens": {
           "type": "integer",
           "description": "Tailwind v4 `@theme` design tokens defined but used by no generated\nutility, `var()`, `@apply`, or arbitrary value anywhere (located in\n`unused_theme_tokens`). Dead-design-token cleanup candidates; zero when\nthe project is not Tailwind v4 or a plugin / published-library /\npartial-scope run gated the scan out."
+        },
+        "near_duplicate_theme_tokens": {
+          "type": "integer",
+          "description": "Tailwind v4 theme tokens whose comparable values are close to another\ntoken in the same theme dictionary. Located in\n`near_duplicate_theme_tokens`."
         },
         "font_size_units_used": {
           "type": "integer",
@@ -14382,12 +14440,16 @@
         "duplicate_declarations_total",
         "tailwind_arbitrary_values",
         "tailwind_arbitrary_value_uses",
+        "preprocessor_stylesheets",
+        "preprocessor_reachability_abstained",
+        "raw_style_values",
         "unused_property_registrations",
         "unused_layers",
         "unresolved_class_references",
         "unreferenced_css_classes",
         "unused_font_faces",
         "unused_theme_tokens",
+        "near_duplicate_theme_tokens",
         "font_size_units_used",
         "notable_truncated_files"
       ],
@@ -14478,6 +14540,11 @@
           "type": "string",
           "const": "standardize",
           "description": "Standardize an inconsistent value axis on a single notation (the\ncolor-format / length-unit mixing candidates)."
+        },
+        {
+          "type": "string",
+          "const": "simplify-selector",
+          "description": "Simplify a selector, reduce nesting, or remove unnecessary `!important`\nusage after verifying the cascade."
         }
       ],
       "description": "Discriminant for [`CssCandidateAction::kind`]."
@@ -17571,7 +17638,7 @@
         "consumer_count",
         "consumers"
       ],
-      "description": "A location-aware reverse index of where one design token is consumed, so an\nagent editing the token can see its blast radius before changing or removing\nit. Covers TWO token origins. The always-available discriminator is the `token`\nSHAPE: a Tailwind token is the `--`-prefixed custom property (`--color-brand`),\na CSS-in-JS token is a dotted access path with no `--` prefix\n(`vars.color.primary`). The per-consumer `kind` also discriminates origin, but\nonly when `consumer_count > 0` (a `consumer_count: 0` entry has an empty\n`consumers` array and thus no `kind`), so branch on the `token` prefix for the\nzero-consumer case. The two origins:\n\n- Tailwind v4 `@theme` tokens (kinds `theme-var` / `css-var` / `utility` /\n  `apply`), built from the same gated candidate set as `unused_theme_tokens`\n  (v4 + non-plugin + non-published + whole-scope), so a `consumer_count: 0`\n  corroborates the `unused_theme_tokens` \"nothing consumes this\" finding.\n- CSS-in-JS tokens (kind `js-member`) from StyleX `defineVars` /\n  vanilla-extract `createTheme` family definitions, consumed via cross-module\n  member access. NOTE: CSS-in-JS has NO corroborating dead-token finding (there\n  is no `unused_theme_tokens` analogue), so a CSS-in-JS `consumer_count: 0` is a\n  weaker signal than the Tailwind case (and the cross-file scan is relative-import\n  only, so alias / bare-package imports are not counted).\n\nThis is DESCRIPTIVE context (a blast-radius lookup), not a finding, so it\ndeliberately carries no `actions` array (unlike the cleanup-candidate types in\nthis module). `consumer_count` is always a STATIC lower bound (a computed class\nname like `bg-${color}`, or a CSS-in-JS access through an unresolved alias\nimport, is not counted)."
+      "description": "A location-aware reverse index of where one design token is consumed, so an\nagent editing the token can see its blast radius before changing or removing\nit. Covers TWO token origins. The always-available discriminator is the `token`\nSHAPE: a Tailwind token is the `--`-prefixed custom property (`--color-brand`),\na CSS-in-JS token is a dotted access path with no `--` prefix\n(`vars.color.primary`). The per-consumer `kind` also discriminates origin, but\nonly when `consumer_count > 0` (a `consumer_count: 0` entry has an empty\n`consumers` array and thus no `kind`), so branch on the `token` prefix for the\nzero-consumer case. The two origins:\n\n- Tailwind v4 `@theme` tokens (kinds `theme-var` / `css-var` / `utility` /\n  `apply`), built from the same gated candidate set as `unused_theme_tokens`\n  (v4 + non-plugin + non-published + whole-scope), so a `consumer_count: 0`\n  corroborates the `unused_theme_tokens` \"nothing consumes this\" finding.\n- CSS-in-JS tokens (kind `js-member` / `js-call`) from StyleX `defineVars`,\n  vanilla-extract `createTheme` family definitions, and PandaCSS `defineTokens`,\n  consumed via cross-module member access or PandaCSS `token('...')` calls. NOTE:\n  CSS-in-JS has NO corroborating dead-token finding (there is no\n  `unused_theme_tokens` analogue), so a CSS-in-JS `consumer_count: 0` is a weaker\n  signal than the Tailwind case (and the cross-file scan is relative-import or\n  generated-token-helper only, so alias / bare-package imports are not counted).\n\nThis is DESCRIPTIVE context (a blast-radius lookup), not a finding, so it\ndeliberately carries no `actions` array (unlike the cleanup-candidate types in\nthis module). `consumer_count` is always a STATIC lower bound (a computed class\nname like `bg-${color}`, or a CSS-in-JS access through an unresolved alias\nimport, is not counted)."
     },
     "TokenConsumerLocation": {
       "type": "object",
@@ -17622,9 +17689,14 @@
           "type": "string",
           "const": "js-member",
           "description": "A cross-module JS member access on an imported CSS-in-JS token binding\n(`import { vars } from './tokens'; vars.color.primary`), for StyleX\n`defineVars` / vanilla-extract `createTheme` family tokens."
+        },
+        {
+          "type": "string",
+          "const": "js-call",
+          "description": "A CSS-in-JS function call that consumes a token by path, such as\nPandaCSS `token('colors.brand')` or `css({ color: 'colors.brand' })`."
         }
       ],
-      "description": "The surface through which a design token is consumed. The `theme-var` /\n`css-var` / `utility` / `apply` kinds are Tailwind v4 `@theme` consumption; the\n`js-member` kind is CSS-in-JS consumption (a cross-module member access on an\nimported StyleX/vanilla-extract token binding). The kind is the disjoint origin\nsignal that distinguishes a Tailwind token entry from a CSS-in-JS token entry in\nthe shared `token_consumers` list."
+      "description": "The surface through which a design token is consumed. The `theme-var` /\n`css-var` / `utility` / `apply` kinds are Tailwind v4 `@theme` consumption; the\n`js-member` / `js-call` kinds are CSS-in-JS consumption (member access on an\nimported StyleX/vanilla-extract token binding, or a PandaCSS `token('...')`\ncall). The kind is the disjoint origin signal that distinguishes a Tailwind\ntoken entry from a CSS-in-JS token entry in the shared `token_consumers` list."
     },
     "StylingHealth": {
       "type": "object",
@@ -17709,6 +17781,343 @@
         }
       ],
       "description": "Trust level for a [`StylingHealth`] grade. TWO variants (not the three-tier\n`high`/`medium`/`low` of [`crate::Confidence`] / `FeatureFlagConfidence`) ON\nPURPOSE: styling confidence is binary (the grade is either reliable for the\nanalyzed surface or it is not), not three distinct evidence tiers, so a\nnever-emitted `Medium` would be dead surface. Serializes lowercase (`\"high\"` /\n`\"low\"`), matching the sibling confidence enums' vocabulary."
+    },
+    "StylingFinding": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "The kebab IssueKind code, e.g. `css-token-drift`."
+        },
+        "sub_kind": {
+          "type": "string",
+          "description": "The specific sub-kind within the family, e.g. `tailwind-arbitrary-value`."
+        },
+        "path": {
+          "type": "string",
+          "description": "Workspace-relative path of the finding."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based line of the finding."
+        },
+        "value": {
+          "type": "string",
+          "description": "The offending literal value, e.g. `w-[13px]`."
+        },
+        "effective_severity": {
+          "description": "Effective severity after applying `rules.css-*` config. Styling defaults\nto `warn`, but projects can escalate a family to `error` for audit gates\nand CI formats.",
+          "$ref": "#/definitions/StylingFindingSeverity"
+        },
+        "blast_radius": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Optional static lower-bound blast radius. For a dead design token this is\n`0`; for other styling findings it is omitted."
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StylingFindingConfidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Confidence hint for agents and review UIs. Structural findings are high,\nreachability findings are low because dynamic consumers may exist."
+        },
+        "agent_disposition": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StylingAgentDisposition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Suggested handling posture for agents. This is advisory data, fallow\nstill never applies styling changes automatically."
+        },
+        "nearest_token": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NearestStylingToken"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Concrete reuse target for token-drift findings, when one can be resolved."
+        },
+        "fix_hint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "One concise machine-readable edit hint for agent consumers."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CssCandidateAction"
+          },
+          "description": "Suggested next steps (verify / suppress; never an auto-fix)."
+        }
+      },
+      "required": [
+        "code",
+        "sub_kind",
+        "path",
+        "line",
+        "value",
+        "effective_severity",
+        "actions"
+      ],
+      "description": "One advisory STYLING FINDING: the graduation of a descriptive css candidate\ninto a first-class, severity-aware, suppressible finding surfaced in\n`fallow audit`. The styling domain's OWN finding type (not borrowed into the\ndead-code `AnalysisResults`, and not glued in the CLI). `code` is the kebab\nIssueKind code (e.g. `css-token-drift`), so severity / inline suppression /\nSARIF / MCP all resolve via the shared `issue_meta` contract through\n`IssueKind::parse(code)`. One `Vec<StylingFinding>` carries every styling\nfamily; the `code` discriminates."
+    },
+    "NearDuplicateThemeToken": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "The full custom property as authored, including the `--` prefix."
+        },
+        "value": {
+          "type": "string",
+          "description": "The normalized authored token value."
+        },
+        "path": {
+          "type": "string",
+          "description": "Project-root-relative, forward-slash path to the token definition."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based line of the token definition inside the `@theme` block."
+        },
+        "nearest_token": {
+          "description": "The nearest existing token candidate to reuse instead.",
+          "$ref": "#/definitions/NearestStylingToken"
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CssCandidateAction"
+          },
+          "description": "Read-only guidance step(s) before replacing the token reference."
+        }
+      },
+      "required": [
+        "token",
+        "value",
+        "path",
+        "line",
+        "nearest_token",
+        "actions"
+      ],
+      "description": "A Tailwind v4 `@theme` token that appears to duplicate an existing token by\nvalue. Emitted conservatively for comparable token namespaces, with the\nnearest existing token named so an agent has a concrete reuse target."
+    },
+    "NearestStylingToken": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Token name, e.g. `--color-brand`."
+        },
+        "value": {
+          "type": "string",
+          "description": "Normalized token value."
+        },
+        "path": {
+          "type": "string",
+          "description": "Project-root-relative, forward-slash definition path."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based definition line."
+        },
+        "distance": {
+          "type": "number",
+          "description": "Distance from the finding value. Lower is closer; units depend on the\ncomparable token namespace."
+        }
+      },
+      "required": [
+        "name",
+        "value",
+        "path",
+        "line",
+        "distance"
+      ],
+      "description": "A styling token candidate that can replace or explain a finding."
+    },
+    "StylingFindingConfidence": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "high",
+          "description": "The finding is local and structural."
+        },
+        {
+          "type": "string",
+          "const": "low",
+          "description": "The finding depends on reachability and should be verified."
+        }
+      ],
+      "description": "Confidence hint for a [`StylingFinding`]."
+    },
+    "StylingAgentDisposition": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "fix-confidently",
+          "description": "The finding names a concrete structural edit target."
+        },
+        {
+          "type": "string",
+          "const": "verify-first",
+          "description": "Verify dynamic or external consumers before changing code."
+        }
+      ],
+      "description": "Agent handling hint for a [`StylingFinding`]."
+    },
+    "StylingFindingSeverity": {
+      "type": "string",
+      "enum": [
+        "warn",
+        "error"
+      ],
+      "description": "Effective configured severity for a styling finding."
+    },
+    "RawStyleValue": {
+      "type": "object",
+      "properties": {
+        "axis": {
+          "type": "string",
+          "description": "Value axis, e.g. `color`, `font-size`, `line-height`, `radius`, or `shadow`."
+        },
+        "property": {
+          "type": "string",
+          "description": "CSS property where the raw value appears."
+        },
+        "value": {
+          "type": "string",
+          "description": "Rendered declaration value."
+        },
+        "path": {
+          "type": "string",
+          "description": "Project-root-relative, forward-slash path to the stylesheet."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based line of the containing style rule."
+        },
+        "nearest_token": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NearestStylingToken"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Concrete token with the same or nearest comparable value, when resolved."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CssCandidateAction"
+          },
+          "description": "Read-only guidance step(s). Never auto-fixable."
+        }
+      },
+      "required": [
+        "axis",
+        "property",
+        "value",
+        "path",
+        "line",
+        "actions"
+      ],
+      "description": "A located raw CSS declaration value on a scale-sensitive styling axis."
+    },
+    "CvaDuplicateVariantBlock": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "string",
+          "description": "Normalized class block shared by several variant values."
+        },
+        "occurrence_count": {
+          "type": "integer",
+          "description": "Number of variant values with this class block."
+        },
+        "occurrences": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CssBlockOccurrence"
+          },
+          "description": "First locations of the duplicate values, sorted by path and line."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CssCandidateAction"
+          },
+          "description": "Read-only guidance step(s), so consumers can iterate `actions`\nuniformly across every candidate type."
+        }
+      },
+      "required": [
+        "value",
+        "occurrence_count",
+        "occurrences",
+        "actions"
+      ],
+      "description": "A duplicated CVA / shadcn variant class block."
+    },
+    "CvaVariantTokenDrift": {
+      "type": "object",
+      "properties": {
+        "class_token": {
+          "type": "string",
+          "description": "Tailwind arbitrary-value utility inside the variant class string."
+        },
+        "value": {
+          "type": "string",
+          "description": "Normalized value inside the arbitrary utility."
+        },
+        "variant_classes": {
+          "type": "string",
+          "description": "Full normalized variant class block containing the token."
+        },
+        "path": {
+          "type": "string",
+          "description": "Project-root-relative, forward-slash path to the variant definition."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based line of the variant class string."
+        },
+        "nearest_token": {
+          "description": "Existing token candidate to reuse.",
+          "$ref": "#/definitions/NearestStylingToken"
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CssCandidateAction"
+          },
+          "description": "Read-only guidance step(s), so consumers can iterate `actions`\nuniformly across every candidate type."
+        }
+      },
+      "required": [
+        "class_token",
+        "value",
+        "variant_classes",
+        "path",
+        "line",
+        "nearest_token",
+        "actions"
+      ],
+      "description": "A CVA / shadcn variant class value that can reuse an existing styling token."
     }
   }
 }

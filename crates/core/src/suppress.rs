@@ -79,6 +79,15 @@ fn severity_for_kind(rules: &RulesConfig, kind: IssueKind) -> Severity {
         IssueKind::PropDrilling => rules.prop_drilling,
         IssueKind::ThinWrapper => rules.thin_wrapper,
         IssueKind::DuplicatePropShape => rules.duplicate_prop_shape,
+        // CssTokenDrift is a STYLING-domain finding produced by the engine css
+        // pass (short-circuits via NON_CORE_KINDS for core suppression), but it
+        // has a real config rule, so return it: the engine reads this to gate
+        // production (off) and the audit verdict reads it for error-escalation.
+        IssueKind::CssTokenDrift => rules.css_token_drift,
+        IssueKind::CssDuplicateBlock => rules.css_duplicate_block,
+        IssueKind::CssSelectorComplexity => rules.css_selector_complexity,
+        IssueKind::CssDeadSurface => rules.css_dead_surface,
+        IssueKind::CssBrokenReference => rules.css_broken_reference,
         IssueKind::Complexity | IssueKind::CodeDuplication => Severity::Error,
     }
 }
@@ -93,6 +102,11 @@ const NON_CORE_KINDS: &[IssueKind] = &[
     IssueKind::CoverageGaps,
     IssueKind::FeatureFlag,
     IssueKind::CodeDuplication,
+    IssueKind::CssTokenDrift,
+    IssueKind::CssDuplicateBlock,
+    IssueKind::CssSelectorComplexity,
+    IssueKind::CssDeadSurface,
+    IssueKind::CssBrokenReference,
     IssueKind::UnusedDependency,
     IssueKind::UnusedDevDependency,
     IssueKind::UnlistedDependency,
@@ -634,6 +648,11 @@ mod tests {
             IssueKind::UnusedComponentInput,
             IssueKind::UnusedComponentOutput,
             IssueKind::UnusedSvelteEvent,
+            IssueKind::CssTokenDrift,
+            IssueKind::CssDuplicateBlock,
+            IssueKind::CssSelectorComplexity,
+            IssueKind::CssDeadSurface,
+            IssueKind::CssBrokenReference,
         ] {
             assert_eq!(
                 IssueKind::from_discriminant(kind.to_discriminant()),
@@ -641,7 +660,12 @@ mod tests {
             );
         }
         assert_eq!(IssueKind::from_discriminant(0), None);
-        assert_eq!(IssueKind::from_discriminant(48), None);
+        let max_discriminant = IssueKind::ALL
+            .iter()
+            .map(|kind| kind.to_discriminant())
+            .max()
+            .unwrap();
+        assert_eq!(IssueKind::from_discriminant(max_discriminant + 1), None);
     }
 
     #[test]

@@ -556,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn heavy_code_mode_combined_uses_cancellable_subprocess_path() {
+    fn api_backed_combined_does_not_spawn_binary() {
         let temp = tempfile::tempdir().expect("tempdir");
         fs::create_dir(temp.path().join("src")).expect("src dir");
         fs::write(
@@ -579,13 +579,17 @@ mod tests {
                 max_output_bytes: Some(200_000),
             },
         )
-        .expect_err("heavy combined should use the cancellable subprocess path");
+        .expect("api-backed combined should not need the binary");
 
         let json: serde_json::Value = serde_json::from_str(&output).expect("code mode json");
-        assert_eq!(json["ok"].as_bool(), Some(false));
+        assert_eq!(json["ok"].as_bool(), Some(true));
+        assert_eq!(json["result"]["kind"].as_str(), Some("combined"));
+        assert!(json["result"]["check"]["summary"].is_object());
+        assert!(json["result"]["check"]["unused_exports"].is_array());
+        assert!(json["result"]["dupes"]["stats"].is_object());
+        assert!(json["result"]["health"]["summary"].is_object());
         assert_eq!(json["calls"][0]["tool"].as_str(), Some("combined"));
-        assert_eq!(json["calls"][0]["ok"].as_bool(), Some(false));
-        assert_eq!(json["calls"][0]["error_kind"].as_str(), Some("subprocess"));
+        assert_eq!(json["calls"][0]["ok"].as_bool(), Some(true));
     }
 
     #[test]

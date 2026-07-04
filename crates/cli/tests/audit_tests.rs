@@ -233,6 +233,670 @@ fn audit_pass_verdict_when_no_changes() {
     );
 }
 
+#[test]
+fn audit_css_selector_complexity_error_escalates_verdict() {
+    let dir = TempDir::new().expect("create temp dir");
+    let root = dir.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("package.json"), r#"{"name":"audit-css"}"#).unwrap();
+    fs::write(root.join("src/index.ts"), "export const ok = true;\n").unwrap();
+    git(root, &["init", "-b", "main"]);
+    commit_all(root, "initial");
+
+    fs::write(
+        root.join(".fallowrc.json"),
+        r#"{"rules":{"css-selector-complexity":"error"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/styles.css"),
+        "#app .card .title { color: red; }\n",
+    )
+    .unwrap();
+
+    let output = run_fallow_raw(&[
+        "audit",
+        "--root",
+        root.to_str().unwrap(),
+        "--base",
+        "HEAD",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(
+        output.code, 1,
+        "css selector error escalation should fail audit. stderr: {}",
+        output.stderr
+    );
+    let json = parse_json(&output);
+    assert_eq!(json["verdict"].as_str(), Some("fail"));
+    let findings = json["complexity"]["styling_findings"]
+        .as_array()
+        .expect("styling findings should be present");
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-selector-complexity"
+                && finding["sub_kind"] == "high-specificity"
+        }),
+        "styling findings include selector complexity: {findings:#?}"
+    );
+}
+
+#[test]
+fn audit_css_selector_complexity_new_only_ignores_inherited_styling() {
+    let dir = TempDir::new().expect("create temp dir");
+    let root = dir.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("package.json"), r#"{"name":"audit-css-pr-diff"}"#).unwrap();
+    fs::write(
+        root.join(".fallowrc.json"),
+        r#"{"rules":{"css-selector-complexity":"error"}}"#,
+    )
+    .unwrap();
+    fs::write(root.join("src/index.ts"), "export const ok = true;\n").unwrap();
+    fs::write(
+        root.join("src/styles.css"),
+        "#app .legacy .title { color: red; }\n",
+    )
+    .unwrap();
+    git(root, &["init", "-b", "main"]);
+    commit_all(root, "initial");
+
+    fs::write(
+        root.join("src/styles.css"),
+        "#app .legacy .title { color: red; }\n.plain { color: blue; }\n",
+    )
+    .unwrap();
+    let inherited_output = run_fallow_raw(&[
+        "audit",
+        "--root",
+        root.to_str().unwrap(),
+        "--base",
+        "HEAD",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(
+        inherited_output.code, 0,
+        "inherited styling should not fail new-only audit. stdout: {}\nstderr: {}",
+        inherited_output.stdout, inherited_output.stderr
+    );
+
+    fs::write(
+        root.join("src/styles.css"),
+        "#app .legacy .title { color: red; }\n.plain { color: blue; }\n#app .introduced .title { color: green; }\n",
+    )
+    .unwrap();
+    let introduced_output = run_fallow_raw(&[
+        "audit",
+        "--root",
+        root.to_str().unwrap(),
+        "--base",
+        "HEAD",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(
+        introduced_output.code, 1,
+        "introduced styling should fail new-only audit. stdout: {}\nstderr: {}",
+        introduced_output.stdout, introduced_output.stderr
+    );
+    let json = parse_json(&introduced_output);
+    assert_eq!(json["verdict"].as_str(), Some("fail"));
+    let findings = json["complexity"]["styling_findings"]
+        .as_array()
+        .expect("styling findings should be present");
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-selector-complexity"
+                && finding["sub_kind"] == "high-specificity"
+                && finding["line"] == 3
+        }),
+        "introduced selector line should appear in styling findings: {findings:#?}"
+    );
+}
+
+#[test]
+fn audit_css_token_drift_gates_introduced_raw_style_value() {
+    let dir = TempDir::new().expect("create temp dir");
+    let root = dir.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("package.json"), r#"{"name":"audit-raw-css"}"#).unwrap();
+    fs::write(
+        root.join(".fallowrc.json"),
+        r#"{"rules":{"css-token-drift":"error"}}"#,
+    )
+    .unwrap();
+    fs::write(root.join("src/index.ts"), "export const ok = true;\n").unwrap();
+    fs::write(
+        root.join("src/styles.css"),
+        ":root { --text-size: 1rem; }\n.title { font-size: var(--text-size); }\n",
+    )
+    .unwrap();
+    git(root, &["init", "-b", "main"]);
+    commit_all(root, "initial");
+
+    fs::write(
+        root.join("src/styles.css"),
+        ":root { --text-size: 1rem; }\n.title { font-size: var(--text-size); }\n.card { font-size: 15.75px; }\n",
+    )
+    .unwrap();
+    let output = run_fallow_raw(&[
+        "audit",
+        "--root",
+        root.to_str().unwrap(),
+        "--base",
+        "HEAD",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(
+        output.code, 1,
+        "introduced raw style value near an existing token should fail when css-token-drift is error. stdout: {}\nstderr: {}",
+        output.stdout, output.stderr
+    );
+    let json = parse_json(&output);
+    assert_eq!(json["verdict"].as_str(), Some("fail"));
+    let findings = json["complexity"]["styling_findings"]
+        .as_array()
+        .expect("styling findings should be present");
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-token-drift"
+                && finding["sub_kind"] == "raw-style-value"
+                && finding["value"] == "font-size font-size: 15.75px"
+                && finding["nearest_token"]["name"] == "--text-size"
+        }),
+        "raw style value near an existing token should appear as token drift: {findings:#?}"
+    );
+}
+
+#[test]
+fn audit_css_surfaces_unused_styled_export_as_dead_surface() {
+    let dir = TempDir::new().expect("create temp dir");
+    let root = dir.path();
+    write_dead_style_export_base(root);
+    fs::write(root.join("src/index.ts"), "export const ok = true;\n").unwrap();
+    git(root, &["init", "-b", "main"]);
+    commit_all(root, "initial");
+
+    write_dead_style_export_changed_files(root);
+
+    let output = run_fallow_raw(&[
+        "audit",
+        "--root",
+        root.to_str().unwrap(),
+        "--base",
+        "HEAD",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(
+        output.code, 1,
+        "unused styled export should still fail through dead-code. stdout: {}\nstderr: {}",
+        output.stdout, output.stderr
+    );
+    let json = parse_json(&output);
+    let findings = json["complexity"]["styling_findings"]
+        .as_array()
+        .expect("styling findings should be present");
+    assert_dead_style_finding(findings, "unused-styled-binding", "Card");
+    for (sub_kind, value) in [
+        ("unused-styled-binding", "EmotionCard"),
+        ("unused-stylex-binding", "styles"),
+        ("unused-vanilla-extract-binding", "vanillaCard"),
+        ("unused-panda-binding", "pandaClass"),
+        ("unused-cva-binding", "button"),
+    ] {
+        assert_dead_style_finding(findings, sub_kind, value);
+    }
+}
+
+fn write_dead_style_export_base(root: &Path) {
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"audit-dead-styled","dependencies":{"styled-components":"^6.1.0","@emotion/styled":"^11.0.0","@stylexjs/stylex":"^0.1.0","@vanilla-extract/css":"^1.0.0","@pandacss/dev":"^0.54.0","class-variance-authority":"^0.7.0"}}"#,
+    )
+    .unwrap();
+}
+
+fn write_dead_style_export_changed_files(root: &Path) {
+    for (path, source) in [
+        (
+            "src/index.ts",
+            "import { usedValue } from './card';\n\
+             import { emotionUsed } from './emotion';\n\
+             import { stylexUsed } from './stylex';\n\
+             import { vanillaUsed } from './vanilla.css';\n\
+             import { pandaUsed } from './panda';\n\
+             import { cvaUsed } from './cva';\n\
+             console.log(usedValue, emotionUsed, stylexUsed, vanillaUsed, pandaUsed, cvaUsed);\n",
+        ),
+        (
+            "src/card.tsx",
+            "import styled from 'styled-components';\n\
+             export const usedValue = 1;\n\
+             export const Card = styled.div`\n\
+               color: red;\n\
+               padding: 8px;\n\
+             `;\n",
+        ),
+        (
+            "src/emotion.tsx",
+            "import styled from '@emotion/styled';\n\
+             export const emotionUsed = 1;\n\
+             export const EmotionCard = styled.div`\n\
+               color: red;\n\
+             `;\n",
+        ),
+        (
+            "src/stylex.ts",
+            "import * as stylex from '@stylexjs/stylex';\n\
+             export const stylexUsed = 1;\n\
+             export const styles = stylex.create({ root: { color: 'red' } });\n",
+        ),
+        (
+            "src/vanilla.css.ts",
+            "import { style } from '@vanilla-extract/css';\n\
+             export const vanillaUsed = 1;\n\
+             export const vanillaCard = style({ color: 'red' });\n",
+        ),
+        (
+            "src/panda.ts",
+            "import { css } from '../styled-system/css';\n\
+             export const pandaUsed = 1;\n\
+             export const pandaClass = css({ color: 'red' });\n",
+        ),
+        (
+            "src/cva.ts",
+            "import { cva } from 'class-variance-authority';\n\
+             export const cvaUsed = 1;\n\
+             export const button = cva('px-3 py-2');\n",
+        ),
+    ] {
+        fs::write(root.join(path), source).unwrap();
+    }
+}
+
+fn assert_dead_style_finding(findings: &[serde_json::Value], sub_kind: &str, value: &str) {
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-dead-surface"
+                && finding["sub_kind"] == sub_kind
+                && finding["value"]
+                    .as_str()
+                    .is_some_and(|actual| actual.contains(value))
+                && finding["confidence"] == "low"
+                && finding["agent_disposition"] == "verify-first"
+        }),
+        "{sub_kind} {value} should appear as a styling dead surface: {findings:#?}"
+    );
+}
+
+#[test]
+fn audit_css_surfaces_cva_duplicate_variant_blocks() {
+    let dir = TempDir::new().expect("create temp dir");
+    let root = dir.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"audit-cva","dependencies":{"class-variance-authority":"^0.7.0","tailwindcss":"^4.0.0"}}"#,
+    )
+    .unwrap();
+    fs::write(root.join("src/index.ts"), "export const ok = true;\n").unwrap();
+    git(root, &["init", "-b", "main"]);
+    commit_all(root, "initial");
+
+    fs::write(
+        root.join("src/button.ts"),
+        "import { cva } from 'class-variance-authority';\n\
+         export const button = cva('inline-flex', {\n\
+           variants: {\n\
+             tone: {\n\
+               primary: 'px-3 py-2 text-sm font-medium bg-[#f05a28]',\n\
+               secondary: 'px-3 py-2 text-sm font-medium bg-[#f05a28]',\n\
+             },\n\
+           },\n\
+         });\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/styles.css"),
+        "@theme {\n  --color-brand: #f05a28;\n}\n",
+    )
+    .unwrap();
+
+    let output = run_fallow_raw(&[
+        "audit",
+        "--root",
+        root.to_str().unwrap(),
+        "--base",
+        "HEAD",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    let json = parse_json(&output);
+    let findings = json["complexity"]["styling_findings"]
+        .as_array()
+        .expect("styling findings should be present");
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-duplicate-block"
+                && finding["sub_kind"] == "cva-duplicate-variant-block"
+                && finding["value"].as_str().is_some_and(|value| {
+                    value.contains("px-3 py-2 text-sm font-medium bg-[#f05a28]")
+                })
+                && finding["confidence"] == "high"
+                && finding["agent_disposition"] == "fix-confidently"
+        }),
+        "CVA duplicate variant block should appear as a styling finding: {findings:#?}"
+    );
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-token-drift"
+                && finding["sub_kind"] == "cva-variant-token-drift"
+                && finding["value"]
+                    .as_str()
+                    .is_some_and(|value| value.contains("bg-[#f05a28]"))
+                && finding["nearest_token"]["name"] == "--color-brand"
+                && finding["confidence"] == "low"
+                && finding["agent_disposition"] == "verify-first"
+                && finding["fix_hint"]
+                    .as_str()
+                    .is_some_and(|hint| hint.contains("reuse --color-brand"))
+        }),
+        "CVA variant arbitrary value should point at the existing theme token: {findings:#?}"
+    );
+}
+
+#[test]
+fn audit_human_splits_styling_by_confidence_budget() {
+    let dir = TempDir::new().expect("create temp dir");
+    let root = dir.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("package.json"), r#"{"name":"audit-styling-ux"}"#).unwrap();
+    fs::write(root.join("src/index.ts"), "export const ok = true;\n").unwrap();
+    git(root, &["init", "-b", "main"]);
+    commit_all(root, "initial");
+
+    fs::write(
+        root.join("src/styles.css"),
+        ":root { --text-size: 1rem; }\n#app .legacy .title { color: red; }\n.card { font-size: 15.75px; }\n",
+    )
+    .unwrap();
+
+    let output = run_fallow_raw(&["audit", "--root", root.to_str().unwrap(), "--base", "HEAD"]);
+    assert!(
+        output.stdout.contains("Fix confidently"),
+        "human styling output should include high-confidence group. stdout: {}",
+        output.stdout
+    );
+    assert!(
+        output.stdout.contains("Verify first"),
+        "human styling output should include verify-first group. stdout: {}",
+        output.stdout
+    );
+}
+
+#[test]
+fn audit_css_deep_surfaces_cross_file_styling_findings() {
+    let dir = create_audit_css_deep_fixture();
+    let root = dir.path();
+
+    let default_json = audit_css_json(root, &[], 0);
+    let default_findings = default_json["complexity"]["styling_findings"]
+        .as_array()
+        .expect("default audit should include deep styling findings");
+    assert_has_deep_css_findings(default_findings);
+
+    let shallow_json = audit_css_json(root, &["--no-css-deep"], 0);
+    let shallow_findings = shallow_json["complexity"]["styling_findings"]
+        .as_array()
+        .expect("shallow audit should keep local styling findings");
+    assert_has_raw_style_value(shallow_findings);
+    assert_no_deep_css_findings(shallow_findings);
+
+    let deep_json = audit_css_json(root, &["--css-deep"], 0);
+    let findings = deep_json["complexity"]["styling_findings"]
+        .as_array()
+        .expect("deep styling findings should be present");
+    assert_has_deep_css_findings(findings);
+}
+
+fn create_audit_css_deep_fixture() -> TempDir {
+    let dir = TempDir::new().expect("create temp dir");
+    let root = dir.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"audit-css-deep","devDependencies":{"@pandacss/dev":"^1.0.0","@stylexjs/stylex":"^0.10.0","@vanilla-extract/css":"^1.17.0","tailwindcss":"^4.0.0"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/app.jsx"),
+        "export const App = () => <div />;\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/tokens.stylex.ts"),
+        "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: { brand: '#123456' } });\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/vanilla.css.ts"),
+        "import { createGlobalTheme } from '@vanilla-extract/css';\nexport const veVars = createGlobalTheme(':root', { color: { accent: '#654321' } });\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/panda.ts"),
+        "import { defineTokens } from '@pandacss/dev';\nexport const pandaTokens = defineTokens({ colors: { info: { value: '#abcdef' } } });\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("panda.config.ts"),
+        "import { defineConfig } from '@pandacss/dev';\nexport default defineConfig({ theme: { tokens: { colors: { config: { value: '#fedcba' } } } } });\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/styles.css"),
+        "@theme {\n  --color-zbrand: #f05a28;\n  --color-danger: red;\n  --text-body: 14px;\n  --spacing-zcard: 1rem;\n}\n.btn-primary { color: red; font-size: 14px; }\n",
+    )
+    .unwrap();
+    git(root, &["init", "-b", "main"]);
+    commit_all(root, "initial");
+
+    fs::write(
+        root.join("src/app.jsx"),
+        "export const App = () => <div className=\"btn-prmary bg-abrand\" />;\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/styles.css"),
+        "@theme {\n  --color-zbrand: #f05a28;\n  --color-danger: red;\n  --color-abrand: rgb(240 90 41);\n  --color-status-queued-bg: rgb(240 90 42);\n  --color-secondary: hsl(40 6% 93%);\n  --color-muted: hsl(40 6% 93%);\n  --text-body: 14px;\n  --spacing-zcard: 1rem;\n  --spacing-acard: 16.25px;\n  --shadow-glow: 0 0 8px red;\n}\n:root { --color-notice: #00ff00; }\n.btn-primary { color: red; font-size: 14px; }\n.notice { background-color: #00ff00; }\n.stylex-match { color: #123456; }\n.vanilla-match { color: #654321; }\n.panda-match { color: #abcdef; }\n.panda-config-match { color: #fedcba; }\n",
+    )
+    .unwrap();
+    dir
+}
+
+fn audit_css_json(root: &Path, extra_args: &[&str], expected_code: i32) -> serde_json::Value {
+    let root = root.to_str().unwrap();
+    let mut args = vec!["audit", "--root", root, "--base", "HEAD"];
+    args.extend_from_slice(extra_args);
+    args.extend_from_slice(&["--format", "json", "--quiet"]);
+    let output = run_fallow_raw(&args);
+    assert_eq!(
+        output.code, expected_code,
+        "audit exited unexpectedly. stderr: {}",
+        output.stderr
+    );
+    parse_json(&output)
+}
+
+fn assert_has_deep_css_findings(findings: &[serde_json::Value]) {
+    assert_has_raw_style_value(findings);
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-dead-surface"
+                && finding["sub_kind"] == "unused-theme-token"
+                && finding["value"] == "--shadow-glow"
+                && finding["blast_radius"] == 0
+        }),
+        "deep audit should include dead theme token with blast radius: {findings:#?}"
+    );
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-broken-reference"
+                && finding["sub_kind"] == "unresolved-class-reference"
+                && finding["value"] == "btn-prmary -> btn-primary"
+        }),
+        "deep audit should include unresolved class reference: {findings:#?}"
+    );
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-token-drift"
+                && finding["sub_kind"] == "near-duplicate-theme-token"
+                && finding["value"] == "--color-abrand: rgb(240 90 41)"
+                && finding["nearest_token"]["name"] == "--color-zbrand"
+                && finding["confidence"] == "high"
+                && finding["agent_disposition"] == "fix-confidently"
+        }),
+        "deep audit should include near-duplicate theme token with target: {findings:#?}"
+    );
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-token-drift"
+                && finding["sub_kind"] == "near-duplicate-theme-token"
+                && finding["value"] == "--spacing-acard: 16.25px"
+                && finding["nearest_token"]["name"] == "--spacing-zcard"
+                && finding["confidence"] == "high"
+                && finding["agent_disposition"] == "fix-confidently"
+        }),
+        "deep audit should include numeric near-duplicate theme token with target: {findings:#?}"
+    );
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-token-drift"
+                && finding["sub_kind"] == "near-duplicate-theme-token"
+                && finding["value"] == "--color-status-queued-bg: rgb(240 90 42)"
+                && finding["confidence"] == "low"
+                && finding["agent_disposition"] == "verify-first"
+        }),
+        "semantic product color aliases should be review-first: {findings:#?}"
+    );
+    assert!(
+        !findings.iter().any(|finding| {
+            finding["code"] == "css-token-drift"
+                && finding["sub_kind"] == "near-duplicate-theme-token"
+                && finding["value"].as_str().is_some_and(|value| {
+                    value.starts_with("--color-secondary:") || value.starts_with("--color-muted:")
+                })
+        }),
+        "semantic shadcn-style aliases must not be near-duplicate token findings: {findings:#?}"
+    );
+}
+
+fn assert_has_raw_style_value(findings: &[serde_json::Value]) {
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-token-drift"
+                && finding["sub_kind"] == "raw-style-value"
+                && finding["value"] == "color color: red"
+                && finding["nearest_token"]["name"] == "--color-danger"
+                && finding["confidence"] == "low"
+                && finding["agent_disposition"] == "verify-first"
+                && finding["fix_hint"]
+                    .as_str()
+                    .is_some_and(|hint| hint.contains("reuse --color-danger"))
+        }),
+        "audit should include local raw color value with nearest token: {findings:#?}"
+    );
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-token-drift"
+                && finding["sub_kind"] == "raw-style-value"
+                && finding["value"] == "font-size font-size: 14px"
+                && finding["nearest_token"]["name"] == "--text-body"
+                && finding["confidence"] == "low"
+                && finding["agent_disposition"] == "verify-first"
+        }),
+        "audit should include local raw font-size value with nearest token: {findings:#?}"
+    );
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-token-drift"
+                && finding["sub_kind"] == "raw-style-value"
+                && finding["value"] == "color background-color: #0f0"
+                && finding["nearest_token"]["name"] == "--color-notice"
+                && finding["fix_hint"]
+                    .as_str()
+                    .is_some_and(|hint| hint.contains("reuse --color-notice"))
+        }),
+        "audit should include raw color matched to a CSS custom property token: {findings:#?}"
+    );
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-token-drift"
+                && finding["sub_kind"] == "raw-style-value"
+                && finding["value"] == "color color: #123456"
+                && finding["nearest_token"]["name"] == "vars.color.brand"
+                && finding["fix_hint"]
+                    .as_str()
+                    .is_some_and(|hint| hint.contains("reuse vars.color.brand"))
+        }),
+        "audit should include raw color matched to a CSS-in-JS token: {findings:#?}"
+    );
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-token-drift"
+                && finding["sub_kind"] == "raw-style-value"
+                && finding["value"] == "color color: #654321"
+                && finding["nearest_token"]["name"] == "veVars.color.accent"
+        }),
+        "audit should include raw color matched to a vanilla-extract token: {findings:#?}"
+    );
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-token-drift"
+                && finding["sub_kind"] == "raw-style-value"
+                && finding["value"] == "color color: #abcdef"
+                && finding["nearest_token"]["name"] == "pandaTokens.colors.info"
+        }),
+        "audit should include raw color matched to a Panda token: {findings:#?}"
+    );
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-token-drift"
+                && finding["sub_kind"] == "raw-style-value"
+                && finding["value"] == "color color: #fedcba"
+                && finding["nearest_token"]["name"] == "pandaConfig.colors.config"
+        }),
+        "audit should include raw color matched to a Panda config token: {findings:#?}"
+    );
+}
+
+fn assert_no_deep_css_findings(findings: &[serde_json::Value]) {
+    assert!(
+        !findings.iter().any(|finding| {
+            matches!(
+                finding["sub_kind"].as_str(),
+                Some(
+                    "unused-theme-token"
+                        | "unresolved-class-reference"
+                        | "near-duplicate-theme-token"
+                )
+            )
+        }),
+        "shallow audit should not emit cross-file styling findings: {findings:#?}"
+    );
+}
+
 /// Audit's HEAD analyses and base-snapshot computation run concurrently via
 /// `rayon::join`; inside the base snapshot, check and dupes also run
 /// concurrently. Verify nondeterministic scheduling does not leak into the

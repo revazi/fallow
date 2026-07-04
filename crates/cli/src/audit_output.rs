@@ -6,7 +6,7 @@ use fallow_api::{
     AuditCodeClimateOutputInput, AuditJsonHeaderInput, AuditJsonOutputInput, AuditSarifOutputInput,
     DupesReportPayload,
 };
-use fallow_config::{AuditGate, OutputFormat};
+use fallow_config::{AuditGate, OutputFormat, RulesConfig, Severity};
 use fallow_output::PrDecisionConclusion;
 use fallow_types::envelope::{ElapsedMs, SchemaVersion, ToolVersion};
 use fallow_types::results::AnalysisResults;
@@ -16,7 +16,9 @@ use crate::report;
 use crate::report::plural;
 use crate::report::sink::outln;
 
-use super::keys::{annotate_dead_code_json, annotate_dupes_json, annotate_health_json};
+use super::keys::{
+    annotate_dead_code_json, annotate_dupes_json, annotate_health_json, styling_finding_key,
+};
 use super::{AuditResult, AuditSummary, AuditVerdict};
 
 /// Print audit results and return the appropriate exit code.
@@ -102,8 +104,18 @@ fn print_audit_human(result: &AuditResult, quiet: bool, explain: bool, output: O
     let has_check_issues = result.summary.dead_code_issues > 0;
     let has_health_findings = result.summary.complexity_findings > 0;
     let has_dupe_groups = result.summary.duplication_clone_groups > 0;
+    // Styling is verdict-neutral but must still surface when it is the ONLY
+    // signal (a project clean of dead-code/complexity/dupes but with styling
+    // candidates), else the styling summary is invisible on the common case.
+    let has_styling = result.health.as_ref().is_some_and(|h| {
+        !h.report.styling_findings.is_empty()
+            || h.report
+                .css_analytics
+                .as_ref()
+                .is_some_and(|c| styling_candidate_count(&c.summary) > 0)
+    });
 
-    if has_check_issues || has_health_findings || has_dupe_groups {
+    if has_check_issues || has_health_findings || has_dupe_groups || has_styling {
         print_audit_findings(result, quiet, explain, show_headers);
     }
 
@@ -178,6 +190,231 @@ pub fn print_audit_findings(result: &AuditResult, quiet: bool, explain: bool, sh
                 css_requested: false,
             },
         );
+    }
+
+    print_audit_styling_summary(result, show_headers);
+}
+
+/// Count the styling candidates in a CSS analytics summary (dead surface + token
+/// drift + broken references). Saturating, matching the CSS-analytics
+/// accumulation convention (`css_analytics.rs` uses `saturating_add` throughout).
+fn styling_candidate_count(s: &fallow_output::CssAnalyticsSummary) -> u32 {
+    [
+        s.tailwind_arbitrary_values,
+        s.duplicate_declaration_blocks,
+        s.unreferenced_css_classes,
+        s.unused_theme_tokens,
+        s.unused_font_faces,
+        s.unused_property_registrations,
+        s.unused_layers,
+        s.scoped_unused_classes,
+        s.keyframes_unreferenced,
+        s.keyframes_undefined,
+        s.unresolved_class_references,
+    ]
+    .into_iter()
+    .fold(0u32, u32::saturating_add)
+}
+
+/// Styling section in the audit view: the graduated, agent-actionable styling
+/// FINDINGS (top-N per the noise budget), falling back to a candidate count for
+/// the not-yet-graduated descriptive candidates. Verdict-neutral; deliberately NOT
+/// the A-F styling grade (that stays in `fallow health` for trending, per plan).
+fn print_audit_styling_summary(result: &AuditResult, show_headers: bool) {
+    /// Noise budget: findings shown per the audit view (the rest via `--css`).
+    const FIX_CONFIDENTLY_TOP_N: usize = 5;
+    const VERIFY_FIRST_TOP_N: usize = 3;
+    let Some(ref health) = result.health else {
+        return;
+    };
+    let findings = &health.report.styling_findings;
+    let descriptive = health
+        .report
+        .css_analytics
+        .as_ref()
+        .map_or(0, |css| styling_candidate_count(&css.summary));
+    if findings.is_empty() && descriptive == 0 {
+        return;
+    }
+    print_audit_section_header(
+        show_headers,
+        "── Styling ────────────────────────────────────────",
+    );
+    if findings.is_empty() {
+        // Only not-yet-graduated descriptive candidates (dead surface, etc.).
+        let noun = if descriptive == 1 {
+            "candidate"
+        } else {
+            "candidates"
+        };
+        outln!(
+            "  {descriptive} styling {noun} {}",
+            "(run `fallow health --css` for detail)".dimmed()
+        );
+        return;
+    }
+    let rules = &health.config.rules;
+    let mut sorted: Vec<_> = findings.iter().collect();
+    sorted.sort_by(|a, b| {
+        styling_finding_is_error_gated(rules, &b.code)
+            .cmp(&styling_finding_is_error_gated(rules, &a.code))
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| a.code.cmp(&b.code))
+            .then_with(|| a.value.cmp(&b.value))
+    });
+    let gated_count = sorted
+        .iter()
+        .filter(|finding| styling_finding_is_error_gated(rules, &finding.code))
+        .count();
+    let fix_confidently: Vec<_> = sorted
+        .iter()
+        .copied()
+        .filter(|finding| styling_finding_is_fix_confidently(finding))
+        .collect();
+    let verify_first: Vec<_> = sorted
+        .iter()
+        .copied()
+        .filter(|finding| !styling_finding_is_fix_confidently(finding))
+        .collect();
+    let show_group_labels = !fix_confidently.is_empty() && !verify_first.is_empty();
+    print_audit_styling_group(
+        result,
+        rules,
+        "Fix confidently",
+        &fix_confidently,
+        FIX_CONFIDENTLY_TOP_N.max(gated_count),
+        show_group_labels,
+    );
+    print_audit_styling_group(
+        result,
+        rules,
+        "Verify first",
+        &verify_first,
+        VERIFY_FIRST_TOP_N.max(gated_count),
+        show_group_labels,
+    );
+    outln!(
+        "  {}",
+        "(run `fallow audit --format json` for full styling detail)".dimmed()
+    );
+}
+
+fn print_audit_styling_group(
+    result: &AuditResult,
+    rules: &RulesConfig,
+    label: &str,
+    findings: &[&fallow_output::StylingFinding],
+    top_n: usize,
+    show_label: bool,
+) {
+    if findings.is_empty() {
+        return;
+    }
+    if show_label {
+        outln!("  {}", label.bold());
+    }
+    let gated_count = findings
+        .iter()
+        .filter(|finding| styling_finding_is_error_gated(rules, &finding.code))
+        .count();
+    let visible_count = top_n.max(gated_count);
+    let indent = if show_label { "    " } else { "  " };
+    for finding in findings.iter().take(visible_count) {
+        outln!(
+            "{}{}  {}  {}  {}",
+            indent,
+            format!("{}:{}", finding.path, finding.line).dimmed(),
+            finding.code,
+            finding.value,
+            styling_finding_audit_context(result, finding).dimmed()
+        );
+    }
+    let hidden = findings.len().saturating_sub(visible_count);
+    if hidden > 0 {
+        let noun = if hidden == 1 { "finding" } else { "findings" };
+        outln!(
+            "{}{}",
+            indent,
+            format!("+ {hidden} more styling {noun}").dimmed()
+        );
+    }
+}
+
+fn styling_finding_is_fix_confidently(finding: &fallow_output::StylingFinding) -> bool {
+    matches!(
+        finding.agent_disposition,
+        Some(fallow_output::StylingAgentDisposition::FixConfidently)
+    ) || matches!(
+        finding.confidence,
+        Some(fallow_output::StylingFindingConfidence::High)
+    )
+}
+
+fn styling_finding_is_error_gated(rules: &RulesConfig, code: &str) -> bool {
+    let (_, severity) = styling_finding_rule_context(rules, code);
+    severity == Severity::Error
+}
+
+fn styling_finding_rule_context(rules: &RulesConfig, code: &str) -> (String, Severity) {
+    let severity = match code {
+        "css-token-drift" => rules.css_token_drift,
+        "css-duplicate-block" => rules.css_duplicate_block,
+        "css-selector-complexity" => rules.css_selector_complexity,
+        "css-dead-surface" => rules.css_dead_surface,
+        "css-broken-reference" => rules.css_broken_reference,
+        _ => Severity::Warn,
+    };
+    (format!("rules.{code}"), severity)
+}
+
+fn styling_finding_audit_context(
+    result: &AuditResult,
+    finding: &fallow_output::StylingFinding,
+) -> String {
+    let Some(health) = result.health.as_ref() else {
+        let (rule, severity) = styling_finding_rule_context(&RulesConfig::default(), &finding.code);
+        return styling_finding_audit_context_label(severity, &rule, None, result.attribution.gate);
+    };
+    let (rule, severity) = styling_finding_rule_context(&health.config.rules, &finding.code);
+    let base_state = result.base_snapshot.as_ref().map(|snapshot| {
+        let key = styling_finding_key(finding, &health.config.root);
+        if snapshot.styling.contains(&key) {
+            format!(
+                "inherited styling debt from {}",
+                short_base_ref(&result.base_ref)
+            )
+        } else {
+            format!(
+                "introduced design-system drift since {}",
+                short_base_ref(&result.base_ref)
+            )
+        }
+    });
+    styling_finding_audit_context_label(severity, &rule, base_state, result.attribution.gate)
+}
+
+fn styling_finding_audit_context_label(
+    severity: Severity,
+    rule: &str,
+    base_state: Option<String>,
+    gate: AuditGate,
+) -> String {
+    let severity_label = match severity {
+        Severity::Off => "off",
+        Severity::Warn => "warn",
+        Severity::Error => "error",
+    };
+    let prefix = match (severity, gate, base_state.as_deref()) {
+        (Severity::Error, AuditGate::NewOnly, Some(state)) if state.starts_with("inherited") => {
+            "not gated"
+        }
+        (Severity::Error, _, _) => "gated",
+        _ => "advisory",
+    };
+    match base_state {
+        Some(state) => format!("({prefix}: {rule}={severity_label}, {state})"),
+        None => format!("({prefix}: {rule}={severity_label})"),
     }
 }
 
@@ -597,7 +834,7 @@ mod tests {
     use super::{
         audit_decision_conclusion, build_audit_codeclimate, build_audit_json_output,
         build_status_parts, build_vital_sign_parts, format_scope_line_parts, print_audit_result,
-        short_base_ref,
+        short_base_ref, styling_finding_audit_context_label,
     };
 
     fn audit_result(verdict: AuditVerdict, output: OutputFormat) -> AuditResult {
@@ -672,6 +909,37 @@ mod tests {
         assert_eq!(
             format_scope_line_parts(3, "origin/main", None, None),
             "Audit scope: 3 changed files vs origin/main"
+        );
+    }
+
+    #[test]
+    fn styling_finding_audit_context_label_explains_gate_state() {
+        assert_eq!(
+            styling_finding_audit_context_label(
+                fallow_config::Severity::Error,
+                "rules.css-selector-complexity",
+                Some("introduced design-system drift since HEAD".to_string()),
+                AuditGate::NewOnly,
+            ),
+            "(gated: rules.css-selector-complexity=error, introduced design-system drift since HEAD)"
+        );
+        assert_eq!(
+            styling_finding_audit_context_label(
+                fallow_config::Severity::Error,
+                "rules.css-selector-complexity",
+                Some("inherited styling debt from HEAD".to_string()),
+                AuditGate::NewOnly,
+            ),
+            "(not gated: rules.css-selector-complexity=error, inherited styling debt from HEAD)"
+        );
+        assert_eq!(
+            styling_finding_audit_context_label(
+                fallow_config::Severity::Warn,
+                "rules.css-selector-complexity",
+                None,
+                AuditGate::All,
+            ),
+            "(advisory: rules.css-selector-complexity=warn)"
         );
     }
 

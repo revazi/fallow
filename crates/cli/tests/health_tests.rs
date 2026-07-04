@@ -3401,6 +3401,57 @@ fn health_css_unreferenced_class_credits_dynamic_string_and_dependency() {
 }
 
 #[test]
+fn health_css_unreferenced_class_credits_markdown_class_attributes() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(&root.join("package.json"), r#"{"name":"slidev-css"}"#);
+    write_file(
+        &root.join("style.css"),
+        ".cover-sub{}\n.prompt-card{}\n.really-dead-class{}\n",
+    );
+    write_file(
+        &root.join("slides.md"),
+        r#"<p class="cover-sub">vibe coding to validate</p>
+
+<div class="prompt-card">
+  <p>Prompt</p>
+</div>
+"#,
+    );
+
+    assert_eq!(
+        css_list_names(root, "unreferenced_css_classes", "class"),
+        vec!["really-dead-class".to_string()],
+        "Markdown and Slidev class attributes must credit CSS reachability"
+    );
+}
+
+#[test]
+fn health_css_unreferenced_class_credits_dynamic_status_literals() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(&root.join("package.json"), r#"{"name":"dynamic-status"}"#);
+    write_file(
+        &root.join("src/app.css"),
+        ".realtime-refresh.stale{}\n.realtime-refresh.unavailable{}\n.helper-only{}\n.really-dead-class{}\n",
+    );
+    write_file(
+        &root.join("src/status.ts"),
+        "export type Status = 'connected' | 'stale' | 'unavailable';\nexport const helper = 'helper-only';\nexport const label = (status: Status) => status === 'stale' ? 'Stale' : 'Ready';\n",
+    );
+    write_file(
+        &root.join("src/App.tsx"),
+        "import type { Status } from './status';\nexport const A = ({ status }: { status: Status }) => <div className={`live-refresh realtime-refresh ${status}`}>x</div>;\n",
+    );
+
+    assert_eq!(
+        css_list_names(root, "unreferenced_css_classes", "class"),
+        vec!["helper-only".to_string(), "really-dead-class".to_string()],
+        "status literal classes interpolated through className must be credited"
+    );
+}
+
+#[test]
 fn health_css_font_face_credited_by_custom_property_value() {
     let dir = tempdir().unwrap();
     let root = dir.path();
@@ -3453,6 +3504,63 @@ fn health_css_global_override_class_not_unreferenced_candidate() {
 }
 
 #[test]
+fn health_css_module_camel_case_property_reference_credits_class() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"mod-camel","version":"1.0.0"}"#,
+    );
+    write_file(
+        &root.join("src/Card.module.css"),
+        ".dialog-panel { padding: 1rem; }\n.dead-local { display: none; }\n",
+    );
+    write_file(
+        &root.join("src/Card.tsx"),
+        "import styles from './Card.module.css';\nexport const Card = () => <section className={styles.dialogPanel} />;\n",
+    );
+
+    assert_eq!(
+        css_list_names(root, "unreferenced_css_classes", "class"),
+        vec!["dead-local".to_string()],
+        "CSS Modules camelCase property references must credit dashed classes"
+    );
+}
+
+#[test]
+fn health_css_unreferenced_classes_include_sass_and_less_when_not_dominant() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"sass-less-classes","version":"1.0.0"}"#,
+    );
+    write_file(&root.join("src/base.css"), ".base-used { color: black; }\n");
+    write_file(
+        &root.join("src/extra.css"),
+        ".extra-used { color: gray; }\n",
+    );
+    write_file(
+        &root.join("src/theme.less"),
+        ".used-less { color: red; }\n.dead-less { color: blue; }\n",
+    );
+    write_file(
+        &root.join("src/theme.sass"),
+        ".used-sass\n  color: red\n.dead-sass\n  color: blue\n",
+    );
+    write_file(
+        &root.join("src/App.tsx"),
+        "export const App = () => <div className=\"base-used extra-used used-less used-sass\" />;\n",
+    );
+
+    assert_eq!(
+        css_list_names(root, "unreferenced_css_classes", "class"),
+        vec!["dead-less".to_string(), "dead-sass".to_string()],
+        "Sass and Less stylesheet classes should join the located unreferenced-class pass"
+    );
+}
+
+#[test]
 fn health_css_flags_unreferenced_global_class() {
     let dir = tempdir().unwrap();
     let root = dir.path();
@@ -3499,7 +3607,19 @@ fn health_css_unreferenced_abstains_on_preprocessor_dominant() {
         "export const C = () => <div className=\"used\">x</div>;\n",
     );
     // 2 scss vs 1 css -> preprocessor-dominant -> abstain entirely.
+    let css = css_analytics(root);
     assert!(unreferenced_classes(root).is_empty());
+    assert_eq!(css["summary"]["preprocessor_stylesheets"].as_u64(), Some(2));
+    assert_eq!(
+        css["summary"]["preprocessor_reachability_abstained"].as_bool(),
+        Some(true)
+    );
+    let out = run_fallow_in_root("health", root, &["--css", "--max-crap", "10000", "--quiet"]);
+    assert!(
+        out.stdout.contains("Sass/Less reachability skipped"),
+        "human CSS output should explain preprocessor abstain: {}",
+        out.stdout
+    );
 }
 
 #[test]
@@ -4224,6 +4344,227 @@ fn health_css_unresolved_abstains_on_preprocessor_dominant() {
 }
 
 #[test]
+fn health_css_unreferenced_class_not_credited_by_custom_property_substring() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"css-custom-property-substring","dependencies":{"tailwindcss":"^4.0.0"}}"#,
+    );
+    write_file(
+        &root.join("src/app.css"),
+        r#"@import "tailwindcss";
+:root {
+  --btn-primary-bg: var(--color-teal-900);
+  --btn-primary-shadow: var(--color-teal-900);
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-teal-900 shadow-[var(--btn-primary-shadow)]/20;
+  }
+
+  .btn-primary-bg {
+    @apply bg-teal-800;
+  }
+
+  .btn-secondary {
+    @apply bg-gold-400;
+  }
+
+  .btn-ghost {
+    @apply bg-white/60;
+  }
+
+  .used-card {
+    @apply rounded-xl;
+  }
+}
+"#,
+    );
+    write_file(
+        &root.join("src/Button.tsx"),
+        r#"const cn = (...parts: Array<string | false>) => parts.filter(Boolean).join(" ");
+
+export const Button = () => (
+  <button className={cn("used-card", "bg-[var(--btn-primary-bg)]", "shadow-[var(--btn-primary-shadow)]/20")}>
+    Pay
+  </button>
+);
+"#,
+    );
+
+    assert_eq!(
+        css_list_names(root, "unreferenced_css_classes", "class"),
+        vec![
+            "btn-ghost".to_string(),
+            "btn-primary".to_string(),
+            "btn-primary-bg".to_string(),
+            "btn-secondary".to_string()
+        ],
+        "custom property names inside arbitrary values must not credit similarly named CSS classes"
+    );
+}
+
+#[test]
+fn health_css_important_reset_findings_are_verify_first() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"css-important-reset","dependencies":{"tailwindcss":"^4.0.0"}}"#,
+    );
+    write_file(
+        &root.join("src/app.css"),
+        r#"@import "tailwindcss";
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+"#,
+    );
+    write_file(
+        &root.join("src/App.tsx"),
+        "export const App = () => null;\n",
+    );
+
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--report-only",
+            "--format",
+            "json",
+            "--quiet",
+            "--no-cache",
+        ],
+    );
+    let json = parse_json(&out);
+    let findings = json["styling_findings"]
+        .as_array()
+        .expect("styling findings");
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-selector-complexity"
+                && finding["sub_kind"] == "important-density"
+                && finding["confidence"] == "low"
+                && finding["agent_disposition"] == "verify-first"
+        }),
+        "accessibility reset important usage should be verify-first: {findings:#?}"
+    );
+}
+
+#[test]
+fn health_css_third_party_important_overrides_are_verify_first() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"css-third-party-important","dependencies":{"tailwindcss":"^4.0.0"}}"#,
+    );
+    write_file(
+        &root.join("src/app.css"),
+        r#"@import "tailwindcss";
+
+[data-sonner-toast].app-toast {
+  background: rgb(255 255 255 / 0.6) !important;
+  border: 1px solid rgb(231 229 228) !important;
+  font-family: var(--font-sans) !important;
+}
+"#,
+    );
+    write_file(
+        &root.join("src/App.tsx"),
+        "export const App = () => null;\n",
+    );
+
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--report-only",
+            "--format",
+            "json",
+            "--quiet",
+            "--no-cache",
+        ],
+    );
+    let json = parse_json(&out);
+    let findings = json["styling_findings"]
+        .as_array()
+        .expect("styling findings");
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-selector-complexity"
+                && finding["sub_kind"] == "important-density"
+                && finding["confidence"] == "low"
+                && finding["agent_disposition"] == "verify-first"
+                && finding["fix_hint"]
+                    .as_str()
+                    .is_some_and(|hint| hint.contains("cleanup is not proven"))
+        }),
+        "third-party widget important usage should be verify-first: {findings:#?}"
+    );
+}
+
+#[test]
+fn health_css_keeps_tokenless_raw_values_out_of_styling_findings() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"css-tokenless-raw-style","version":"1.0.0"}"#,
+    );
+    write_file(
+        &root.join("src/app.css"),
+        ".card { color: #123456; font-size: 17px; }\n",
+    );
+    write_file(
+        &root.join("src/App.tsx"),
+        "export const App = () => null;\n",
+    );
+
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--report-only",
+            "--format",
+            "json",
+            "--quiet",
+            "--no-cache",
+        ],
+    );
+    let json = parse_json(&out);
+    assert!(
+        json["css_analytics"]["raw_style_values"]
+            .as_array()
+            .is_some_and(|raw| !raw.is_empty()),
+        "raw style values should stay available in css analytics: {}",
+        out.stdout
+    );
+    let findings = json["styling_findings"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    assert!(
+        !findings
+            .iter()
+            .any(|finding| finding["sub_kind"] == "raw-style-value"),
+        "tokenless raw values should not be promoted to styling findings: {findings:#?}"
+    );
+}
+
+#[test]
 fn health_css_unresolved_class_renders_in_human() {
     let dir = tempdir().unwrap();
     let root = dir.path();
@@ -4340,6 +4681,133 @@ fn health_css_flags_duplicate_declaration_blocks() {
 }
 
 #[test]
+fn health_css_preprocessor_virtual_stylesheets_feed_structural_analytics() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"preprocessor-analytics","version":"1.0.0"}"#,
+    );
+    write_file(&root.join("src/index.ts"), "export const x = 1;\n");
+    write_file(
+        &root.join("src/a.scss"),
+        "$brand: #f00;\n\
+         .card {\n\
+           .body {\n\
+             .title {\n\
+               &:hover {\n\
+                 color: $brand;\n\
+                 padding: 8px;\n\
+                 margin: 4px;\n\
+                 border-radius: 4px;\n\
+               }\n\
+             }\n\
+           }\n\
+         }\n",
+    );
+    write_file(
+        &root.join("src/b.less"),
+        "@brand: #f00;\n\
+         .panel {\n\
+           color: @brand;\n\
+           border-radius: 4px;\n\
+           padding: 8px;\n\
+           margin: 4px;\n\
+         }\n",
+    );
+
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&out);
+    let css = json
+        .get("css_analytics")
+        .expect("css_analytics present with --css");
+    let summary = &css["summary"];
+    assert_eq!(summary["files_analyzed"], 2, "summary: {summary}");
+    assert_eq!(summary["preprocessor_stylesheets"], 2, "summary: {summary}");
+    assert!(
+        summary["max_nesting_depth"].as_u64().unwrap_or(0) >= 3,
+        "nested SCSS should feed structural nesting metrics: {summary}"
+    );
+    assert_eq!(
+        summary["duplicate_declaration_blocks"], 1,
+        "SCSS and Less matching declaration blocks should be grouped: {summary}"
+    );
+
+    let groups = css["duplicate_declaration_blocks"]
+        .as_array()
+        .expect("duplicate_declaration_blocks array");
+    let paths: Vec<_> = groups[0]["occurrences"]
+        .as_array()
+        .expect("occurrences array")
+        .iter()
+        .map(|occ| occ["path"].as_str().unwrap_or_default())
+        .collect();
+    assert!(
+        paths.contains(&"src/a.scss") && paths.contains(&"src/b.less"),
+        "duplicate block should point back to preprocessor sources: {groups:?}"
+    );
+}
+
+#[test]
+fn health_css_sfc_preprocessor_blocks_feed_structural_analytics() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"sfc-preprocessor-analytics","version":"1.0.0"}"#,
+    );
+    write_file(&root.join("src/index.ts"), "export const x = 1;\n");
+    write_file(
+        &root.join("src/Component.svelte"),
+        "<script>export let title = '';</script>\n\
+         <h1 class=\"title\">{title}</h1>\n\
+         <style lang=\"scss\">\n\
+         .card {\n\
+           .body {\n\
+             .title {\n\
+               &:hover { color: $brand; }\n\
+             }\n\
+           }\n\
+         }\n\
+         </style>\n",
+    );
+
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&out);
+    let css = json
+        .get("css_analytics")
+        .expect("css_analytics present with --css");
+    let summary = &css["summary"];
+    assert_eq!(summary["files_analyzed"], 1, "summary: {summary}");
+    assert!(
+        summary["max_nesting_depth"].as_u64().unwrap_or(0) >= 3,
+        "SFC SCSS nesting should feed structural metrics: {summary}"
+    );
+}
+
+#[test]
 fn health_css_counts_shadow_radius_lineheight_sprawl() {
     let dir = tempdir().unwrap();
     let root = dir.path();
@@ -4452,6 +4920,62 @@ fn health_css_flags_tailwind_arbitrary_values() {
             && human.stdout.contains("w-[13px] (2x)"),
         "human renders the Tailwind arbitrary-value section: stdout={:?}",
         human.stdout
+    );
+}
+
+#[test]
+fn health_css_emits_selector_and_dead_surface_styling_findings() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        root.join("package.json").as_path(),
+        r#"{"name":"css-findings"}"#,
+    );
+    write_file(root.join("src/index.ts").as_path(), "export const x = 1;\n");
+    write_file(
+        root.join("src/styles.css").as_path(),
+        "#app .card .title { color: red; }\n",
+    );
+    write_file(
+        root.join("src/Card.vue").as_path(),
+        "<template><div class=\"used\">x</div></template>\n\
+         <style scoped>\n\
+         .used { color: green; }\n\
+         .dead { color: red; }\n\
+         </style>\n",
+    );
+
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&out);
+    let findings = json["styling_findings"]
+        .as_array()
+        .expect("styling findings array");
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-selector-complexity"
+                && finding["sub_kind"] == "high-specificity"
+                && finding["path"] == "src/styles.css"
+        }),
+        "selector-complexity finding present: {findings:#?}"
+    );
+    assert!(
+        findings.iter().any(|finding| {
+            finding["code"] == "css-dead-surface"
+                && finding["sub_kind"] == "scoped-unused-class"
+                && finding["path"] == "src/Card.vue"
+        }),
+        "dead-surface finding present: {findings:#?}"
     );
 }
 

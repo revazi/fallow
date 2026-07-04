@@ -109,6 +109,13 @@ pub struct AuditOptions<'a> {
     pub gate: AuditGate,
     /// Report unused exports in entry files (forwarded to the dead-code sub-pass).
     pub include_entry_exports: bool,
+    /// Run styling analytics (CSS + CSS-in-JS) in the health sub-pass so styling
+    /// signals surface in the audit output. Default on; `--no-css` disables.
+    /// Descriptive + verdict-neutral (never affects the audit verdict / exit code).
+    pub css: bool,
+    /// Run the project-wide CSS pass and narrow cross-file findings back to
+    /// changed anchors. Default on for audit; `--no-css-deep` disables.
+    pub css_deep: bool,
     /// Paid runtime-coverage sidecar input (V8 directory, V8 JSON, or
     /// Istanbul coverage map). Forwarded into the embedded health pass so
     /// audit surfaces the `hot-path-touched` verdict alongside dead-code
@@ -166,6 +173,22 @@ use cache::{
     save_cached_base_snapshot, sorted_keys,
 };
 
+/// Whether a styling finding's per-rule severity escalates to `error` (and thus
+/// gates the verdict). Styling is verdict-NEUTRAL by default (rule `warn`); each
+/// family maps its kebab `code` to its `RulesConfig` rule. Add a match arm per
+/// graduating family.
+fn styling_finding_gates(rules: &fallow_config::RulesConfig, code: &str) -> bool {
+    let severity = match code {
+        "css-token-drift" => rules.css_token_drift,
+        "css-duplicate-block" => rules.css_duplicate_block,
+        "css-selector-complexity" => rules.css_selector_complexity,
+        "css-dead-surface" => rules.css_dead_surface,
+        "css-broken-reference" => rules.css_broken_reference,
+        _ => fallow_config::Severity::Warn,
+    };
+    severity == fallow_config::Severity::Error
+}
+
 fn compute_verdict(
     check: Option<&CheckResult>,
     dupes: Option<&DupesResult>,
@@ -188,6 +211,20 @@ fn compute_verdict(
 
     if let Some(result) = health
         && !result.report.findings.is_empty()
+    {
+        has_errors = true;
+    }
+
+    // Styling findings are verdict-NEUTRAL by default (the rule defaults to
+    // `warn`): a warn styling finding never flips the verdict, Pass stays Pass.
+    // Only a per-rule `error` escalation gates. Sole family today is
+    // css-token-drift; add sibling rule checks as families graduate.
+    if let Some(result) = health
+        && result
+            .report
+            .styling_findings
+            .iter()
+            .any(|finding| styling_finding_gates(&result.config.rules, &finding.code))
     {
         has_errors = true;
     }
@@ -293,6 +330,15 @@ fn compute_introduced_verdict(
     if let Some(result) = health {
         has_errors |= introduced_health_has_errors(result, base);
     }
+    if let Some(result) = health
+        && result
+            .report
+            .styling_findings
+            .iter()
+            .any(|finding| introduced_styling_finding_gates(result, base, finding))
+    {
+        has_errors = true;
+    }
     if let Some(result) = dupes {
         let (errors, warnings) = introduced_dupes_verdict(result, base);
         has_errors |= errors;
@@ -335,6 +381,19 @@ fn introduced_health_has_errors(result: &HealthResult, base: Option<&AuditKeySna
     })
 }
 
+fn introduced_styling_finding_gates(
+    result: &HealthResult,
+    base: Option<&AuditKeySnapshot>,
+    finding: &fallow_output::StylingFinding,
+) -> bool {
+    styling_finding_gates(&result.config.rules, &finding.code)
+        && !base.is_some_and(|snapshot| {
+            snapshot
+                .styling
+                .contains(&styling_finding_key(finding, &result.config.root))
+        })
+}
+
 /// Error/warning contribution from clone groups introduced since the base.
 fn introduced_dupes_verdict(result: &DupesResult, base: Option<&AuditKeySnapshot>) -> (bool, bool) {
     let base_keys = base.map(|b| &b.dupes);
@@ -360,6 +419,7 @@ fn introduced_dupes_verdict(result: &DupesResult, base: Option<&AuditKeySnapshot
 pub struct AuditKeySnapshot {
     dead_code: FxHashSet<String>,
     health: FxHashSet<String>,
+    styling: FxHashSet<String>,
     dupes: FxHashSet<String>,
     /// Review-brief delta substrate (populated only on the brief path; empty
     /// otherwise). Cross-zone boundary EDGE keys (`<from_zone>->-<to_zone>`),
@@ -493,6 +553,9 @@ fn snapshot_from_results(
         health: health.map_or_else(FxHashSet::default, |r| {
             health_keys(&r.report, &r.config.root)
         }),
+        styling: health.map_or_else(FxHashSet::default, |r| {
+            styling_keys(&r.report, &r.config.root)
+        }),
         dupes: dupes.map_or_else(FxHashSet::default, |r| {
             dupes_keys(&r.report, &r.config.root)
         }),
@@ -566,6 +629,10 @@ fn build_base_audit_options<'a>(
         coverage_root: opts.coverage_root,
         gate: AuditGate::All,
         include_entry_exports: opts.include_entry_exports,
+        // Base styling keys keep opt-in `rules.css-* = error` gated on
+        // introduced findings only; the base snapshot is cached.
+        css: opts.css,
+        css_deep: opts.css_deep,
         runtime_coverage: None,
         min_invocations_hot: opts.min_invocations_hot,
         brief: false,
@@ -872,7 +939,7 @@ pub mod routing;
 
 use keys::{
     dead_code_keys, dupe_group_key, dupes_keys, health_finding_key, health_keys,
-    retain_introduced_dead_code,
+    retain_introduced_dead_code, styling_finding_key, styling_keys,
 };
 
 struct HeadAnalyses {
@@ -2024,7 +2091,12 @@ fn build_audit_health_options<'a>(
         ownership: false,
         ownership_emails: None,
         targets: false,
-        css: false,
+        // Styling analytics surface in `fallow audit` so a coding agent gets
+        // styling feedback in the same stream it already reads for dead-code +
+        // complexity. Changed-file-scoped (cheap) + dep-gated; descriptive only
+        // (verdict-neutral). See .plans/styling-findings-in-audit.md (Slice 1).
+        css: opts.css,
+        css_deep: opts.css_deep,
         force_full: false,
         score_only_output: false,
         enforce_coverage_gap_gate: false,

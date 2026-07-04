@@ -31,6 +31,17 @@ pub struct CssAnalyticsReport {
     /// descending.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub duplicate_declaration_blocks: Vec<CssDuplicateBlock>,
+    /// CVA / shadcn variant class strings that repeat the same normalized class
+    /// block in several variant values. Kept separate from CSS declaration-block
+    /// duplication because the source is JS config, not parsed CSS rules.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cva_duplicate_variant_blocks: Vec<CvaDuplicateVariantBlock>,
+    /// CVA / shadcn variant class strings that hardcode a Tailwind arbitrary
+    /// value even though an existing token has the same or nearest comparable
+    /// value. Advisory: variants often encode product semantics, so agents
+    /// should verify intent before replacing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cva_variant_token_drifts: Vec<CvaVariantTokenDrift>,
     /// Tailwind arbitrary-value utilities (`w-[13px]`, `bg-[#abc]`) found in
     /// markup, which hardcode a one-off value instead of a configured scale
     /// token (design-token bypass). Present only when the project uses Tailwind.
@@ -38,6 +49,12 @@ pub struct CssAnalyticsReport {
     /// value is sometimes the right call.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tailwind_arbitrary_values: Vec<TailwindArbitraryValue>,
+    /// Located raw CSS declaration values that bypass token surfaces (`var()`,
+    /// `token()`, `theme()`) on scale-sensitive axes such as color, font-size,
+    /// line-height, radius, and shadow. Conservative candidates: a raw value can
+    /// be intentional, but introduced raw values are useful audit feedback.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub raw_style_values: Vec<RawStyleValue>,
     /// Unused CSS at-rule entities: an `@property` registered but never read via
     /// `var()` in any stylesheet, or an `@layer` declared but never populated by
     /// a block. Cleanup candidates (an `@property` can be read from JS; a layer
@@ -81,6 +98,11 @@ pub struct CssAnalyticsReport {
     /// downstream repo. Sorted by `(path, line, token)`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unused_theme_tokens: Vec<UnusedThemeToken>,
+    /// Tailwind v4 theme tokens whose comparable values are close to another
+    /// token in the same theme dictionary. These are opt-in `--css-deep`
+    /// candidates because they need whole-project token context.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub near_duplicate_theme_tokens: Vec<NearDuplicateThemeToken>,
     /// A location-aware reverse index of Tailwind v4 `@theme` token consumers:
     /// per token, where it is consumed (`var()` reads, `@apply` bodies, generated
     /// utility classes) and through which surface, plus the full `consumer_count`
@@ -155,7 +177,7 @@ pub struct UnusedAtRule {
 }
 
 /// Discriminant for [`UnusedAtRule::kind`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 #[repr(u8)]
@@ -184,6 +206,27 @@ pub struct TailwindArbitraryValue {
     /// Read-only action(s): a find-all-occurrences search so the token can be
     /// replaced with a scale token. Always at least one entry, so consumers can
     /// iterate `actions` uniformly across every finding type.
+    pub actions: Vec<CssCandidateAction>,
+}
+
+/// A located raw CSS declaration value on a scale-sensitive styling axis.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct RawStyleValue {
+    /// Value axis, e.g. `color`, `font-size`, `line-height`, `radius`, or `shadow`.
+    pub axis: String,
+    /// CSS property where the raw value appears.
+    pub property: String,
+    /// Rendered declaration value.
+    pub value: String,
+    /// Project-root-relative, forward-slash path to the stylesheet.
+    pub path: String,
+    /// 1-based line of the containing style rule.
+    pub line: u32,
+    /// Concrete token with the same or nearest comparable value, when resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nearest_token: Option<NearestStylingToken>,
+    /// Read-only guidance step(s). Never auto-fixable.
     pub actions: Vec<CssCandidateAction>,
 }
 
@@ -217,6 +260,42 @@ pub struct CssBlockOccurrence {
     pub path: String,
     /// 1-based line of the rule's first selector.
     pub line: u32,
+}
+
+/// A duplicated CVA / shadcn variant class block.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CvaDuplicateVariantBlock {
+    /// Normalized class block shared by several variant values.
+    pub value: String,
+    /// Number of variant values with this class block.
+    pub occurrence_count: u32,
+    /// First locations of the duplicate values, sorted by path and line.
+    pub occurrences: Vec<CssBlockOccurrence>,
+    /// Read-only guidance step(s), so consumers can iterate `actions`
+    /// uniformly across every candidate type.
+    pub actions: Vec<CssCandidateAction>,
+}
+
+/// A CVA / shadcn variant class value that can reuse an existing styling token.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CvaVariantTokenDrift {
+    /// Tailwind arbitrary-value utility inside the variant class string.
+    pub class_token: String,
+    /// Normalized value inside the arbitrary utility.
+    pub value: String,
+    /// Full normalized variant class block containing the token.
+    pub variant_classes: String,
+    /// Project-root-relative, forward-slash path to the variant definition.
+    pub path: String,
+    /// 1-based line of the variant class string.
+    pub line: u32,
+    /// Existing token candidate to reuse.
+    pub nearest_token: NearestStylingToken,
+    /// Read-only guidance step(s), so consumers can iterate `actions`
+    /// uniformly across every candidate type.
+    pub actions: Vec<CssCandidateAction>,
 }
 
 /// A `@keyframes` defined in a stylesheet but referenced by no animation in any
@@ -273,6 +352,43 @@ pub struct UnusedThemeToken {
     pub actions: Vec<CssCandidateAction>,
 }
 
+/// A Tailwind v4 `@theme` token that appears to duplicate an existing token by
+/// value. Emitted conservatively for comparable token namespaces, with the
+/// nearest existing token named so an agent has a concrete reuse target.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct NearDuplicateThemeToken {
+    /// The full custom property as authored, including the `--` prefix.
+    pub token: String,
+    /// The normalized authored token value.
+    pub value: String,
+    /// Project-root-relative, forward-slash path to the token definition.
+    pub path: String,
+    /// 1-based line of the token definition inside the `@theme` block.
+    pub line: u32,
+    /// The nearest existing token candidate to reuse instead.
+    pub nearest_token: NearestStylingToken,
+    /// Read-only guidance step(s) before replacing the token reference.
+    pub actions: Vec<CssCandidateAction>,
+}
+
+/// A styling token candidate that can replace or explain a finding.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct NearestStylingToken {
+    /// Token name, e.g. `--color-brand`.
+    pub name: String,
+    /// Normalized token value.
+    pub value: String,
+    /// Project-root-relative, forward-slash definition path.
+    pub path: String,
+    /// 1-based definition line.
+    pub line: u32,
+    /// Distance from the finding value. Lower is closer; units depend on the
+    /// comparable token namespace.
+    pub distance: f64,
+}
+
 /// Where one Tailwind v4 `@theme` token is consumed, and through which surface.
 /// One entry in a [`TokenConsumers::consumers`] sample.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -288,11 +404,11 @@ pub struct TokenConsumerLocation {
 
 /// The surface through which a design token is consumed. The `theme-var` /
 /// `css-var` / `utility` / `apply` kinds are Tailwind v4 `@theme` consumption; the
-/// `js-member` kind is CSS-in-JS consumption (a cross-module member access on an
-/// imported StyleX/vanilla-extract token binding). The kind is the disjoint origin
-/// signal that distinguishes a Tailwind token entry from a CSS-in-JS token entry in
-/// the shared `token_consumers` list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+/// `js-member` / `js-call` kinds are CSS-in-JS consumption (member access on an
+/// imported StyleX/vanilla-extract token binding, or a PandaCSS `token('...')`
+/// call). The kind is the disjoint origin signal that distinguishes a Tailwind
+/// token entry from a CSS-in-JS token entry in the shared `token_consumers` list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum ConsumerKind {
@@ -310,6 +426,9 @@ pub enum ConsumerKind {
     /// (`import { vars } from './tokens'; vars.color.primary`), for StyleX
     /// `defineVars` / vanilla-extract `createTheme` family tokens.
     JsMember,
+    /// A CSS-in-JS function call that consumes a token by path, such as
+    /// PandaCSS `token('colors.brand')` or `css({ color: 'colors.brand' })`.
+    JsCall,
 }
 
 /// A location-aware reverse index of where one design token is consumed, so an
@@ -326,12 +445,13 @@ pub enum ConsumerKind {
 ///   `apply`), built from the same gated candidate set as `unused_theme_tokens`
 ///   (v4 + non-plugin + non-published + whole-scope), so a `consumer_count: 0`
 ///   corroborates the `unused_theme_tokens` "nothing consumes this" finding.
-/// - CSS-in-JS tokens (kind `js-member`) from StyleX `defineVars` /
-///   vanilla-extract `createTheme` family definitions, consumed via cross-module
-///   member access. NOTE: CSS-in-JS has NO corroborating dead-token finding (there
-///   is no `unused_theme_tokens` analogue), so a CSS-in-JS `consumer_count: 0` is a
-///   weaker signal than the Tailwind case (and the cross-file scan is relative-import
-///   only, so alias / bare-package imports are not counted).
+/// - CSS-in-JS tokens (kind `js-member` / `js-call`) from StyleX `defineVars`,
+///   vanilla-extract `createTheme` family definitions, and PandaCSS `defineTokens`,
+///   consumed via cross-module member access or PandaCSS `token('...')` calls. NOTE:
+///   CSS-in-JS has NO corroborating dead-token finding (there is no
+///   `unused_theme_tokens` analogue), so a CSS-in-JS `consumer_count: 0` is a weaker
+///   signal than the Tailwind case (and the cross-file scan is relative-import or
+///   generated-token-helper only, so alias / bare-package imports are not counted).
 ///
 /// This is DESCRIPTIVE context (a blast-radius lookup), not a finding, so it
 /// deliberately carries no `actions` array (unlike the cleanup-candidate types in
@@ -450,6 +570,84 @@ pub struct ScopedUnusedClasses {
     pub actions: Vec<CssCandidateAction>,
 }
 
+/// One advisory STYLING FINDING: the graduation of a descriptive css candidate
+/// into a first-class, severity-aware, suppressible finding surfaced in
+/// `fallow audit`. The styling domain's OWN finding type (not borrowed into the
+/// dead-code `AnalysisResults`, and not glued in the CLI). `code` is the kebab
+/// IssueKind code (e.g. `css-token-drift`), so severity / inline suppression /
+/// SARIF / MCP all resolve via the shared `issue_meta` contract through
+/// `IssueKind::parse(code)`. One `Vec<StylingFinding>` carries every styling
+/// family; the `code` discriminates.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct StylingFinding {
+    /// The kebab IssueKind code, e.g. `css-token-drift`.
+    pub code: String,
+    /// The specific sub-kind within the family, e.g. `tailwind-arbitrary-value`.
+    pub sub_kind: String,
+    /// Workspace-relative path of the finding.
+    pub path: String,
+    /// 1-based line of the finding.
+    pub line: u32,
+    /// The offending literal value, e.g. `w-[13px]`.
+    pub value: String,
+    /// Effective severity after applying `rules.css-*` config. Styling defaults
+    /// to `warn`, but projects can escalate a family to `error` for audit gates
+    /// and CI formats.
+    pub effective_severity: StylingFindingSeverity,
+    /// Optional static lower-bound blast radius. For a dead design token this is
+    /// `0`; for other styling findings it is omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blast_radius: Option<u32>,
+    /// Confidence hint for agents and review UIs. Structural findings are high,
+    /// reachability findings are low because dynamic consumers may exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<StylingFindingConfidence>,
+    /// Suggested handling posture for agents. This is advisory data, fallow
+    /// still never applies styling changes automatically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_disposition: Option<StylingAgentDisposition>,
+    /// Concrete reuse target for token-drift findings, when one can be resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nearest_token: Option<NearestStylingToken>,
+    /// One concise machine-readable edit hint for agent consumers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix_hint: Option<String>,
+    /// Suggested next steps (verify / suppress; never an auto-fix).
+    pub actions: Vec<CssCandidateAction>,
+}
+
+/// Effective configured severity for a styling finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum StylingFindingSeverity {
+    Warn,
+    Error,
+}
+
+/// Confidence hint for a [`StylingFinding`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum StylingFindingConfidence {
+    /// The finding is local and structural.
+    High,
+    /// The finding depends on reachability and should be verified.
+    Low,
+}
+
+/// Agent handling hint for a [`StylingFinding`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum StylingAgentDisposition {
+    /// The finding names a concrete structural edit target.
+    FixConfidently,
+    /// Verify dynamic or external consumers before changing code.
+    VerifyFirst,
+}
+
 /// A read-only verification step attached to a CSS cleanup candidate.
 ///
 /// CSS candidates (unreferenced `@keyframes`, unused scoped classes) are never
@@ -498,9 +696,25 @@ pub enum CssCandidateActionType {
     /// Standardize an inconsistent value axis on a single notation (the
     /// color-format / length-unit mixing candidates).
     Standardize,
+    /// Simplify a selector, reduce nesting, or remove unnecessary `!important`
+    /// usage after verifying the cascade.
+    SimplifySelector,
 }
 
 impl CssCandidateAction {
+    /// Read-only guidance for a selector / nesting / important-density finding.
+    #[must_use]
+    pub fn simplify_selector(reason: &str) -> Self {
+        Self {
+            kind: CssCandidateActionType::SimplifySelector,
+            auto_fixable: false,
+            description: format!(
+                "Review cascade impact, then simplify this selector or rule because {reason}."
+            ),
+            command: None,
+        }
+    }
+
     /// Verify action for an unused `@font-face` family: a read-only token search
     /// for any inline-style or JavaScript application of the family before
     /// removing the dead web-font.
@@ -533,6 +747,20 @@ impl CssCandidateAction {
         }
     }
 
+    /// Guidance for a near-duplicate theme token: reuse the named existing
+    /// token after checking semantic intent.
+    #[must_use]
+    pub fn replace_near_duplicate_token(token: &str, nearest: &str) -> Self {
+        Self {
+            kind: CssCandidateActionType::ReplaceWithToken,
+            auto_fixable: false,
+            description: format!(
+                "Verify {token} is not an intentional semantic alias, then reuse {nearest} instead."
+            ),
+            command: safe_token_search(token),
+        }
+    }
+
     /// Verify action for an unreferenced global CSS class: name the surfaces the
     /// in-project scan does NOT cover (the class could be applied from there) and
     /// ship a read-only token search to double-check before removing.
@@ -542,7 +770,7 @@ impl CssCandidateAction {
             kind: CssCandidateActionType::VerifyUnused,
             auto_fixable: false,
             description: format!(
-                "Confirm no HTML email, server-rendered template, CMS content, or Markdown applies the \"{name}\" class before removing it (fallow scanned only in-project JS/TS/HTML/Vue/Svelte/Astro markup)."
+                "Confirm no HTML email, server-rendered template, or CMS content applies the \"{name}\" class before removing it (fallow scanned in-project JS/TS/HTML/Vue/Svelte/Astro/Markdown markup)."
             ),
             command: safe_token_search(name),
         }
@@ -634,6 +862,34 @@ impl CssCandidateAction {
         }
     }
 
+    /// Guidance for a CVA / shadcn variant arbitrary value: replace the
+    /// utility with a token-backed variant class after checking variant intent.
+    #[must_use]
+    pub fn replace_cva_variant_arbitrary_value(class_token: &str, nearest: &str) -> Self {
+        Self {
+            kind: CssCandidateActionType::ReplaceWithToken,
+            auto_fixable: false,
+            description: format!(
+                "Verify this CVA variant value is not an intentional one-off, then replace {class_token} with a class backed by {nearest}."
+            ),
+            command: safe_token_search(class_token),
+        }
+    }
+
+    /// Guidance for a raw CSS value on a scale-sensitive axis: replace with an
+    /// existing token or confirm the one-off is intentional.
+    #[must_use]
+    pub fn replace_raw_style_value(axis: &str, value: &str) -> Self {
+        Self {
+            kind: CssCandidateActionType::ReplaceWithToken,
+            auto_fixable: false,
+            description: format!(
+                "Replace this raw {axis} value with an existing design token or CSS custom property, or confirm this one-off is intentional."
+            ),
+            command: safe_token_search(value),
+        }
+    }
+
     /// Verify action for an unused CSS at-rule entity: a read-only search for
     /// any out-of-CSS consumer (JS reading an `@property`; an `@import layer()`
     /// populating a layer) before removing it.
@@ -718,7 +974,7 @@ fn safe_token_search(name: &str) -> Option<String> {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
     is_plain.then(|| {
         format!(
-            "grep -rnw '{name}' --include='*.js' --include='*.jsx' --include='*.ts' --include='*.tsx' --include='*.vue' --include='*.svelte' --include='*.html' ."
+            "grep -rnw '{name}' --include='*.js' --include='*.jsx' --include='*.ts' --include='*.tsx' --include='*.vue' --include='*.svelte' --include='*.astro' --include='*.html' --include='*.md' --include='*.mdx' ."
         )
     })
 }
@@ -811,6 +1067,16 @@ pub struct CssAnalyticsSummary {
     pub tailwind_arbitrary_values: u32,
     /// Total Tailwind arbitrary-value occurrences across markup.
     pub tailwind_arbitrary_value_uses: u32,
+    /// Preprocessor stylesheets (`.scss`, `.sass`, `.less`) seen by the styling
+    /// scan. These are parsed textually for local candidates, not compiled.
+    pub preprocessor_stylesheets: u32,
+    /// True when project-wide class reachability was skipped because
+    /// preprocessor stylesheets outnumber plain CSS, making generated classes
+    /// invisible without a Sass/Less compiler.
+    pub preprocessor_reachability_abstained: bool,
+    /// Located raw CSS declaration values that bypass token surfaces on
+    /// scale-sensitive axes. Located in `raw_style_values`.
+    pub raw_style_values: u32,
     /// `@property` registrations never referenced via `var()` in any stylesheet
     /// (located in `unused_at_rules`). Cleanup candidates.
     pub unused_property_registrations: u32,
@@ -834,6 +1100,10 @@ pub struct CssAnalyticsSummary {
     /// the project is not Tailwind v4 or a plugin / published-library /
     /// partial-scope run gated the scan out.
     pub unused_theme_tokens: u32,
+    /// Tailwind v4 theme tokens whose comparable values are close to another
+    /// token in the same theme dictionary. Located in
+    /// `near_duplicate_theme_tokens`.
+    pub near_duplicate_theme_tokens: u32,
     /// Number of distinct `font-size` units (`px` / `rem` / `em` / `%`) authored
     /// across the codebase. Mixing units is a type-scale consistency smell,
     /// broken out in `font_size_unit_mix`.
@@ -902,12 +1172,16 @@ mod tests {
             unreferenced_keyframes: Vec::new(),
             undefined_keyframes: Vec::new(),
             duplicate_declaration_blocks: Vec::new(),
+            cva_duplicate_variant_blocks: Vec::new(),
+            cva_variant_token_drifts: Vec::new(),
             tailwind_arbitrary_values: Vec::new(),
+            raw_style_values: Vec::new(),
             unused_at_rules: Vec::new(),
             unresolved_class_references: Vec::new(),
             unreferenced_css_classes: Vec::new(),
             unused_font_faces: Vec::new(),
             unused_theme_tokens: Vec::new(),
+            near_duplicate_theme_tokens: Vec::new(),
             token_consumers: Vec::new(),
             font_size_unit_mix: None,
         };
@@ -927,12 +1201,16 @@ mod tests {
             unreferenced_keyframes: Vec::new(),
             undefined_keyframes: Vec::new(),
             duplicate_declaration_blocks: Vec::new(),
+            cva_duplicate_variant_blocks: Vec::new(),
+            cva_variant_token_drifts: Vec::new(),
             tailwind_arbitrary_values: Vec::new(),
+            raw_style_values: Vec::new(),
             unused_at_rules: Vec::new(),
             unresolved_class_references: Vec::new(),
             unreferenced_css_classes: Vec::new(),
             unused_font_faces: Vec::new(),
             unused_theme_tokens: Vec::new(),
+            near_duplicate_theme_tokens: Vec::new(),
             token_consumers: vec![TokenConsumers {
                 token: "--color-brand".to_string(),
                 namespace: "color".to_string(),
