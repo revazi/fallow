@@ -46,6 +46,20 @@ pub fn public_api_package_entry_points(
     public_api_entry_points
 }
 
+/// Compute public export keys for a retained project graph.
+#[must_use]
+pub fn public_export_keys_for_graph(
+    graph: &RetainedModuleGraph,
+    config: &ResolvedConfig,
+    workspaces: &[WorkspaceInfo],
+    root: &Path,
+) -> FxHashSet<String> {
+    let root_pkg = PackageJson::load(&config.root.join("package.json")).ok();
+    let public_entries =
+        public_api_package_entry_points(graph, config, root_pkg.as_ref(), workspaces);
+    graph.public_export_keys(&public_entries, root)
+}
+
 fn graph_path_to_file_id(graph: &fallow_graph::graph::ModuleGraph) -> FxHashMap<PathBuf, FileId> {
     graph
         .modules

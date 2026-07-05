@@ -73,22 +73,15 @@ pub fn cycle_keys(findings: &[CircularDependencyFinding], root: &Path) -> FxHash
     findings.iter().map(|f| cycle_key(f, root)).collect()
 }
 
-/// Compute the exports-aware public-export key set from a retained graph + the
-/// project config and package metadata. Wires
-/// `fallow_engine::project_analysis::public_api_package_entry_points` (the R4 exports-aware
-/// entry set) into the retained graph's public export key query.
+/// Compute the exports-aware public-export key set from a retained graph.
 #[must_use]
 pub fn public_export_keys_for(
     graph: &fallow_engine::module_graph::RetainedModuleGraph,
     config: &fallow_config::ResolvedConfig,
-    root_pkg: Option<&fallow_config::PackageJson>,
     workspaces: &[fallow_config::WorkspaceInfo],
     root: &Path,
 ) -> FxHashSet<String> {
-    let public_entries = fallow_engine::project_analysis::public_api_package_entry_points(
-        graph, config, root_pkg, workspaces,
-    );
-    graph.public_export_keys(&public_entries, root)
+    fallow_engine::project_analysis::public_export_keys_for_graph(graph, config, workspaces, root)
 }
 
 /// Compute the head-minus-base delta key set, sorted for deterministic output.

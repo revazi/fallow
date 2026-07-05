@@ -681,6 +681,33 @@ fn decision_surface_reuses_session_workspace_metadata() {
         !source.contains("discover_workspaces("),
         "decision surface must not rediscover workspaces after building an AnalysisSession"
     );
+    assert!(
+        !source.contains("PackageJson::load"),
+        "decision surface must not own root package metadata reads after building an AnalysisSession"
+    );
+
+    let review_deltas =
+        read_source_without_line_comments("crates/api/src/review_deltas.rs").expect("read deltas");
+    assert!(
+        review_deltas.contains("fallow_engine::project_analysis::public_export_keys_for_graph"),
+        "review deltas must use engine-owned public API graph policy"
+    );
+    assert!(
+        !review_deltas.contains("fallow_config::PackageJson"),
+        "review deltas must not own package metadata policy"
+    );
+
+    let audit = read_source_without_line_comments("crates/cli/src/audit.rs").expect("read audit");
+    assert!(
+        audit.contains(
+            "review_deltas::public_export_keys_for(graph, &check.config, &check.workspaces, root)"
+        ),
+        "audit brief must route public API key selection through review deltas"
+    );
+    assert!(
+        !audit.contains("PackageJson::load"),
+        "audit brief must not own public API package metadata reads"
+    );
 }
 
 #[test]

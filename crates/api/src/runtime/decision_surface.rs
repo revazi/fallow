@@ -94,7 +94,6 @@ fn run_decision_analysis(
         resolved,
     )?;
     let root = session.root().to_path_buf();
-    let root_pkg = fallow_config::PackageJson::load(&root.join("package.json")).ok();
     let artifacts = session
         .analyze_dead_code_with_session_artifacts(false, true, changed_files.cloned())
         .map_err(|err| {
@@ -116,13 +115,8 @@ fn run_decision_analysis(
         changed_files,
     );
 
-    let graph_signals = decision_graph_signals(
-        output.graph.as_ref(),
-        &session,
-        root_pkg.as_ref(),
-        &root,
-        changed_files,
-    );
+    let graph_signals =
+        decision_graph_signals(output.graph.as_ref(), &session, &root, changed_files);
     let routing = changed_files.map_or_else(fallow_output::RoutingFacts::default, |files| {
         crate::routing::compute_routing(&root, session.config(), files)
     });
@@ -141,7 +135,6 @@ fn run_decision_analysis(
 fn decision_graph_signals(
     graph: Option<&fallow_engine::module_graph::RetainedModuleGraph>,
     session: &fallow_engine::session::AnalysisSession,
-    root_pkg: Option<&fallow_config::PackageJson>,
     root: &Path,
     changed_files: Option<&FxHashSet<PathBuf>>,
 ) -> DecisionGraphSignals {
@@ -149,7 +142,6 @@ fn decision_graph_signals(
         crate::review_deltas::public_export_keys_for(
             graph,
             session.config(),
-            root_pkg,
             session.workspaces(),
             root,
         )

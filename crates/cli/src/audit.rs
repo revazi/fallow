@@ -581,14 +581,7 @@ fn public_api_keys_from_check(check: Option<&CheckResult>, root: &Path) -> FxHas
     else {
         return FxHashSet::default();
     };
-    let root_pkg = fallow_config::PackageJson::load(&check.config.root.join("package.json")).ok();
-    review_deltas::public_export_keys_for(
-        graph,
-        &check.config,
-        root_pkg.as_ref(),
-        &check.workspaces,
-        root,
-    )
+    review_deltas::public_export_keys_for(graph, &check.config, &check.workspaces, root)
 }
 
 /// Build the `AuditOptions` for the isolated base-worktree analysis pass.
