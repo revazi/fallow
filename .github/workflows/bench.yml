@@ -1,6 +1,7 @@
 name: Benchmarks
 
 on:
+  merge_group:
   pull_request:
     branches: [main]
     paths:
@@ -48,18 +49,14 @@ jobs:
             cache_key: core-analysis
             package: fallow-core
             bench: analysis
-          - label: programmatic commands
-            cache_key: programmatic-commands
+          - label: stable programmatic API
+            cache_key: programmatic-stable
             package: fallow-benchmarks
-            bench: programmatic_commands
+            bench: programmatic_stable
           - label: representative sources
             cache_key: representative-sources
             package: fallow-benchmarks
             bench: representative_sources
-          - label: scaling analysis
-            cache_key: scaling-analysis
-            package: fallow-core
-            bench: scaling_analysis
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -75,23 +72,35 @@ jobs:
           tool: cargo-codspeed@4.7.0
 
       - name: Build benchmark shard
-        # Keep PR feedback focused: the full main/manual job uploads the slower suite.
+        # Keep PR feedback focused on deterministic API/session/cache paths.
         run: cargo codspeed build -p ${{ matrix.package }} --bench ${{ matrix.bench }} --features codspeed
 
       - name: Run benchmark shard
-        uses: CodSpeedHQ/action@63f3e98b61959fe67f146a3ff022e4136fe9bb9c # v4.17.6
+        uses: CodSpeedHQ/action@a4a36bb07c0638b0b4ca52bf1f3dad1b4289e52f # v4.18.1
         with:
           mode: simulation
           run: cargo codspeed run -p ${{ matrix.package }} --bench ${{ matrix.bench }}
 
   benchmark-full:
-    name: CodSpeed full simulation (large analysis)
+    name: CodSpeed full simulation (${{ matrix.label }})
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: scaling analysis
+            cache_key: full-scaling-analysis
+            package: fallow-core
+            bench: scaling_analysis
+          - label: large analysis
+            cache_key: full-large-analysis
+            package: fallow-core
+            bench: large_analysis
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -99,18 +108,19 @@ jobs:
 
       - uses: ./.github/actions/setup-rust
         with:
-          cache-key: bench-large-analysis
+          cache-key: bench-${{ matrix.cache_key }}
 
       - name: Install cargo-codspeed
         uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2.82.2
         with:
           tool: cargo-codspeed@4.7.0
 
-      - name: Build large benchmark shard
-        run: cargo codspeed build -p fallow-core --bench large_analysis --features codspeed
+      - name: Build full benchmark shard
+        # Full suites include audit/git-heavy and scaling paths that are useful but noisier.
+        run: cargo codspeed build -p ${{ matrix.package }} --bench ${{ matrix.bench }} --features codspeed
 
-      - name: Run large benchmark shard
-        uses: CodSpeedHQ/action@63f3e98b61959fe67f146a3ff022e4136fe9bb9c # v4.17.6
+      - name: Run full benchmark shard
+        uses: CodSpeedHQ/action@a4a36bb07c0638b0b4ca52bf1f3dad1b4289e52f # v4.18.1
         with:
           mode: simulation
-          run: cargo codspeed run -p fallow-core --bench large_analysis
+          run: cargo codspeed run -p ${{ matrix.package }} --bench ${{ matrix.bench }}

@@ -47,7 +47,7 @@ fn create_dupes_input(name: &str, file_count: usize) -> DupesInput {
 fn bench_scaling_analysis(c: &mut Criterion) {
     let mut group = c.benchmark_group("scaling_analysis");
 
-    group.bench_function("full_pipeline_2000_files", |bencher| {
+    group.bench_function("scaling_full_pipeline_2000_files", |bencher| {
         bencher.iter_batched_ref(
             || create_config_input("2000", 2000),
             |input| fallow_core::analyze(&input.config),
@@ -55,7 +55,7 @@ fn bench_scaling_analysis(c: &mut Criterion) {
         );
     });
 
-    group.bench_function("dupes_full_pipeline_1000_files", |bencher| {
+    group.bench_function("scaling_dupes_full_pipeline_1000_files", |bencher| {
         bencher.iter_batched_ref(
             || create_dupes_input("1000", 1000),
             |input| {

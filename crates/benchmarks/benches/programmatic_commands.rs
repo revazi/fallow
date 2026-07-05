@@ -1148,6 +1148,8 @@ fn extract_workspace_monorepo_warm_hash_hit(c: &mut Criterion) {
 }
 
 fn audit_clean_workspace_no_changes(c: &mut Criterion) {
+    // I/O-bound git audit benches are useful local walltime probes, but too noisy
+    // for CodSpeed simulation gates.
     c.bench_function("audit_clean_workspace_no_changes", |bencher| {
         bencher.iter_batched_ref(
             || create_audit_project(false),
