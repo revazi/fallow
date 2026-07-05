@@ -43,6 +43,7 @@ pub mod plugins;
 pub mod project_analysis;
 pub mod project_config;
 mod public_api;
+pub mod repo_refs;
 mod results;
 mod security;
 pub mod session;

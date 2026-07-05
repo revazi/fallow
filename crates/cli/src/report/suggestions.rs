@@ -5,7 +5,6 @@
 //! toggles, project setup state, git refs, and changed-branch applicability.
 
 use std::path::Path;
-use std::process::Command;
 
 use fallow_api::DupesReportPayload;
 use fallow_output::{
@@ -95,67 +94,13 @@ pub fn due_impact_digest(root: &Path) -> Option<crate::impact::ImpactDigest> {
 }
 
 fn default_workspace_ref_for_next_step(root: &Path) -> Option<String> {
-    if fallow_engine::discover::discover_workspace_packages(root).is_empty() {
-        return None;
-    }
-    resolve_default_workspace_ref(root)
+    fallow_engine::repo_refs::default_workspace_ref(root)
 }
 
 /// `audit-changed`: gate only the files the current branch changed. `fallow
 /// audit` auto-detects its base, so no ref needs embedding.
 pub fn audit_changed_applicable(root: &Path) -> bool {
     fallow_engine::churn::is_git_repo(root)
-}
-
-// ---------------------------------------------------------------------------
-// Git ref resolution (self-contained; keeps `scope-workspaces` placeholder-free)
-// ---------------------------------------------------------------------------
-
-/// Resolve a concrete, human-readable default ref for `--changed-workspaces`.
-/// Tries `origin/HEAD` then verifies `origin/main` / `origin/master`. Returns
-/// the first that resolves, or `None` (in which case `scope-workspaces` is
-/// omitted rather than shipping an unrunnable `origin/main` guess).
-fn resolve_default_workspace_ref(root: &Path) -> Option<String> {
-    if let Some(reference) = run_git(
-        root,
-        &[
-            "symbolic-ref",
-            "--quiet",
-            "--short",
-            "refs/remotes/origin/HEAD",
-        ],
-    ) {
-        let reference = reference.trim();
-        if !reference.is_empty() {
-            return Some(reference.to_string());
-        }
-    }
-    ["origin/main", "origin/master"]
-        .into_iter()
-        .find(|candidate| git_ref_exists(root, candidate))
-        .map(str::to_string)
-}
-
-fn git_ref_exists(root: &Path, reference: &str) -> bool {
-    Command::new("git")
-        .args(["-C"])
-        .arg(root)
-        .args(["rev-parse", "--verify", "--quiet", reference])
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
-fn run_git(root: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .args(["-C"])
-        .arg(root)
-        .args(args)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout).ok()
 }
 
 // ---------------------------------------------------------------------------

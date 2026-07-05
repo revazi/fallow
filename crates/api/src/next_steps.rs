@@ -1,8 +1,8 @@
 //! Runtime probes for programmatic `next_steps` output.
 //!
 //! Pure next-step builders live in `fallow-output`. This module owns the small
-//! env/fs/git probes needed by the API and NAPI surfaces without depending on
-//! the CLI suggestion renderer.
+//! env/fs probes needed by the API and NAPI surfaces without depending on the
+//! CLI suggestion renderer. Git-backed repo refs live in `fallow-engine`.
 
 use std::path::Path;
 
@@ -31,8 +31,7 @@ pub fn setup_pointer_applicable(root: &Path) -> bool {
 /// Resolve a concrete `--changed-workspaces` ref for the `scope-workspaces`
 /// next step, or `None` when no workspace or resolvable ref exists.
 pub fn default_workspace_ref(root: &Path) -> Option<String> {
-    let workspaces = fallow_engine::discover::discover_workspace_packages(root);
-    default_workspace_ref_for_workspaces(root, &workspaces)
+    fallow_engine::repo_refs::default_workspace_ref(root)
 }
 
 /// Resolve a concrete `--changed-workspaces` ref using already discovered
@@ -41,53 +40,11 @@ pub fn default_workspace_ref_for_workspaces(
     root: &Path,
     workspaces: &[WorkspaceInfo],
 ) -> Option<String> {
-    if !fallow_engine::churn::is_git_repo(root) || workspaces.is_empty() {
-        return None;
-    }
-    if let Some(reference) = run_git(
-        root,
-        &[
-            "symbolic-ref",
-            "--quiet",
-            "--short",
-            "refs/remotes/origin/HEAD",
-        ],
-    ) {
-        let reference = reference.trim();
-        if !reference.is_empty() {
-            return Some(reference.to_string());
-        }
-    }
-    ["origin/main", "origin/master"]
-        .into_iter()
-        .find(|candidate| git_ref_exists(root, candidate))
-        .map(str::to_string)
+    fallow_engine::repo_refs::default_workspace_ref_for_workspaces(root, workspaces)
 }
 
 fn is_ci() -> bool {
     std::env::var_os("CI").is_some()
         || std::env::var_os("GITHUB_ACTIONS").is_some()
         || std::env::var_os("GITLAB_CI").is_some()
-}
-
-fn git_ref_exists(root: &Path, reference: &str) -> bool {
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--verify", "--quiet", reference])
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
-fn run_git(root: &Path, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout).ok()
 }

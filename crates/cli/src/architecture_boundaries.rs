@@ -756,6 +756,33 @@ fn session_backed_api_next_steps_reuse_session_workspaces() {
 }
 
 #[test]
+fn next_step_workspace_ref_probing_routes_through_engine() {
+    for source_path in [
+        "crates/api/src/next_steps.rs",
+        "crates/cli/src/report/suggestions.rs",
+    ] {
+        let source = read_source_without_line_comments(source_path).expect("read source");
+        assert!(
+            source.contains("fallow_engine::repo_refs::default_workspace_ref"),
+            "{source_path} must use engine-owned repo-ref probing"
+        );
+        for forbidden in [
+            "Command::new(\"git\")",
+            "std::process::Command::new(\"git\")",
+            "fn git_ref_exists",
+            "fn run_git",
+            "symbolic-ref",
+            "origin/master",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{source_path} must not own git-ref probing helper `{forbidden}`"
+            );
+        }
+    }
+}
+
+#[test]
 fn combined_and_audit_share_project_analysis_artifacts() {
     for source_path in [
         "crates/api/src/runtime/combined.rs",
