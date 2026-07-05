@@ -132,6 +132,28 @@ const SCALE_BUCKET_LARGE: u8 = 3;
 const SCALE_BUCKET_XLARGE: u8 = 4;
 const SCALE_BUCKET_UNKNOWN: u8 = 5;
 
+/// Restore every per-run telemetry accumulator to the UNSET state a fresh CLI
+/// process starts with. These accumulators are process-global `static`s because
+/// production runs one analysis batch per process, but the in-process test
+/// binary shares them across tests: any test exercising a real command path
+/// (e.g. `load_config_for_analysis`, which calls `note_config_shape`) leaves
+/// them set for whatever test runs next. A test that reads an accumulator
+/// through `build_workflow_event` must call this first so it observes the same
+/// clean slate a real invocation would, rather than another test's residue.
+#[cfg(test)]
+fn reset_run_accumulators_for_test() {
+    FINDINGS_PRESENT.store(FINDINGS_UNSET, Ordering::Relaxed);
+    FAILURE_REASON.store(FAILURE_REASON_UNSET, Ordering::Relaxed);
+    RESULT_COUNT_CAPPED.store(RESULT_COUNT_UNSET, Ordering::Relaxed);
+    REPORT_TRUNCATED.store(REPORT_TRUNCATION_UNSET, Ordering::Relaxed);
+    TRUNCATION_REASON.store(TRUNCATION_REASON_UNSET, Ordering::Relaxed);
+    CACHE_STATE.store(CACHE_STATE_UNSET, Ordering::Relaxed);
+    CONFIG_SHAPE.store(CONFIG_SHAPE_UNSET, Ordering::Relaxed);
+    FILE_COUNT_BUCKET.store(SCALE_BUCKET_UNSET, Ordering::Relaxed);
+    FUNCTION_COUNT_BUCKET.store(SCALE_BUCKET_UNSET, Ordering::Relaxed);
+    AVG_FAN_OUT_BUCKET.store(SCALE_BUCKET_UNSET, Ordering::Relaxed);
+}
+
 /// Record whether the analysis that just completed surfaced any findings.
 ///
 /// Called from each analysis `execute` path with the real result
@@ -2460,6 +2482,10 @@ mod tests {
 
     #[test]
     fn workflow_event_buckets_exit_codes() {
+        // `build_workflow_event` reads process-global accumulators that another
+        // test (any that loads a config and thus calls `note_config_shape`) may
+        // have left set; reset them to the fresh-process state this test asserts.
+        reset_run_accumulators_for_test();
         let record = WorkflowRecord {
             workflow: Workflow::Audit,
             output: OutputFormat::Json,
