@@ -91,35 +91,35 @@ pub struct RulesConfig {
     /// (plugins, `$onAction`, dynamic dispatch) so analyzer confidence is
     /// genuinely lower; warn encodes that without failing CI. Promotable to
     /// `error` once validated on a codebase.
-    #[serde(default, alias = "unused-store-member")]
+    #[serde(default = "Severity::default_warn", alias = "unused-store-member")]
     pub unused_store_members: Severity,
     /// Vue `inject(KEY)` / Svelte `getContext(KEY)` whose symbol KEY is
     /// `provide`/`setContext`'d nowhere in the project (the
     /// injected-never-provided dead-half). Defaults to `warn`, not `error`:
     /// a DI key has an open provide surface (plugins, app-level provide) so
     /// analyzer confidence is lower; warn encodes that without failing CI.
-    #[serde(default, alias = "unprovided-inject")]
+    #[serde(default = "Severity::default_warn", alias = "unprovided-inject")]
     pub unprovided_injects: Severity,
     /// Vue/Svelte single-file component reachable in the module graph but
     /// rendered nowhere in the project (the imported-but-never-rendered
     /// dead-half). Defaults to `warn`, not `error`: a component can be rendered
     /// reflectively (dynamic `<component :is>`), so analyzer confidence is
     /// lower; warn encodes that without failing CI.
-    #[serde(default, alias = "unrendered-component")]
+    #[serde(default = "Severity::default_warn", alias = "unrendered-component")]
     pub unrendered_components: Severity,
     /// Vue `<script setup>` `defineProps`, Svelte 5 `$props()`, or React
     /// declared prop referenced nowhere inside its own component. The
     /// single-component dead-input direction. Defaults to `warn`, not `error`: a
     /// prop can be part of a deliberately-stable public component API, so
     /// analyzer confidence is lower; warn encodes that without failing CI.
-    #[serde(default, alias = "unused-component-prop")]
+    #[serde(default = "Severity::default_warn", alias = "unused-component-prop")]
     pub unused_component_props: Severity,
     /// Vue `<script setup>` `defineEmits` declared event emitted nowhere inside
     /// its own single-file component (no `emit('<name>')` call). The single-file
     /// dead-input direction. Defaults to `warn`, not `error`: an emit can be part
     /// of a deliberately-stable public component API, so analyzer confidence is
     /// lower; warn encodes that without failing CI.
-    #[serde(default, alias = "unused-component-emit")]
+    #[serde(default = "Severity::default_warn", alias = "unused-component-emit")]
     pub unused_component_emits: Severity,
     /// Angular `@Input()` / signal `input()` / `model()` declared input read
     /// nowhere inside its own component (neither the inline/external template nor
@@ -127,7 +127,7 @@ pub struct RulesConfig {
     /// analogue of `unused-component-prop`. Defaults to `warn`, not `error`: an
     /// input can be part of a deliberately-stable public component API, so
     /// analyzer confidence is lower; warn encodes that without failing CI.
-    #[serde(default, alias = "unused-component-input")]
+    #[serde(default = "Severity::default_warn", alias = "unused-component-input")]
     pub unused_component_inputs: Severity,
     /// Angular `@Output()` / signal `output()` declared output emitted nowhere
     /// inside its own component (no `this.<output>.emit(...)`). The single-file
@@ -135,7 +135,7 @@ pub struct RulesConfig {
     /// Defaults to `warn`, not `error`: an output can be part of a
     /// deliberately-stable public component API, so analyzer confidence is lower;
     /// warn encodes that without failing CI.
-    #[serde(default, alias = "unused-component-output")]
+    #[serde(default = "Severity::default_warn", alias = "unused-component-output")]
     pub unused_component_outputs: Severity,
     /// Svelte component dispatching a custom event via `createEventDispatcher()`
     /// whose event name is listened to nowhere in the analyzed project. The
@@ -153,7 +153,7 @@ pub struct RulesConfig {
     /// `error`: the rule is new and false-negative-preferring, and reflective
     /// action-dispatch shapes can hide a real consumer; warn encodes that
     /// without failing CI until corpus-validated.
-    #[serde(default, alias = "unused-server-action")]
+    #[serde(default = "Severity::default_warn", alias = "unused-server-action")]
     pub unused_server_actions: Severity,
     /// SvelteKit `+page.{ts,server.ts,js,server.js}` `load()` return-object key
     /// read by no consumer: not off the sibling `+page.svelte`'s `data.<key>`,
@@ -232,7 +232,7 @@ pub struct RulesConfig {
     pub re_export_cycle: Severity,
     #[serde(default, alias = "boundary-violations")]
     pub boundary_violation: Severity,
-    #[serde(default, alias = "coverage-gap")]
+    #[serde(default = "Severity::default_off", alias = "coverage-gap")]
     pub coverage_gaps: Severity,
     #[serde(default = "Severity::default_off", alias = "feature-flag")]
     pub feature_flags: Severity,
@@ -988,6 +988,51 @@ mod tests {
         assert_eq!(rules.unused_exports, Severity::Warn);
         assert_eq!(rules.unused_types, Severity::Off);
         assert_eq!(rules.unresolved_imports, Severity::Error);
+    }
+
+    #[test]
+    fn empty_rules_object_matches_default_impl() {
+        // Regression for issue #1745: a present-but-empty `rules` object must
+        // deserialize field-by-field to exactly the same severities as an
+        // absent `rules` key (which fills from `RulesConfig::default()`).
+        // A bare `#[serde(default)]` resolves to `Severity::default()` (Error),
+        // so any field whose Default-impl value is Warn/Off silently promoted
+        // to Error, flipping exit codes (coverage-gaps gated `fallow health`,
+        // the component/store/inject rules gated CI on Vue/Svelte/Angular).
+        let from_empty: RulesConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            from_empty,
+            RulesConfig::default(),
+            "empty `rules` object must equal RulesConfig::default(); a field whose \
+             Default is Warn/Off needs an explicit #[serde(default = ...)]"
+        );
+    }
+
+    #[test]
+    fn empty_rules_object_preserves_non_error_defaults() {
+        // Spot-check the nine fields fixed by #1745 so the intent is explicit
+        // even if the wholesale equality assertion above is later relaxed.
+        let rules: RulesConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(rules.coverage_gaps, Severity::Off);
+        assert_eq!(rules.unused_store_members, Severity::Warn);
+        assert_eq!(rules.unprovided_injects, Severity::Warn);
+        assert_eq!(rules.unrendered_components, Severity::Warn);
+        assert_eq!(rules.unused_component_props, Severity::Warn);
+        assert_eq!(rules.unused_component_emits, Severity::Warn);
+        assert_eq!(rules.unused_component_inputs, Severity::Warn);
+        assert_eq!(rules.unused_component_outputs, Severity::Warn);
+        assert_eq!(rules.unused_server_actions, Severity::Warn);
+    }
+
+    #[test]
+    fn explicit_rule_severity_still_overrides_default() {
+        // Control: the fix must not break explicit opt-in. Setting a value
+        // still wins over the (now correct) default.
+        let rules: RulesConfig =
+            serde_json::from_str(r#"{ "coverage-gaps": "error", "unused-component-prop": "off" }"#)
+                .unwrap();
+        assert_eq!(rules.coverage_gaps, Severity::Error);
+        assert_eq!(rules.unused_component_props, Severity::Off);
     }
 
     #[test]
