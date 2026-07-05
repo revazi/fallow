@@ -26,6 +26,7 @@ export const ISSUE_TYPE_DEFAULTS = {
   "duplicate-exports": true,
   "type-only-dependencies": true,
   "test-only-dependencies": true,
+  "dev-dependencies-in-production": true,
   "circular-dependencies": true,
   "re-export-cycle": true,
   "boundary-violation": true,
@@ -64,6 +65,7 @@ export const ISSUE_TYPE_ALIASES: Readonly<Record<string, IssueTypeKey>> = {
   "boundary-coverage-violations": "boundary-violation",
   "catalog": "unused-catalog-entries",
   "circular-dependency": "circular-dependencies",
+  "dev-dependency-in-production": "dev-dependencies-in-production",
   "duplicate-export": "duplicate-exports",
   "dynamic-segment-name-conflicts": "dynamic-segment-name-conflict",
   "empty-catalog": "empty-catalog-groups",
@@ -182,6 +184,10 @@ export const DIAGNOSTIC_CATEGORIES: ReadonlyArray<DiagnosticCategory> = [
   {
     "code": "test-only-dependency",
     "label": "Test-Only Dependencies"
+  },
+  {
+    "code": "dev-dependency-in-production",
+    "label": "Dev Dependencies Used in Production"
   },
   {
     "code": "circular-dependency",

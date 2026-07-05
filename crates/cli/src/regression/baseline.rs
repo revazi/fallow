@@ -413,6 +413,11 @@ fn render_toml_usage_dependency_baseline_fields(
         "testOnlyDependencies = {}",
         baseline.test_only_dependencies
     );
+    let _ = writeln!(
+        section,
+        "devDependenciesInProduction = {}",
+        baseline.dev_dependencies_in_production
+    );
 }
 
 /// Replace an existing `[regression.baseline]` section in `content`, or append
@@ -800,6 +805,7 @@ mod tests {
             re_export_cycles: 0,
             type_only_dependencies: 0,
             test_only_dependencies: 0,
+            dev_dependencies_in_production: 0,
             boundary_violations: 0,
             boundary_coverage_violations: 0,
             boundary_call_violations: 0,
