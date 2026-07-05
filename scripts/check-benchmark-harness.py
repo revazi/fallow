@@ -10,6 +10,8 @@ in GitHub Actions before project dependencies are installed.
 from __future__ import annotations
 
 import re
+import json
+import subprocess
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -17,6 +19,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BENCH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "bench.yml"
+MATRIX_SCRIPT = REPO_ROOT / ".github" / "scripts" / "generate-benchmark-matrix.mjs"
 
 FAST_JOB = "benchmark"
 FULL_JOB = "benchmark-full"
@@ -118,6 +121,39 @@ def extract_matrix_targets(text: str) -> list[BenchTarget]:
     if current_job in {FAST_JOB, FULL_JOB} and current:
         targets.append(target_from(current_job, current))
 
+    return targets
+
+
+def fast_targets_from_generator() -> list[BenchTarget]:
+    try:
+        output = subprocess.check_output(
+            ["node", str(MATRIX_SCRIPT), "--all"],
+            cwd=REPO_ROOT,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError(f"failed to run benchmark matrix generator: {exc}") from exc
+
+    try:
+        rows = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"benchmark matrix generator did not emit JSON: {exc}") from exc
+
+    targets = []
+    for row in rows:
+        missing = [name for name in ("label", "package", "bench") if name not in row]
+        if missing:
+            raise ValueError(
+                f"benchmark matrix generator row missing {', '.join(missing)}: {row}"
+            )
+        targets.append(
+            BenchTarget(
+                job=FAST_JOB,
+                label=str(row["label"]),
+                package=str(row["package"]),
+                bench=str(row["bench"]),
+            )
+        )
     return targets
 
 
@@ -235,7 +271,10 @@ def validate_unique_names() -> list[str]:
 def main() -> int:
     text = BENCH_WORKFLOW.read_text(encoding="utf-8")
     try:
-        targets = extract_matrix_targets(text)
+        static_targets = extract_matrix_targets(text)
+        targets = fast_targets_from_generator() + [
+            target for target in static_targets if target.job == FULL_JOB
+        ]
     except ValueError as exc:
         error(str(exc))
         return 1

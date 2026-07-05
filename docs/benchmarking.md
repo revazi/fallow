@@ -5,6 +5,12 @@ Fallow uses Criterion-compatible Rust benchmarks with CodSpeed simulation in
 shards so PR feedback stays useful and noisy suites do not hide real
 regressions.
 
+Fast PR shards are selected by `.github/scripts/generate-benchmark-matrix.mjs`.
+Like Oxc's benchmark workflow, this keeps the tracked surface broad while only
+running the shards affected by a given change. Manual and merge-queue runs use
+the full fast matrix, and global benchmark or Cargo changes fall back to all
+fast shards.
+
 ## Shards
 
 Fast PR shards:
@@ -51,6 +57,7 @@ are part of the fast PR regression signal.
 Run this before changing benchmark matrices or bench targets:
 
 ```bash
+node --test .github/scripts/generate-benchmark-matrix.test.mjs
 python3 scripts/check-benchmark-harness.py
 cargo check -p fallow-benchmarks --benches
 cargo check -p fallow-core --benches

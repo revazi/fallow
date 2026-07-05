@@ -11,6 +11,8 @@ on:
       - 'rust-toolchain.toml'
       - '.github/workflows/bench.yml'
       - '.github/actions/setup-rust/**'
+      - '.github/scripts/generate-benchmark-matrix.mjs'
+      - '.github/scripts/generate-benchmark-matrix.test.mjs'
       - 'scripts/check-benchmark-harness.py'
   push:
     branches: [main]
@@ -21,6 +23,8 @@ on:
       - 'rust-toolchain.toml'
       - '.github/workflows/bench.yml'
       - '.github/actions/setup-rust/**'
+      - '.github/scripts/generate-benchmark-matrix.mjs'
+      - '.github/scripts/generate-benchmark-matrix.test.mjs'
       - 'scripts/check-benchmark-harness.py'
   workflow_dispatch:
 
@@ -50,9 +54,36 @@ jobs:
       - name: Check benchmark harness drift
         run: python3 scripts/check-benchmark-harness.py
 
+  determine-matrix:
+    name: Determine benchmark matrix
+    needs: benchmark-harness
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    outputs:
+      fast_matrix: ${{ steps.matrix.outputs.fast_matrix }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Determine affected benchmark shards
+        id: matrix
+        env:
+          BENCH_EVENT_BEFORE: ${{ github.event.before }}
+        run: |
+          MATRIX=$(node .github/scripts/generate-benchmark-matrix.mjs)
+          echo "fast_matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Fast benchmark matrix: $MATRIX"
+
   benchmark:
     name: CodSpeed fast simulation (${{ matrix.label }})
-    needs: benchmark-harness
+    needs:
+      - benchmark-harness
+      - determine-matrix
+    if: needs.determine-matrix.outputs.fast_matrix != '[]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -61,35 +92,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - label: core analysis
-            cache_key: core-analysis
-            package: fallow-core
-            bench: analysis
-          - label: stable programmatic API
-            cache_key: programmatic-stable
-            package: fallow-benchmarks
-            bench: programmatic_stable
-          - label: representative sources
-            cache_key: representative-sources
-            package: fallow-benchmarks
-            bench: representative_sources
-          - label: config component
-            cache_key: component-config
-            package: fallow-benchmarks
-            bench: component_config
-          - label: engine component
-            cache_key: component-engine
-            package: fallow-benchmarks
-            bench: component_engine
-          - label: graph component
-            cache_key: component-graph
-            package: fallow-benchmarks
-            bench: component_graph
-          - label: output component
-            cache_key: component-output
-            package: fallow-benchmarks
-            bench: component_output
+        include: ${{ fromJSON(needs.determine-matrix.outputs.fast_matrix) }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
