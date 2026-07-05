@@ -1036,7 +1036,7 @@ Benchmarked on real open-source projects, cold runs (no cache) so each tool work
 | [astro](https://github.com/withastro/astro) | 2,859 | 3.76s | **1.21s** | knip 3.1x |
 | [fastify](https://github.com/fastify/fastify) | 286 | **64ms** | 205ms | fallow 3.2x |
 | [next.js](https://github.com/vercel/next.js) | 20,558 | 2.95s | errors* | fallow only |
-| [preact](https://github.com/preactjs/preact) | 244 | **74ms** | 2.01s | fallow 27.1x |
+| [preact](https://github.com/preactjs/preact) | 244 | **74ms** | 2.01s | fallow 27.2x |
 | [TanStack/query](https://github.com/TanStack/query) | 901 | **560ms** | 1.04s | fallow 1.9x |
 | [svelte](https://github.com/sveltejs/svelte) | 3,337 | **611ms** | 632ms | fallow 1.0x |
 | [TypeScript](https://github.com/microsoft/TypeScript) | 38,146 | 2.22s | **736ms** | knip 3.0x |
@@ -1061,7 +1061,7 @@ Cold median of 3 measured runs. `Clone groups` and `Dup %` come from each tool's
 | [TanStack/query](https://github.com/TanStack/query) | 901 | 133ms | **96ms** | jscpd 1.4x | 1,084 | 32.7% | 1,237 | 19.4% |
 | [svelte](https://github.com/sveltejs/svelte) | 3,337 | 317ms | **172ms** | jscpd 1.8x | 528 | 13.6% | 658 | 9.1% |
 | [TypeScript](https://github.com/microsoft/TypeScript) | 38,146 | 13.45s | **4.58s** | jscpd 2.9x | 2,749 | 26.9% | 51,158 | 45.8% |
-| [vite](https://github.com/vitejs/vite) | 1,420 | 174ms | **74ms** | jscpd 2.3x | 219 | 13.6% | 260 | 5.1% |
+| [vite](https://github.com/vitejs/vite) | 1,420 | 174ms | **74ms** | jscpd 2.4x | 219 | 13.6% | 260 | 5.1% |
 | [vue/core](https://github.com/vuejs/core) | 522 | 109ms | **78ms** | jscpd 1.4x | 864 | 15.7% | 696 | 6.9% |
 | [zod](https://github.com/colinhacks/zod) | 174 | 54ms | **53ms** | jscpd 1.0x | 78 | 94.1% | 140 | 49.6% |
 
