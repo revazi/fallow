@@ -215,7 +215,7 @@ fn remove_export_action(
     cursor_range: &Range,
     file_lines: &[&str],
 ) -> Option<CodeActionOrCommand> {
-    let (export_line, indent_len, prefix) =
+    let (export_line, indent_utf16, prefix) =
         remove_export_span(export, file_path, cursor_range, file_lines)?;
     let mut changes = HashMap::new();
     changes.insert(
@@ -224,11 +224,13 @@ fn remove_export_action(
             range: Range {
                 start: Position {
                     line: export_line,
-                    character: indent_len as u32,
+                    character: indent_utf16 as u32,
                 },
                 end: Position {
                     line: export_line,
-                    character: (indent_len + prefix.len()) as u32,
+                    // `prefix` is static ASCII, so its byte length equals
+                    // its UTF-16 width.
+                    character: (indent_utf16 + prefix.len()) as u32,
                 },
             },
             new_text: String::new(),
@@ -253,6 +255,10 @@ fn remove_export_action(
     }))
 }
 
+/// Locate the removable `export ` / `export default ` prefix for a cached
+/// unused-export finding. Returns `(line, indent_utf16, prefix)` where
+/// `indent_utf16` is the leading-whitespace width in UTF-16 code units
+/// (the unit LSP `character` positions use).
 fn remove_export_span(
     export: &fallow_api::editor_results::UnusedExport,
     file_path: &Path,
@@ -269,14 +275,17 @@ fn remove_export_span(
 
     let line_content = file_lines.get(export_line as usize).copied().unwrap_or("");
     let trimmed = line_content.trim_start();
-    let indent_len = line_content.len() - trimmed.len();
+    let indent_bytes = line_content.len() - trimmed.len();
+    // Byte length diverges from UTF-16 width for non-ASCII whitespace
+    // (U+00A0, U+3000), which would desync the destructive edit range.
+    let indent_utf16 = line_content[..indent_bytes].encode_utf16().count();
     let prefix = export_prefix_to_remove(trimmed)?;
     if prefix != "export default "
         && !declares_export_name(line_content, prefix, &export.export_name)
     {
         return None;
     }
-    Some((export_line, indent_len, prefix))
+    Some((export_line, indent_utf16, prefix))
 }
 
 fn export_prefix_to_remove(trimmed: &str) -> Option<&'static str> {
@@ -1428,6 +1437,74 @@ mod tests {
         let edits = changes.get(&uri).unwrap();
         assert_eq!(edits[0].range.start.character, 2);
         assert_eq!(edits[0].range.end.character, 9);
+    }
+
+    /// Apply a single-line `TextEdit` to `line` by splicing UTF-16 code
+    /// units, mirroring how an LSP client interprets `character` offsets.
+    fn apply_single_line_edit(line: &str, edit: &TextEdit) -> String {
+        let units: Vec<u16> = line.encode_utf16().collect();
+        let start = edit.range.start.character as usize;
+        let end = edit.range.end.character as usize;
+        let mut spliced = units[..start].to_vec();
+        spliced.extend(edit.new_text.encode_utf16());
+        spliced.extend_from_slice(&units[end..]);
+        String::from_utf16(&spliced).unwrap()
+    }
+
+    #[test]
+    fn handles_nbsp_indentation_with_utf16_offsets() {
+        let root = test_root();
+        let file = root.join("nbsp.ts");
+        let uri = Uri::from_file_path(&file).unwrap();
+
+        let mut results = AnalysisResults::default();
+        results
+            .unused_exports
+            .push(make_unused_export(&file, "helper", 1, 0));
+
+        // U+00A0 is 2 bytes in UTF-8 but 1 UTF-16 code unit: the indent
+        // width in LSP `character` units is 1, not 2.
+        let lines = vec!["\u{00A0}export const helper = 1;"];
+        let actions =
+            build_remove_export_actions_for_test(&results, &file, &uri, &make_range(0, 0), &lines);
+
+        assert_eq!(actions.len(), 1);
+        let ca = unwrap_code_action(&actions[0]);
+        let changes = ca.edit.as_ref().unwrap().changes.as_ref().unwrap();
+        let edits = changes.get(&uri).unwrap();
+        assert_eq!(edits[0].range.start.character, 1);
+        assert_eq!(edits[0].range.end.character, 8);
+        assert_eq!(
+            apply_single_line_edit(lines[0], &edits[0]),
+            "\u{00A0}const helper = 1;"
+        );
+    }
+
+    #[test]
+    fn ascii_indentation_edit_applies_cleanly() {
+        let root = test_root();
+        let file = root.join("ascii.ts");
+        let uri = Uri::from_file_path(&file).unwrap();
+
+        let mut results = AnalysisResults::default();
+        results
+            .unused_exports
+            .push(make_unused_export(&file, "helper", 1, 0));
+
+        let lines = vec!["  export const helper = 1;"];
+        let actions =
+            build_remove_export_actions_for_test(&results, &file, &uri, &make_range(0, 0), &lines);
+
+        assert_eq!(actions.len(), 1);
+        let ca = unwrap_code_action(&actions[0]);
+        let changes = ca.edit.as_ref().unwrap().changes.as_ref().unwrap();
+        let edits = changes.get(&uri).unwrap();
+        assert_eq!(edits[0].range.start.character, 2);
+        assert_eq!(edits[0].range.end.character, 9);
+        assert_eq!(
+            apply_single_line_edit(lines[0], &edits[0]),
+            "  const helper = 1;"
+        );
     }
 
     #[test]
