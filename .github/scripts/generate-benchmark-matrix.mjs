@@ -19,6 +19,13 @@ export const FAST_BENCHMARKS = [
     ],
   },
   {
+    label: "engine dupes detect",
+    cache_key: "engine-dupes-detect",
+    package: "fallow-engine",
+    bench: "dupes_detect",
+    paths: ["crates/engine/", "crates/extract/", "crates/types/"],
+  },
+  {
     label: "stable programmatic API",
     cache_key: "programmatic-stable",
     package: "fallow-benchmarks",

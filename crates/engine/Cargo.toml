@@ -46,10 +46,20 @@ tracing = { workspace = true }
 xxhash-rust = { workspace = true }
 
 [features]
+codspeed = ["criterion2/codspeed"]
 schema = ["fallow-output/schema", "fallow-types/schema"]
 
 [dev-dependencies]
+criterion2 = { workspace = true }
 proptest = { workspace = true }
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "dupes_detect"
+harness = false
+
+[[bench]]
+name = "dupes_pipeline"
+harness = false

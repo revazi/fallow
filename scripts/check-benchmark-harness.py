@@ -29,9 +29,11 @@ NOISY_FAST_TARGETS = {
     ("fallow-benchmarks", "programmatic_commands"),
     ("fallow-core", "scaling_analysis"),
     ("fallow-core", "large_analysis"),
+    ("fallow-engine", "dupes_pipeline"),
 }
 REQUIRED_FAST_TARGETS = {
     ("fallow-core", "analysis"),
+    ("fallow-engine", "dupes_detect"),
     ("fallow-benchmarks", "programmatic_stable"),
     ("fallow-benchmarks", "representative_sources"),
     ("fallow-benchmarks", "component_config"),

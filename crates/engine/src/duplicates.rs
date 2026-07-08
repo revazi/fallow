@@ -12,8 +12,13 @@ use crate::results::DuplicationAnalysis;
 mod detector;
 
 #[cfg(test)]
-pub(crate) use detector::{normalize, token_types};
-pub(crate) use detector::{tokenize, types};
+pub(crate) use detector::token_types;
+pub(crate) use detector::types;
+
+/// Detector internals re-exported for the engine's own benches and
+/// integration tests; not part of the supported engine API surface.
+#[doc(hidden)]
+pub use detector::{detect, normalize, tokenize};
 
 pub type CloneGroup = fallow_types::duplicates::CloneGroup;
 pub type CloneInstance = fallow_types::duplicates::CloneInstance;
