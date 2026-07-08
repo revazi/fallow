@@ -740,7 +740,18 @@ use crate::MemberKind;
 /// Bumped to 224 for React Router and Remix route-loader data keys: conventional
 /// route modules now harvest `loader` / `clientLoader` return keys and emit
 /// synthetic `useLoaderData()` member accesses. Warm 223 caches lack both.
-pub(super) const CACHE_VERSION: u32 = 224;
+///
+/// Bumped to 225 for issue #1785: interface / type-literal-alias property
+/// types now persist as `type_member_types`, compound binding targets expand
+/// through them into new `member_accesses`, imported-type dead-ends emit the
+/// new `TypedPropertyMemberAccess` semantic fact, INTERFACE-declared
+/// Playwright fixture maps (`base.extend<MyFixtures>` where `MyFixtures` is
+/// an interface) now emit the same fixture facts as the type-alias form, and
+/// the SFC merge path now carries `semantic_facts`, so Vue/Svelte `<script>`
+/// blocks persist every fact kind they previously dropped. Warm 224 caches
+/// lack all five, leaving interface-typed DI receivers, interface-fixture POM
+/// members, and SFC fact consumers falsely unused.
+pub(super) const CACHE_VERSION: u32 = 225;
 
 /// Duplication token cache version. Bump when duplicate tokenization,
 /// normalization, or the on-disk token cache schema changes.
@@ -799,7 +810,7 @@ macro_rules! assert_cached_type_size {
     };
 }
 
-assert_cached_type_size!(CachedModule, 1320);
+assert_cached_type_size!(CachedModule, 1336);
 assert_cached_type_size!(CachedNamespaceObjectAlias, 72);
 assert_cached_type_size!(CachedLocalTypeDeclaration, 32);
 assert_cached_type_size!(CachedPublicSignatureTypeReference, 56);
@@ -822,6 +833,7 @@ assert_cached_type_size!(fallow_types::extract::ComplexityContribution, 16);
 assert_cached_type_size!(fallow_types::extract::FlagUse, 80);
 assert_cached_type_size!(fallow_types::extract::ClassHeritageInfo, 96);
 assert_cached_type_size!(fallow_types::extract::FactoryReturnExport, 48);
+assert_cached_type_size!(fallow_types::extract::TypeMemberTypeEntry, 72);
 assert_cached_type_size!(fallow_types::extract::LoadReturnKey, 32);
 
 /// Cached data for a single module.
@@ -891,6 +903,11 @@ pub struct CachedModule {
     /// (`export function useApi() { return new RESTApi() }`). Compacted to `None`
     /// when empty so the common no-factory module pays no payload. See #1441 Part A.
     pub exported_factory_returns: Option<Box<[fallow_types::extract::FactoryReturnExport]>>,
+    /// Named-type property types declared by top-level interfaces and
+    /// type-literal aliases (`interface Opts { c: OptDep }`). Compacted to
+    /// `None` when empty so the common no-interface module pays no payload.
+    /// See issue #1785.
+    pub type_member_types: Option<Box<[fallow_types::extract::TypeMemberTypeEntry]>>,
     /// Angular `InjectionToken<Interface>` `(token, interface)` pairs (#920).
     pub injection_tokens: Vec<(String, String)>,
     /// Local type-capable declarations.
