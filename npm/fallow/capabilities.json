@@ -6639,6 +6639,18 @@
         "read_only": true
       },
       {
+        "name": "impact_closure",
+        "kind": "trace",
+        "description": "Trace the transitive affected-but-not-in-diff set and coordination gaps for one file",
+        "cli_command": "fallow dead-code --impact-closure <path> --format json --quiet",
+        "key_params": [
+          "path"
+        ],
+        "license": "free",
+        "license_note": null,
+        "read_only": true
+      },
+      {
         "name": "trace_dependency",
         "kind": "trace",
         "description": "Trace where a dependency is imported and whether scripts or CI use it",
