@@ -9,10 +9,10 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use fallow_core::duplicates::DetectionMode;
-use fallow_core::duplicates::detect::CloneDetector;
-use fallow_core::duplicates::normalize::{HashedToken, normalize_and_hash};
-use fallow_core::duplicates::tokenize::{FileTokens, SourceToken, TokenKind};
+use fallow_config::DetectionMode;
+use fallow_engine::duplicates::detect::CloneDetector;
+use fallow_engine::duplicates::normalize::{HashedToken, normalize_and_hash};
+use fallow_engine::duplicates::tokenize::{FileTokens, SourceToken, TokenKind};
 use oxc_span::Span;
 
 /// Build a `Vec<HashedToken>` from raw hash values.
@@ -297,7 +297,7 @@ function handlePayload(payload) {
 }
 "#;
 
-    use fallow_core::duplicates::tokenize::tokenize_file;
+    use fallow_engine::duplicates::tokenize::tokenize_file;
 
     let ft_a = tokenize_file(&PathBuf::from("a.ts"), code_a, false);
     let ft_b = tokenize_file(&PathBuf::from("b.ts"), code_b, false);

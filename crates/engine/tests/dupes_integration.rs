@@ -1,6 +1,69 @@
-use super::common::{create_config, fixture_path};
-use fallow_core::discover::{DiscoveredFile, FileId};
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "tests and benches use unwrap and expect to keep fixture setup concise"
+)]
+
+//! Integration tests for the engine duplication detector against on-disk fixtures.
+
+use std::path::PathBuf;
+
+use fallow_config::{FallowConfig, OutputFormat, RulesConfig};
+use fallow_engine::discover::{DiscoveredFile, FileId};
 use rustc_hash::FxHashSet;
+
+fn fixture_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests")
+        .join("fixtures")
+        .join(name)
+}
+
+fn create_config(root: PathBuf) -> fallow_config::ResolvedConfig {
+    FallowConfig {
+        schema: None,
+        extends: vec![],
+        entry: vec![],
+        ignore_patterns: vec![],
+        framework: vec![],
+        workspaces: None,
+        ignore_dependencies: vec![],
+        ignore_unresolved_imports: vec![],
+        ignore_exports: vec![],
+        ignore_catalog_references: vec![],
+        ignore_dependency_overrides: vec![],
+        ignore_exports_used_in_file: fallow_config::IgnoreExportsUsedInFileConfig::default(),
+        used_class_members: vec![],
+        ignore_decorators: vec![],
+        unused_component_props: fallow_config::UnusedComponentPropsConfig::default(),
+        duplicates: fallow_config::DuplicatesConfig::default(),
+        health: fallow_config::HealthConfig::default(),
+        rules: RulesConfig::default(),
+        boundaries: fallow_config::BoundaryConfig::default(),
+        production: false.into(),
+        plugins: vec![],
+        rule_packs: vec![],
+        dynamically_loaded: vec![],
+        overrides: vec![],
+        regression: None,
+        audit: fallow_config::AuditConfig::default(),
+        codeowners: None,
+        public_packages: vec![],
+        flags: fallow_config::FlagsConfig::default(),
+        security: fallow_config::SecurityConfig::default(),
+        fix: fallow_config::FixConfig::default(),
+        resolve: fallow_config::ResolveConfig::default(),
+        sealed: false,
+        include_entry_exports: false,
+        auto_imports: false,
+        cache: fallow_config::CacheConfig::default(),
+    }
+    .resolve(root, OutputFormat::Human, 4, true, true, None)
+}
 
 #[test]
 fn duplicate_code_detects_exact_clones() {
@@ -8,13 +71,13 @@ fn duplicate_code_detects_exact_clones() {
     let config = create_config(root.clone());
     let files = fallow_core::discover::discover_files(&config);
 
-    let dupes_config = fallow_core::duplicates::DuplicatesConfig {
+    let dupes_config = fallow_config::DuplicatesConfig {
         min_tokens: 20,
         min_lines: 3,
-        ..fallow_core::duplicates::DuplicatesConfig::default()
+        ..fallow_config::DuplicatesConfig::default()
     };
 
-    let report = fallow_core::duplicates::find_duplicates(&root, &files, &dupes_config);
+    let report = fallow_engine::duplicates::find_duplicates(&root, &files, &dupes_config);
 
     assert!(
         !report.clone_groups.is_empty(),
@@ -36,14 +99,14 @@ fn duplicate_code_semantic_mode_detects_type2_clones() {
     let config = create_config(root.clone());
     let files = fallow_core::discover::discover_files(&config);
 
-    let dupes_config = fallow_core::duplicates::DuplicatesConfig {
+    let dupes_config = fallow_config::DuplicatesConfig {
         min_tokens: 20,
         min_lines: 3,
-        mode: fallow_core::duplicates::DetectionMode::Semantic,
-        ..fallow_core::duplicates::DuplicatesConfig::default()
+        mode: fallow_config::DetectionMode::Semantic,
+        ..fallow_config::DuplicatesConfig::default()
     };
 
-    let report = fallow_core::duplicates::find_duplicates(&root, &files, &dupes_config);
+    let report = fallow_engine::duplicates::find_duplicates(&root, &files, &dupes_config);
 
     let files_with_clones: rustc_hash::FxHashSet<_> = report
         .clone_groups
@@ -64,13 +127,13 @@ fn duplicate_code_unique_file_has_no_clones() {
     let config = create_config(root.clone());
     let files = fallow_core::discover::discover_files(&config);
 
-    let dupes_config = fallow_core::duplicates::DuplicatesConfig {
+    let dupes_config = fallow_config::DuplicatesConfig {
         min_tokens: 20,
         min_lines: 3,
-        ..fallow_core::duplicates::DuplicatesConfig::default()
+        ..fallow_config::DuplicatesConfig::default()
     };
 
-    let report = fallow_core::duplicates::find_duplicates(&root, &files, &dupes_config);
+    let report = fallow_engine::duplicates::find_duplicates(&root, &files, &dupes_config);
 
     let all_clone_files: Vec<String> = report
         .clone_groups
@@ -91,13 +154,13 @@ fn duplicate_code_json_output_serializable() {
     let config = create_config(root.clone());
     let files = fallow_core::discover::discover_files(&config);
 
-    let dupes_config = fallow_core::duplicates::DuplicatesConfig {
+    let dupes_config = fallow_config::DuplicatesConfig {
         min_tokens: 20,
         min_lines: 3,
-        ..fallow_core::duplicates::DuplicatesConfig::default()
+        ..fallow_config::DuplicatesConfig::default()
     };
 
-    let report = fallow_core::duplicates::find_duplicates(&root, &files, &dupes_config);
+    let report = fallow_engine::duplicates::find_duplicates(&root, &files, &dupes_config);
 
     let json = serde_json::to_string_pretty(&report).expect("report should serialize to JSON");
     let reparsed: serde_json::Value = serde_json::from_str(&json).expect("JSON should be valid");
@@ -111,14 +174,14 @@ fn duplicate_code_skip_local_filters_same_directory() {
     let config = create_config(root.clone());
     let files = fallow_core::discover::discover_files(&config);
 
-    let dupes_config = fallow_core::duplicates::DuplicatesConfig {
+    let dupes_config = fallow_config::DuplicatesConfig {
         min_tokens: 20,
         min_lines: 3,
         skip_local: true,
-        ..fallow_core::duplicates::DuplicatesConfig::default()
+        ..fallow_config::DuplicatesConfig::default()
     };
 
-    let report = fallow_core::duplicates::find_duplicates(&root, &files, &dupes_config);
+    let report = fallow_engine::duplicates::find_duplicates(&root, &files, &dupes_config);
 
     assert!(
         report.clone_groups.is_empty(),
@@ -132,35 +195,17 @@ fn duplicate_code_min_tokens_threshold_filters() {
     let config = create_config(root.clone());
     let files = fallow_core::discover::discover_files(&config);
 
-    let dupes_config = fallow_core::duplicates::DuplicatesConfig {
+    let dupes_config = fallow_config::DuplicatesConfig {
         min_tokens: 10000,
         min_lines: 1,
-        ..fallow_core::duplicates::DuplicatesConfig::default()
+        ..fallow_config::DuplicatesConfig::default()
     };
 
-    let report = fallow_core::duplicates::find_duplicates(&root, &files, &dupes_config);
+    let report = fallow_engine::duplicates::find_duplicates(&root, &files, &dupes_config);
 
     assert!(
         report.clone_groups.is_empty(),
         "Very high min_tokens should find no clones"
-    );
-}
-
-#[test]
-fn duplicate_code_find_duplicates_in_project_convenience() {
-    let root = fixture_path("duplicate-code");
-
-    let dupes_config = fallow_core::duplicates::DuplicatesConfig {
-        min_tokens: 20,
-        min_lines: 3,
-        ..fallow_core::duplicates::DuplicatesConfig::default()
-    };
-
-    let report = fallow_core::duplicates::find_duplicates_in_project(&root, &dupes_config);
-
-    assert!(
-        !report.clone_groups.is_empty(),
-        "Convenience function should detect clones"
     );
 }
 
@@ -203,27 +248,27 @@ fn ignore_imports_removes_import_only_clones() {
     // ignore_imports now defaults to true, so counting import blocks requires
     // an explicit opt-out (the `--no-ignore-imports` / `ignoreImports: false`
     // path).
-    let config_with_imports = fallow_core::duplicates::DuplicatesConfig {
+    let config_with_imports = fallow_config::DuplicatesConfig {
         min_tokens: 10,
         min_lines: 3,
         ignore_imports: false,
         ..Default::default()
     };
     let report_with =
-        fallow_core::duplicates::find_duplicates(dir.path(), &files, &config_with_imports);
+        fallow_engine::duplicates::find_duplicates(dir.path(), &files, &config_with_imports);
     assert!(
         !report_with.clone_groups.is_empty(),
         "With ignore_imports=false, identical import blocks should be detected as clones"
     );
 
-    let config_ignore = fallow_core::duplicates::DuplicatesConfig {
+    let config_ignore = fallow_config::DuplicatesConfig {
         min_tokens: 10,
         min_lines: 3,
         ignore_imports: true,
         ..Default::default()
     };
     let report_without =
-        fallow_core::duplicates::find_duplicates(dir.path(), &files, &config_ignore);
+        fallow_engine::duplicates::find_duplicates(dir.path(), &files, &config_ignore);
     assert!(
         report_without.clone_groups.is_empty(),
         "With ignore_imports=true, import-only clones should be eliminated, but found {} groups",
@@ -270,27 +315,27 @@ fn ignore_imports_removes_module_wiring_clones() {
         })
         .collect();
 
-    let config_with_wiring = fallow_core::duplicates::DuplicatesConfig {
+    let config_with_wiring = fallow_config::DuplicatesConfig {
         min_tokens: 5,
         min_lines: 3,
         ignore_imports: false,
         ..Default::default()
     };
     let report_with =
-        fallow_core::duplicates::find_duplicates(dir.path(), &discovered, &config_with_wiring);
+        fallow_engine::duplicates::find_duplicates(dir.path(), &discovered, &config_with_wiring);
     assert!(
         report_with.clone_groups.len() >= 2,
         "With ignore_imports=false, re-export and require wiring blocks should be detected as clones"
     );
 
-    let config_ignore = fallow_core::duplicates::DuplicatesConfig {
+    let config_ignore = fallow_config::DuplicatesConfig {
         min_tokens: 5,
         min_lines: 3,
         ignore_imports: true,
         ..Default::default()
     };
     let report_without =
-        fallow_core::duplicates::find_duplicates(dir.path(), &discovered, &config_ignore);
+        fallow_engine::duplicates::find_duplicates(dir.path(), &discovered, &config_ignore);
     assert!(
         report_without.clone_groups.is_empty(),
         "With ignore_imports=true, module-wiring clones should be eliminated, but found {} groups",
@@ -318,7 +363,7 @@ fn default_ignore_fixture_files(root: &std::path::Path) -> Vec<DiscoveredFile> {
 
 fn cloned_relative_files(
     root: &std::path::Path,
-    report: &fallow_core::duplicates::DuplicationReport,
+    report: &fallow_engine::duplicates::DuplicationReport,
 ) -> FxHashSet<String> {
     report
         .clone_groups
@@ -339,18 +384,20 @@ fn cloned_relative_files(
 fn duplicate_default_ignores_skip_framework_cache_but_not_lib() {
     let root = fixture_path("duplicates_default_ignores");
     let files = default_ignore_fixture_files(&root);
-    let dupes_config = fallow_core::duplicates::DuplicatesConfig {
+    let dupes_config = fallow_config::DuplicatesConfig {
         min_tokens: 10,
         min_lines: 3,
         cross_language: true,
         ..Default::default()
     };
 
-    let (report, skips) = fallow_core::duplicates::find_duplicates_with_default_ignore_skips(
+    let analysis = fallow_engine::duplicates::find_duplicates_with_defaults(
         &root,
         &files,
         &dupes_config,
+        None,
     );
+    let (report, skips) = (analysis.report, analysis.default_ignore_skips);
     let cloned_files = cloned_relative_files(&root, &report);
 
     assert!(cloned_files.contains("src/foo.ts"));
@@ -371,7 +418,7 @@ fn duplicate_default_ignores_skip_framework_cache_but_not_lib() {
 fn duplicate_ignore_defaults_false_replaces_defaults_with_user_ignore() {
     let root = fixture_path("duplicates_default_ignores");
     let files = default_ignore_fixture_files(&root);
-    let dupes_config = fallow_core::duplicates::DuplicatesConfig {
+    let dupes_config = fallow_config::DuplicatesConfig {
         min_tokens: 10,
         min_lines: 3,
         cross_language: true,
@@ -380,11 +427,13 @@ fn duplicate_ignore_defaults_false_replaces_defaults_with_user_ignore() {
         ..Default::default()
     };
 
-    let (report, skips) = fallow_core::duplicates::find_duplicates_with_default_ignore_skips(
+    let analysis = fallow_engine::duplicates::find_duplicates_with_defaults(
         &root,
         &files,
         &dupes_config,
+        None,
     );
+    let (report, skips) = (analysis.report, analysis.default_ignore_skips);
     let cloned_files = cloned_relative_files(&root, &report);
 
     assert!(cloned_files.contains("src/foo.ts"));
@@ -410,13 +459,13 @@ fn fuzzy_css_clones_surface_via_value_canonicalization() {
     let config = create_config(root.clone());
     let files = fallow_core::discover::discover_files(&config);
 
-    let dupes_config = fallow_core::duplicates::DuplicatesConfig {
+    let dupes_config = fallow_config::DuplicatesConfig {
         min_tokens: 20,
         min_lines: 3,
-        ..fallow_core::duplicates::DuplicatesConfig::default()
+        ..fallow_config::DuplicatesConfig::default()
     };
 
-    let report = fallow_core::duplicates::find_duplicates(&root, &files, &dupes_config);
+    let report = fallow_engine::duplicates::find_duplicates(&root, &files, &dupes_config);
 
     let cloned_files: FxHashSet<String> = report
         .clone_groups

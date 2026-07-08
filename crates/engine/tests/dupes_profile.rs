@@ -12,9 +12,9 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use fallow_core::duplicates::detect::CloneDetector;
-use fallow_core::duplicates::normalize::HashedToken;
-use fallow_core::duplicates::tokenize::{FileTokens, SourceToken, TokenKind};
+use fallow_engine::duplicates::detect::CloneDetector;
+use fallow_engine::duplicates::normalize::HashedToken;
+use fallow_engine::duplicates::tokenize::{FileTokens, SourceToken, TokenKind};
 use oxc_span::Span;
 
 fn make_hashed_tokens(hashes: &[u64]) -> Vec<HashedToken> {

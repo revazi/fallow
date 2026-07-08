@@ -33,8 +33,6 @@ mod css_modules;
 mod dependencies;
 #[path = "integration_test/duplicate_prop_shape.rs"]
 mod duplicate_prop_shape;
-#[path = "integration_test/duplicates.rs"]
-mod duplicates;
 #[path = "integration_test/dynamic_import_then.rs"]
 mod dynamic_import_then;
 #[path = "integration_test/dynamic_imports.rs"]
