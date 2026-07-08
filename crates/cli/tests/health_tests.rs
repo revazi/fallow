@@ -2943,6 +2943,58 @@ fn health_churn_file_powers_hotspots_and_ownership_without_git() {
 }
 
 #[test]
+fn health_hotspots_invalid_since_emits_single_document() {
+    // Regression: a malformed `--since` used to print an error JSON document
+    // AND THEN the full health report (two documents on stdout, breaking the
+    // single-document `--format json` contract). The churn fetch now degrades
+    // to "no churn, continue" and routes the diagnostic to tracing, so stdout
+    // carries exactly ONE JSON document (the health report), exit 0.
+    let dir = tempdir().unwrap();
+    write_file(
+        &dir.path().join("package.json"),
+        r#"{"name":"hotspots-invalid-since","type":"module"}"#,
+    );
+    write_file(
+        &dir.path().join("src/index.ts"),
+        "export const a = 1;\nexport function foo() { return a; }\n",
+    );
+    // A git repo is required so the churn fetch reaches the `--since` parse
+    // (the no-git branch returns earlier); no commit is needed.
+    git(dir.path(), &["init"]);
+
+    let out = run_fallow_in_root(
+        "health",
+        dir.path(),
+        &[
+            "--hotspots",
+            "--since",
+            "not-a-duration",
+            "--format",
+            "json",
+        ],
+    );
+
+    assert_eq!(
+        out.code, 0,
+        "invalid --since should degrade to no-churn, not fail: stdout={} stderr={}",
+        out.stdout, out.stderr
+    );
+    // `parse_json` uses `serde_json::from_str`, which rejects trailing data, so
+    // a successful parse proves stdout carries exactly ONE JSON document.
+    let json = parse_json(&out);
+    assert_eq!(
+        json["kind"], "health",
+        "the single document must be the health report: {}",
+        out.stdout
+    );
+    assert!(
+        json.get("error").is_none(),
+        "no error document should be emitted on stdout: {}",
+        out.stdout
+    );
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "test fixture; linear setup/assert, length is not a maintainability concern"

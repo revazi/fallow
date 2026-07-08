@@ -3,7 +3,6 @@
     reason = "human stderr notes (no-git, bot patterns, CODEOWNERS) preserved verbatim from the CLI health path"
 )]
 
-use crate::error::emit_error;
 use fallow_output::{FileHealthScore, HotspotEntry, HotspotSummary};
 
 use super::HealthOptions;
@@ -80,13 +79,17 @@ pub(super) fn fetch_churn_data(
 
     let since_input = opts.since.unwrap_or("6m");
     if let Err(e) = crate::validate::validate_no_control_chars(since_input, "--since") {
-        let _ = emit_error(&e, 2, opts.output);
+        // A malformed `--since` degrades to "no churn, continue" like the
+        // missing-git-repo branch above: route the diagnostic to `tracing` and
+        // emit NO second JSON document, preserving the single-document
+        // `--format json` contract (#294).
+        tracing::warn!("hotspot analysis skipped: {e}");
         return None;
     }
     let since = match crate::churn::parse_since(since_input) {
         Ok(s) => s,
         Err(e) => {
-            let _ = emit_error(&format!("invalid --since: {e}"), 2, opts.output);
+            tracing::warn!("hotspot analysis skipped: invalid --since: {e}");
             return None;
         }
     };
