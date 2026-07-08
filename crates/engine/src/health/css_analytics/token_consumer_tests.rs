@@ -1,4 +1,3 @@
-
 use super::*;
 use fallow_config::{FallowConfig, OutputFormat};
 use fallow_output::ConsumerKind;
