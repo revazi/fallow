@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
-use crate::duplicates::types::{CloneInstance, DuplicationReport};
 use crate::results::AnalysisResults;
+use fallow_types::duplicates::{CloneInstance, DuplicationReport};
 
 /// A combined finding where a clone instance overlaps with a dead code issue.
 #[derive(Debug, Clone, Serialize)]
@@ -159,8 +159,8 @@ impl CrossReferenceResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::duplicates::CloneGroup;
     use crate::results::{UnusedExport, UnusedFile};
+    use fallow_types::duplicates::CloneGroup;
     use fallow_types::output_dead_code::{
         UnusedExportFinding, UnusedFileFinding, UnusedTypeFinding,
     };
@@ -190,7 +190,7 @@ mod tests {
             clone_groups: vec![],
             clone_families: vec![],
             mirrored_directories: vec![],
-            stats: crate::duplicates::types::DuplicationStats {
+            stats: fallow_types::duplicates::DuplicationStats {
                 total_files: 0,
                 files_with_clones: 0,
                 total_lines: 0,
@@ -219,7 +219,7 @@ mod tests {
             ])],
             clone_families: vec![],
             mirrored_directories: vec![],
-            stats: crate::duplicates::types::DuplicationStats {
+            stats: fallow_types::duplicates::DuplicationStats {
                 total_files: 2,
                 files_with_clones: 2,
                 total_lines: 20,
@@ -257,7 +257,7 @@ mod tests {
             ])],
             clone_families: vec![],
             mirrored_directories: vec![],
-            stats: crate::duplicates::types::DuplicationStats {
+            stats: fallow_types::duplicates::DuplicationStats {
                 total_files: 2,
                 files_with_clones: 2,
                 total_lines: 20,
@@ -301,7 +301,7 @@ mod tests {
             ])],
             clone_families: vec![],
             mirrored_directories: vec![],
-            stats: crate::duplicates::types::DuplicationStats {
+            stats: fallow_types::duplicates::DuplicationStats {
                 total_files: 2,
                 files_with_clones: 2,
                 total_lines: 20,
@@ -346,7 +346,7 @@ mod tests {
             ],
             clone_families: vec![],
             mirrored_directories: vec![],
-            stats: crate::duplicates::types::DuplicationStats {
+            stats: fallow_types::duplicates::DuplicationStats {
                 total_files: 4,
                 files_with_clones: 4,
                 total_lines: 40,
@@ -381,7 +381,7 @@ mod tests {
             ])],
             clone_families: vec![],
             mirrored_directories: vec![],
-            stats: crate::duplicates::types::DuplicationStats {
+            stats: fallow_types::duplicates::DuplicationStats {
                 total_files: 2,
                 files_with_clones: 2,
                 total_lines: 20,
@@ -431,7 +431,7 @@ mod tests {
             ])],
             clone_families: vec![],
             mirrored_directories: vec![],
-            stats: crate::duplicates::types::DuplicationStats {
+            stats: fallow_types::duplicates::DuplicationStats {
                 total_files: 2,
                 files_with_clones: 2,
                 total_lines: 40,
@@ -496,7 +496,7 @@ mod tests {
             ],
             clone_families: vec![],
             mirrored_directories: vec![],
-            stats: crate::duplicates::types::DuplicationStats {
+            stats: fallow_types::duplicates::DuplicationStats {
                 total_files: 6,
                 files_with_clones: 6,
                 total_lines: 60,
@@ -547,7 +547,7 @@ mod tests {
             ])],
             clone_families: vec![],
             mirrored_directories: vec![],
-            stats: crate::duplicates::types::DuplicationStats::default(),
+            stats: fallow_types::duplicates::DuplicationStats::default(),
         };
         let mut dead_code = AnalysisResults::default();
         dead_code
@@ -575,7 +575,7 @@ mod tests {
             ])],
             clone_families: vec![],
             mirrored_directories: vec![],
-            stats: crate::duplicates::types::DuplicationStats::default(),
+            stats: fallow_types::duplicates::DuplicationStats::default(),
         };
         let mut dead_code = AnalysisResults::default();
         dead_code
