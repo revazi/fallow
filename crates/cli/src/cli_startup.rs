@@ -319,10 +319,14 @@ pub fn run_pre_dispatch_checks(
     }
 
     if cli.annotations_path_prefix.is_some()
-        && !matches!(output, fallow_config::OutputFormat::GithubAnnotations)
+        && !matches!(
+            output,
+            fallow_config::OutputFormat::GithubAnnotations
+                | fallow_config::OutputFormat::GithubSummary
+        )
     {
         let code = emit_known_failure(
-            "--annotations-path-prefix is only valid with --format github-annotations",
+            "--annotations-path-prefix is only valid with --format github-annotations or github-summary",
             2,
             output,
             telemetry::FailureReason::Validation,

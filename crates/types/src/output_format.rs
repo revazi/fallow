@@ -34,13 +34,16 @@ pub enum OutputFormat {
     /// `::notice` lines). Provider-prefixed name because workflow-command
     /// annotations are a GitHub-only concept with no GitLab twin.
     GithubAnnotations,
+    /// GitHub Actions job-summary markdown (for `>> $GITHUB_STEP_SUMMARY`).
+    /// Provider-prefixed for the same reason as `GithubAnnotations`.
+    GithubSummary,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const VARIANTS: [OutputFormat; 12] = [
+    const VARIANTS: [OutputFormat; 13] = [
         OutputFormat::Human,
         OutputFormat::Json,
         OutputFormat::Sarif,
@@ -53,6 +56,7 @@ mod tests {
         OutputFormat::ReviewGitlab,
         OutputFormat::Badge,
         OutputFormat::GithubAnnotations,
+        OutputFormat::GithubSummary,
     ];
 
     #[test]
@@ -81,6 +85,7 @@ mod tests {
                 "ReviewGitlab",
                 "Badge",
                 "GithubAnnotations",
+                "GithubSummary",
             ]
         );
     }

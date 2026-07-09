@@ -67,7 +67,9 @@ fn print_audit_format(result: &AuditResult, quiet: bool, explain: bool) -> ExitC
         OutputFormat::ReviewGitlab => {
             print_audit_review(result, report::ci::pr_comment::Provider::Gitlab)
         }
-        OutputFormat::GithubAnnotations => print_audit_github_annotations(result),
+        OutputFormat::GithubAnnotations | OutputFormat::GithubSummary => {
+            print_audit_github_format(result)
+        }
         OutputFormat::Badge => {
             eprintln!("Error: badge format is not supported for the audit command");
             ExitCode::from(2)
@@ -75,18 +77,27 @@ fn print_audit_format(result: &AuditResult, quiet: bool, explain: bool) -> ExitC
     }
 }
 
-/// Render the audit result as GitHub workflow-command annotations from the
-/// same audit JSON envelope `--format json` serializes.
-fn print_audit_github_annotations(result: &AuditResult) -> ExitCode {
+/// Render the audit result in a GitHub-native format from the same audit
+/// JSON envelope `--format json` serializes.
+fn print_audit_github_format(result: &AuditResult) -> ExitCode {
     let envelope = match build_audit_json_output(result) {
         Ok(envelope) => envelope,
         Err(code) => return code,
     };
-    report::github_annotations::print_annotations(
-        report::github_annotations::EnvelopeKind::Audit,
-        &envelope,
-        &audit_render_root(result),
-    )
+    let root = audit_render_root(result);
+    if matches!(result.output, OutputFormat::GithubSummary) {
+        report::github_summary::print_summary(
+            report::github_annotations::EnvelopeKind::Audit,
+            &envelope,
+            &root,
+        )
+    } else {
+        report::github_annotations::print_annotations(
+            report::github_annotations::EnvelopeKind::Audit,
+            &envelope,
+            &root,
+        )
+    }
 }
 
 /// The analysis root for path rebasing: audit results carry it on the

@@ -310,11 +310,12 @@ fn validate_security_output(output: OutputFormat) -> Result<(), ExitCode> {
             | OutputFormat::Json
             | OutputFormat::Sarif
             | OutputFormat::GithubAnnotations
+            | OutputFormat::GithubSummary
     ) {
         Ok(())
     } else {
         Err(emit_error(
-            "fallow security supports --format human, json, sarif, or github-annotations only.",
+            "fallow security supports --format human, json, sarif, github-annotations, or github-summary only.",
             2,
             output,
         ))
@@ -566,19 +567,19 @@ fn render_security_output(opts: &SecurityOptions<'_>, output: &SecurityOutput) -
         OutputFormat::Json if opts.summary => render_json_summary(output),
         OutputFormat::Json => render_json(output),
         OutputFormat::Sarif => render_sarif(output),
-        OutputFormat::GithubAnnotations => render_security_github_annotations(opts, output),
+        OutputFormat::GithubAnnotations | OutputFormat::GithubSummary => {
+            render_security_github(opts, output)
+        }
         _ if opts.summary => render_human_summary(output),
         _ => render_human(output),
     }
 }
 
-/// Render security candidates as `::notice` workflow-command annotations from
-/// the same JSON envelope `--format json` serializes (net-new surface: the
-/// bundled action's jq layer has no security annotations).
-fn render_security_github_annotations(
-    opts: &SecurityOptions<'_>,
-    output: &SecurityOutput,
-) -> String {
+/// Render security candidates in a GitHub-native format from the same JSON
+/// envelope `--format json` serializes. Annotations are a net-new surface at
+/// `::notice` level (the bundled action's jq layer has no security
+/// annotations); the summary ports `summary-security.jq`.
+fn render_security_github(opts: &SecurityOptions<'_>, output: &SecurityOutput) -> String {
     let Ok(envelope) = fallow_output::serialize_security_json_output(
         output.clone(),
         crate::output_runtime::current_root_envelope_mode(),
@@ -587,11 +588,20 @@ fn render_security_github_annotations(
         return String::new();
     };
     let options = crate::report::github::resolve_render_options(opts.root);
-    crate::report::github_annotations::render_annotations(
-        crate::report::github_annotations::EnvelopeKind::Security,
-        &envelope,
-        &options,
-    )
+    if matches!(opts.output, OutputFormat::GithubSummary) {
+        let links = crate::report::github_summary::LinkContext::from_env(&options.rebase);
+        crate::report::github_summary::render_summary(
+            crate::report::github_annotations::EnvelopeKind::Security,
+            &envelope,
+            &links,
+        )
+    } else {
+        crate::report::github_annotations::render_annotations(
+            crate::report::github_annotations::EnvelopeKind::Security,
+            &envelope,
+            &options,
+        )
+    }
 }
 
 fn security_exit_code(

@@ -217,7 +217,10 @@ fn apply_all_fixes(input: ApplyAllFixesInput<'_>) -> (bool, CatalogFixTotals) {
 }
 
 fn emit_empty_fix_output(opts: &FixOptions<'_>) -> ExitCode {
-    if matches!(opts.output, OutputFormat::Json) {
+    if matches!(
+        opts.output,
+        OutputFormat::Json | OutputFormat::GithubSummary
+    ) {
         let fixes = [];
         match fallow_output::serialize_fix_json_output(fallow_output::FixJsonOutputInput {
             dry_run: opts.dry_run,
@@ -225,10 +228,17 @@ fn emit_empty_fix_output(opts: &FixOptions<'_>) -> ExitCode {
             skipped_content_changed: 0,
             skipped_mixed_line_endings: 0,
             skipped_low_confidence_exports: 0,
-        })
-        .and_then(|value| serde_json::to_string_pretty(&value))
-        {
-            Ok(json) => println!("{json}"),
+        }) {
+            Ok(envelope) if matches!(opts.output, OutputFormat::GithubSummary) => {
+                return crate::report::github_summary::print_fix_summary(&envelope);
+            }
+            Ok(envelope) => match serde_json::to_string_pretty(&envelope) {
+                Ok(json) => println!("{json}"),
+                Err(e) => {
+                    eprintln!("Error: failed to serialize fix output: {e}");
+                    return ExitCode::from(2);
+                }
+            },
             Err(e) => {
                 eprintln!("Error: failed to serialize fix output: {e}");
                 return ExitCode::from(2);
@@ -430,17 +440,27 @@ fn commit_fix_plan(
 }
 
 fn emit_fix_output(input: &FixOutputInput<'_>) -> Result<(), ExitCode> {
-    if matches!(input.output, OutputFormat::Json) {
+    if matches!(
+        input.output,
+        OutputFormat::Json | OutputFormat::GithubSummary
+    ) {
         match fallow_output::serialize_fix_json_output(fallow_output::FixJsonOutputInput {
             dry_run: input.dry_run,
             fixes: input.fixes,
             skipped_content_changed: input.content_changed_count,
             skipped_mixed_line_endings: input.mixed_line_endings_count,
             skipped_low_confidence_exports: input.low_confidence_count,
-        })
-        .and_then(|value| serde_json::to_string_pretty(&value))
-        {
-            Ok(json) => println!("{json}"),
+        }) {
+            Ok(envelope) if matches!(input.output, OutputFormat::GithubSummary) => {
+                let _ = crate::report::github_summary::print_fix_summary(&envelope);
+            }
+            Ok(envelope) => match serde_json::to_string_pretty(&envelope) {
+                Ok(json) => println!("{json}"),
+                Err(e) => {
+                    eprintln!("Error: failed to serialize fix output: {e}");
+                    return Err(ExitCode::from(2));
+                }
+            },
             Err(e) => {
                 eprintln!("Error: failed to serialize fix output: {e}");
                 return Err(ExitCode::from(2));

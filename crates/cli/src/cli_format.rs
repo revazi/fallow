@@ -31,6 +31,9 @@ pub enum Format {
     /// GitHub workflow-command annotations. Log-based `::warning` annotations render on fork PRs without a write token, unlike the PR-comment/review formats.
     #[value(name = "github-annotations")]
     GithubAnnotations,
+    /// GitHub Actions job-summary markdown, for `fallow ... >> "$GITHUB_STEP_SUMMARY"`. Renders on fork PRs without a write token.
+    #[value(name = "github-summary")]
+    GithubSummary,
 }
 
 impl From<Format> for OutputFormat {
@@ -48,6 +51,7 @@ impl From<Format> for OutputFormat {
             Format::ReviewGitlab => Self::ReviewGitlab,
             Format::Badge => Self::Badge,
             Format::GithubAnnotations => Self::GithubAnnotations,
+            Format::GithubSummary => Self::GithubSummary,
         }
     }
 }
@@ -78,6 +82,7 @@ pub fn parse_format_arg(value: &str) -> Option<Format> {
         "review-gitlab" => Some(Format::ReviewGitlab),
         "badge" => Some(Format::Badge),
         "github-annotations" => Some(Format::GithubAnnotations),
+        "github-summary" => Some(Format::GithubSummary),
         _ => None,
     }
 }

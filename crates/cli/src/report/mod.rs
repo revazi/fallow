@@ -5,6 +5,7 @@ mod compact;
 pub mod dupes_grouping;
 pub mod github;
 pub mod github_annotations;
+pub mod github_summary;
 pub mod grouping;
 mod human;
 mod json;
@@ -296,7 +297,29 @@ pub fn print_results(
         }
         OutputFormat::CodeClimate => codeclimate::print_codeclimate(results, ctx.root, ctx.rules),
         OutputFormat::GithubAnnotations => print_check_github_annotations(results, ctx),
+        OutputFormat::GithubSummary => {
+            print_check_github_format(results, ctx, GithubTarget::Summary)
+        }
         ci_format => print_results_ci_comment(results, ctx, ci_format),
+    }
+}
+
+/// Which GitHub-native renderer a dispatch arm targets.
+#[derive(Clone, Copy)]
+enum GithubTarget {
+    Annotations,
+    Summary,
+}
+
+fn print_github_format(
+    kind: github_annotations::EnvelopeKind,
+    envelope: &serde_json::Value,
+    root: &Path,
+    target: GithubTarget,
+) -> ExitCode {
+    match target {
+        GithubTarget::Annotations => github_annotations::print_annotations(kind, envelope, root),
+        GithubTarget::Summary => github_summary::print_summary(kind, envelope, root),
     }
 }
 
@@ -305,6 +328,14 @@ pub fn print_results(
 /// to the value-driven renderer (which keeps `fallow report --from` output
 /// byte-identical to the direct format run).
 fn print_check_github_annotations(results: &AnalysisResults, ctx: &ReportContext<'_>) -> ExitCode {
+    print_check_github_format(results, ctx, GithubTarget::Annotations)
+}
+
+fn print_check_github_format(
+    results: &AnalysisResults,
+    ctx: &ReportContext<'_>,
+    target: GithubTarget,
+) -> ExitCode {
     match json::api_check_json_document_with_config_fixable_meta_and_extras(
         results,
         ctx.root,
@@ -313,10 +344,11 @@ fn print_check_github_annotations(results: &AnalysisResults, ctx: &ReportContext
         None,
         fallow_api::CheckJsonExtraOutputs::default(),
     ) {
-        Ok(envelope) => github_annotations::print_annotations(
+        Ok(envelope) => print_github_format(
             github_annotations::EnvelopeKind::DeadCode,
             &envelope,
             ctx.root,
+            target,
         ),
         Err(e) => {
             eprintln!("Error: failed to serialize results: {e}");
@@ -382,9 +414,12 @@ fn print_grouped_results(
         OutputFormat::CodeClimate => {
             codeclimate::print_grouped_codeclimate(original, ctx.root, ctx.rules, resolver)
         }
-        // Annotations have no grouping concept; render ungrouped from the
-        // original results (same fallback the PR-comment formats use).
+        // The GitHub formats have no grouping concept; render ungrouped from
+        // the original results (same fallback the PR-comment formats use).
         OutputFormat::GithubAnnotations => print_check_github_annotations(original, ctx),
+        OutputFormat::GithubSummary => {
+            print_check_github_format(original, ctx, GithubTarget::Summary)
+        }
         ci_format => print_results_ci_comment(original, ctx, ci_format),
     }
 }
@@ -435,19 +470,29 @@ pub fn print_duplication_report(
             ExitCode::SUCCESS
         }
         OutputFormat::CodeClimate => codeclimate::print_duplication_codeclimate(report, ctx.root),
-        OutputFormat::GithubAnnotations => print_dupes_github_annotations(report, ctx),
+        OutputFormat::GithubAnnotations => {
+            print_dupes_github_format(report, ctx, GithubTarget::Annotations)
+        }
+        OutputFormat::GithubSummary => {
+            print_dupes_github_format(report, ctx, GithubTarget::Summary)
+        }
         ci_format => print_duplication_ci_comment(report, ctx.root, ci_format),
     }
 }
 
-/// Render duplication results as GitHub workflow-command annotations from the
-/// same JSON envelope `--format json` serializes.
-fn print_dupes_github_annotations(report: &DuplicationReport, ctx: &ReportContext<'_>) -> ExitCode {
+/// Render duplication results in a GitHub-native format from the same JSON
+/// envelope `--format json` serializes.
+fn print_dupes_github_format(
+    report: &DuplicationReport,
+    ctx: &ReportContext<'_>,
+    target: GithubTarget,
+) -> ExitCode {
     match json::api_duplication_json_document(report, ctx.root, ctx.elapsed, ctx.explain) {
-        Ok(envelope) => github_annotations::print_annotations(
+        Ok(envelope) => print_github_format(
             github_annotations::EnvelopeKind::Dupes,
             &envelope,
             ctx.root,
+            target,
         ),
         Err(e) => {
             eprintln!("Error: failed to serialize duplication report: {e}");
@@ -505,9 +550,14 @@ fn print_grouped_duplication_report(
         | OutputFormat::PrCommentGitlab
         | OutputFormat::ReviewGithub
         | OutputFormat::ReviewGitlab => print_duplication_ci_comment(report, ctx.root, output),
-        // Annotations have no grouping concept; render ungrouped (same
+        // The GitHub formats have no grouping concept; render ungrouped (same
         // fallback the PR-comment formats use).
-        OutputFormat::GithubAnnotations => print_dupes_github_annotations(report, ctx),
+        OutputFormat::GithubAnnotations => {
+            print_dupes_github_format(report, ctx, GithubTarget::Annotations)
+        }
+        OutputFormat::GithubSummary => {
+            print_dupes_github_format(report, ctx, GithubTarget::Summary)
+        }
         OutputFormat::Compact => {
             compact::print_duplication_compact(report, ctx.root);
             warn_dupes_grouping_unsupported(grouping, "compact");
@@ -623,9 +673,14 @@ pub fn print_health_report(
         | OutputFormat::PrCommentGitlab
         | OutputFormat::ReviewGithub
         | OutputFormat::ReviewGitlab => print_health_ci_comment(report, ctx.root, output),
-        // Annotations have no grouping concept; render ungrouped (same
+        // The GitHub formats have no grouping concept; render ungrouped (same
         // fallback the PR-comment formats use).
-        OutputFormat::GithubAnnotations => print_health_github_annotations(report, ctx),
+        OutputFormat::GithubAnnotations => {
+            print_health_github_format(report, ctx, GithubTarget::Annotations)
+        }
+        OutputFormat::GithubSummary => {
+            print_health_github_format(report, ctx, GithubTarget::Summary)
+        }
         OutputFormat::Badge => {
             warn_grouping_unsupported(grouping, "badge");
             badge::print_health_badge(report)
@@ -633,17 +688,19 @@ pub fn print_health_report(
     }
 }
 
-/// Render health results as GitHub workflow-command annotations from the same
-/// JSON envelope `--format json` serializes.
-fn print_health_github_annotations(
+/// Render health results in a GitHub-native format from the same JSON
+/// envelope `--format json` serializes.
+fn print_health_github_format(
     report: &fallow_output::HealthReport,
     ctx: &ReportContext<'_>,
+    target: GithubTarget,
 ) -> ExitCode {
     match json::api_health_json_document(report, ctx.root, ctx.elapsed, ctx.explain) {
-        Ok(envelope) => github_annotations::print_annotations(
+        Ok(envelope) => print_github_format(
             github_annotations::EnvelopeKind::Health,
             &envelope,
             ctx.root,
+            target,
         ),
         Err(e) => {
             eprintln!("Error: failed to serialize health report: {e}");

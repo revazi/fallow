@@ -45,7 +45,8 @@ pub fn run_explain(issue_type: &str, output: OutputFormat) -> ExitCode {
         | OutputFormat::ReviewGithub
         | OutputFormat::ReviewGitlab
         | OutputFormat::Badge
-        | OutputFormat::GithubAnnotations => crate::error::emit_error(
+        | OutputFormat::GithubAnnotations
+        | OutputFormat::GithubSummary => crate::error::emit_error(
             "explain supports human, compact, markdown, and json output",
             2,
             output,

@@ -202,7 +202,8 @@ fn render_impact_status(root: &Path, quiet: bool, output: fallow_config::OutputF
         | fallow_config::OutputFormat::ReviewGithub
         | fallow_config::OutputFormat::ReviewGitlab
         | fallow_config::OutputFormat::Badge
-        | fallow_config::OutputFormat::GithubAnnotations => {
+        | fallow_config::OutputFormat::GithubAnnotations
+        | fallow_config::OutputFormat::GithubSummary => {
             return crate::emit_known_failure(
                 "impact supports human, json, and markdown output",
                 2,
@@ -245,7 +246,8 @@ fn render_impact_all(
         | fallow_config::OutputFormat::ReviewGithub
         | fallow_config::OutputFormat::ReviewGitlab
         | fallow_config::OutputFormat::Badge
-        | fallow_config::OutputFormat::GithubAnnotations => {
+        | fallow_config::OutputFormat::GithubAnnotations
+        | fallow_config::OutputFormat::GithubSummary => {
             return crate::emit_known_failure(
                 "impact --all supports human, json, and markdown output",
                 2,
