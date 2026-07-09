@@ -64,9 +64,11 @@ use fallow_output::{
     SecurityUnresolvedCalleeReasonCount, SecurityUnresolvedCalleeSample,
     SecurityUnresolvedCalleeTopFile, SecurityVerifierVerdict, SecurityVerifierVerdictStatus,
     StandardReviewBriefOutput as ReviewBriefOutput, StandardWalkthroughGuide as WalkthroughGuide,
-    TargetThresholds, TrendCount, TrendSummary, TruncationNote, UntestedExport,
-    UntestedExportFinding, UntestedFile, UntestedFileFinding, VitalSigns, VitalSignsCounts,
-    WalkthroughValidation, WorkspaceInfo,
+    SuppressionInventoryEntry, SuppressionInventoryFile, SuppressionInventoryLevel,
+    SuppressionInventoryOrigin, SuppressionInventoryOutput, SuppressionInventorySchemaVersion,
+    SuppressionInventorySummary, SuppressionKindCount, TargetThresholds, TrendCount, TrendSummary,
+    TruncationNote, UntestedExport, UntestedExportFinding, UntestedFile, UntestedFileFinding,
+    VitalSigns, VitalSignsCounts, WalkthroughValidation, WorkspaceInfo,
 };
 use fallow_output::{
     CloneFamilyAction, CloneFamilyActionType, CloneGroupAction, CloneGroupActionType,
@@ -433,6 +435,14 @@ const DERIVED_DEFINITION_NAMES: &[&str] = &[
     "TaintPath",
     "TraceHop",
     "TraceHopRole",
+    "SuppressionInventoryOutput",
+    "SuppressionInventorySchemaVersion",
+    "SuppressionInventorySummary",
+    "SuppressionKindCount",
+    "SuppressionInventoryFile",
+    "SuppressionInventoryEntry",
+    "SuppressionInventoryLevel",
+    "SuppressionInventoryOrigin",
 ];
 
 pub(crate) fn derived_definition_names() -> &'static [&'static str] {
@@ -486,6 +496,7 @@ fn derived_definitions() -> Map<String, Value> {
     register_walkthrough_definitions(&mut generator);
     register_impact_definitions(&mut generator);
     register_security_definitions(&mut generator);
+    register_suppression_inventory_definitions(&mut generator);
     let _ = generator.subschema_for::<FallowOutput>();
     register_list_boundaries_definitions(&mut generator);
     register_health_action_definitions(&mut generator);
@@ -743,6 +754,18 @@ fn register_security_definitions(generator: &mut schemars::SchemaGenerator) {
     let _ = generator.subschema_for::<SecurityBlindSpotsSummary>();
     let _ = generator.subschema_for::<SecurityBlindSpotGroup>();
     let _ = generator.subschema_for::<SecurityBlindSpotFile>();
+}
+
+/// Register the `fallow suppressions --format json` envelope.
+fn register_suppression_inventory_definitions(generator: &mut schemars::SchemaGenerator) {
+    let _ = generator.subschema_for::<SuppressionInventorySchemaVersion>();
+    let _ = generator.subschema_for::<SuppressionInventoryLevel>();
+    let _ = generator.subschema_for::<SuppressionInventoryOrigin>();
+    let _ = generator.subschema_for::<SuppressionInventoryEntry>();
+    let _ = generator.subschema_for::<SuppressionInventoryFile>();
+    let _ = generator.subschema_for::<SuppressionKindCount>();
+    let _ = generator.subschema_for::<SuppressionInventorySummary>();
+    let _ = generator.subschema_for::<SuppressionInventoryOutput>();
 }
 
 fn register_health_action_definitions(generator: &mut schemars::SchemaGenerator) {
@@ -1004,6 +1027,11 @@ const FALLOW_OUTPUT_VARIANTS: &[(&str, &[&str], &str)] = &[
         "review-walkthrough-validation",
         &["WalkthroughValidation"],
         "`fallow review --walkthrough-file --format json`. Post-validation\nof an agent's judgment JSON against the live graph: `accepted` (anchored,\nframing fenced), `rejected` (unanchored), and a `stale` flag. The verifier\nis the graph, not a second model. Always exit 0.",
+    ),
+    (
+        "suppression-inventory",
+        &["SuppressionInventoryOutput"],
+        "`fallow suppressions --format json`. Required `schema_version: \"1\"`\nsingleton plus `summary` and per-file `files` listings. Read-only\nsuppression inventory; always emitted with exit 0.",
     ),
 ];
 
@@ -1352,6 +1380,7 @@ mod drift_tests {
             ("DecisionSurface", "DecisionSurfaceOutput"),
             ("WalkthroughGuide", "WalkthroughGuide"),
             ("WalkthroughValidation", "WalkthroughValidation"),
+            ("SuppressionInventory", "SuppressionInventoryOutput"),
         ];
 
         #[expect(
@@ -1386,6 +1415,7 @@ mod drift_tests {
                 FallowOutput::DecisionSurface(_) => "DecisionSurface",
                 FallowOutput::WalkthroughGuide(_) => "WalkthroughGuide",
                 FallowOutput::WalkthroughValidation(_) => "WalkthroughValidation",
+                FallowOutput::SuppressionInventory(_) => "SuppressionInventory",
             }
         }
 

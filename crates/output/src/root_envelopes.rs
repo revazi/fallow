@@ -275,6 +275,7 @@ pub enum FallowOutput<
     DecisionSurface,
     WalkthroughGuide,
     WalkthroughValidation,
+    SuppressionInventory,
 > {
     /// `fallow audit --format json`.
     #[serde(rename = "audit")]
@@ -354,6 +355,9 @@ pub enum FallowOutput<
     /// `fallow review --walkthrough-file --format json`.
     #[serde(rename = "review-walkthrough-validation")]
     WalkthroughValidation(WalkthroughValidation),
+    /// `fallow suppressions --format json`.
+    #[serde(rename = "suppression-inventory")]
+    SuppressionInventory(SuppressionInventory),
 }
 
 #[cfg(test)]

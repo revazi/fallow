@@ -83,4 +83,5 @@ pub type FallowOutput = fallow_output::FallowOutput<
     fallow_output::DecisionSurfaceOutput,
     fallow_output::StandardWalkthroughGuide,
     fallow_output::WalkthroughValidation,
+    fallow_output::SuppressionInventoryOutput,
 >;
