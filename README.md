@@ -513,7 +513,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # best diff precision for --changed-since and hotspots
-      - uses: fallow-rs/fallow@v2
+      - uses: fallow-rs/fallow@v3
         with:
           command: audit
           comment: true
@@ -533,7 +533,7 @@ permissions:
   checks: write
   pull-requests: write
 
-- uses: fallow-rs/fallow@v2
+- uses: fallow-rs/fallow@v3
   with:
     command: audit
     annotations: true        # default: inline workflow annotations
@@ -552,20 +552,20 @@ steps:
   - uses: actions/checkout@v4
     with:
       fetch-depth: 0
-  - uses: fallow-rs/fallow@v2
+  - uses: fallow-rs/fallow@v3
     with:
       command: audit
       sarif: true
 
 # Security delta gate
-- uses: fallow-rs/fallow@v2
+- uses: fallow-rs/fallow@v3
   with:
     command: security
     changed-since: ${{ github.event.pull_request.base.sha }}
     security-gate: new           # or newly-reachable
 
 # Health score, trend, hotspots, and refactor targets
-- uses: fallow-rs/fallow@v2
+- uses: fallow-rs/fallow@v3
   with:
     command: health
     score: true
@@ -575,19 +575,19 @@ steps:
     targets: true
 
 # Monorepo scoping
-- uses: fallow-rs/fallow@v2
+- uses: fallow-rs/fallow@v3
   with:
     command: audit
     changed-workspaces: origin/main
 
 # Keep generated action artifacts out of the workspace root
-- uses: fallow-rs/fallow@v2
+- uses: fallow-rs/fallow@v3
   with:
     command: audit
     artifacts-dir: .var/fallow
 
 # Coverage-backed CRAP scoring in audit or the default combined run
-- uses: fallow-rs/fallow@v2
+- uses: fallow-rs/fallow@v3
   with:
     command: audit
     max-crap: 30
@@ -595,7 +595,7 @@ steps:
     coverage-root: /home/runner/work/myapp
 
 # Runtime evidence, licensed Fallow Runtime layer
-- uses: fallow-rs/fallow@v2
+- uses: fallow-rs/fallow@v3
   with:
     command: health
     score: true
