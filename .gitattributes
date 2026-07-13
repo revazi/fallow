@@ -4,3 +4,20 @@
 # endings to CRLF, which shifts content-derived hashes (e.g. clone fingerprints)
 # and breaks byte-exact snapshot assertions.
 tests/fixtures/** text eol=lf
+
+# Generated contract surfaces are byte-compared against freshly staged
+# generator output (scripts/generate-all.mjs --check and the staged
+# subgenerator tests, both run on Windows in release.yml). Generators write
+# LF; a Windows checkout with core.autocrlf would convert the committed
+# copies to CRLF and fail the byte comparison. Keep every surface LF on disk.
+crates/napi/index.d.ts text eol=lf
+docs/output-schema.json text eol=lf
+editors/vscode/package.json text eol=lf
+editors/vscode/src/generated/** text eol=lf
+npm/fallow/capabilities.json text eol=lf
+npm/fallow/issue-registry.json text eol=lf
+npm/fallow/skills/** text eol=lf
+npm/fallow/types/** text eol=lf
+plugin-schema.json text eol=lf
+rule-pack-schema.json text eol=lf
+schema.json text eol=lf
