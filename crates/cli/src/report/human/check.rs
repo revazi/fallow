@@ -1036,14 +1036,14 @@ fn push_dependency_override_sections(
     max_items: usize,
     total_issues: usize,
 ) {
-    push_unused_dependency_overrides_section(
+    push_unused_dependency_overrides_section(UnusedDependencyOverridesInput {
         lines,
-        &results.unused_dependency_overrides,
-        rules.unused_dependency_overrides,
+        findings: &results.unused_dependency_overrides,
+        severity: rules.unused_dependency_overrides,
         max_items,
         total_issues,
         root,
-    );
+    });
     push_misconfigured_dependency_overrides_section(
         lines,
         &results.misconfigured_dependency_overrides,
@@ -1231,30 +1231,33 @@ fn format_unresolved_catalog_reference(
 /// shows `raw_key  source  path:line`, then an indented detail row shows the
 /// forced version, target package, and optional CVE hint that the
 /// conservative-static algorithm flags.
-fn push_unused_dependency_overrides_section(
-    lines: &mut Vec<String>,
-    findings: &[fallow_types::output_dead_code::UnusedDependencyOverrideFinding],
+struct UnusedDependencyOverridesInput<'a, 'b> {
+    lines: &'a mut Vec<String>,
+    findings: &'b [fallow_types::output_dead_code::UnusedDependencyOverrideFinding],
     severity: fallow_config::Severity,
     max_items: usize,
     total_issues: usize,
-    root: &Path,
-) {
-    if findings.is_empty() {
+    root: &'b Path,
+}
+
+fn push_unused_dependency_overrides_section(input: UnusedDependencyOverridesInput<'_, '_>) {
+    let lines = input.lines;
+    if input.findings.is_empty() {
         return;
     }
-    let level = severity_to_level(severity);
+    let level = severity_to_level(input.severity);
     build_human_section_ex(
         HumanSectionInput {
             lines,
-            items: findings,
+            items: input.findings,
             title: "Unused dependency overrides",
             level,
-            max: max_items,
-            total_issues,
+            max: input.max_items,
+            total_issues: input.total_issues,
         },
         |finding| {
             let finding = &finding.entry;
-            let path_display = root.join(&finding.path);
+            let path_display = input.root.join(&finding.path);
             let row = format!(
                 "  {key}  {source}  {loc}",
                 key = finding.raw_key.bold(),
@@ -1262,7 +1265,7 @@ fn push_unused_dependency_overrides_section(
                 loc = format!(
                     "{}:{}",
                     path_display
-                        .strip_prefix(root)
+                        .strip_prefix(input.root)
                         .unwrap_or(&path_display)
                         .display(),
                     finding.line
