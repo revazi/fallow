@@ -926,14 +926,14 @@ fn css_module_info(
     imports: Vec<ImportInfo>,
     exports: Vec<ExportInfo>,
 ) -> ModuleInfo {
-    crate::module_info::non_js_module_info(
+    crate::module_info::non_js_module_info(crate::module_info::NonJsModuleInfoInput {
         file_id,
         content_hash,
         source,
         parsed_suppressions,
         imports,
         exports,
-    )
+    })
 }
 
 #[cfg(all(test, not(miri)))]

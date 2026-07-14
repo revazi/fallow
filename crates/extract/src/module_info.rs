@@ -1,23 +1,25 @@
 use crate::{ExportInfo, ImportInfo, ModuleInfo};
 use fallow_types::discover::FileId;
 
+pub struct NonJsModuleInfoInput<'a> {
+    pub(crate) file_id: FileId,
+    pub(crate) content_hash: u64,
+    pub(crate) source: &'a str,
+    pub(crate) parsed_suppressions: crate::suppress::ParsedSuppressions,
+    pub(crate) imports: Vec<ImportInfo>,
+    pub(crate) exports: Vec<ExportInfo>,
+}
+
 /// Build the shared empty-module baseline used by non-JS extractors.
 ///
 /// Callers provide the fields that can be present for their surface. Everything
 /// else stays empty because CSS, SFC shells, and other non-JS wrappers do not
 /// directly contribute JS AST-level facts.
-pub fn non_js_module_info(
-    file_id: FileId,
-    content_hash: u64,
-    source: &str,
-    parsed_suppressions: crate::suppress::ParsedSuppressions,
-    imports: Vec<ImportInfo>,
-    exports: Vec<ExportInfo>,
-) -> ModuleInfo {
+pub fn non_js_module_info(input: NonJsModuleInfoInput<'_>) -> ModuleInfo {
     ModuleInfo {
-        file_id,
-        exports,
-        imports,
+        file_id: input.file_id,
+        exports: input.exports,
+        imports: input.imports,
         re_exports: Vec::new(),
         dynamic_imports: Vec::new(),
         dynamic_import_patterns: Vec::new(),
@@ -28,13 +30,13 @@ pub fn non_js_module_info(
         whole_object_uses: Box::default(),
         has_cjs_exports: false,
         has_angular_component_template_url: false,
-        content_hash,
-        suppressions: parsed_suppressions.suppressions,
-        unknown_suppression_kinds: parsed_suppressions.unknown_kinds,
+        content_hash: input.content_hash,
+        suppressions: input.parsed_suppressions.suppressions,
+        unknown_suppression_kinds: input.parsed_suppressions.unknown_kinds,
         unused_import_bindings: Vec::new(),
         type_referenced_import_bindings: Vec::new(),
         value_referenced_import_bindings: Vec::new(),
-        line_offsets: fallow_types::extract::compute_line_offsets(source),
+        line_offsets: fallow_types::extract::compute_line_offsets(input.source),
         complexity: Vec::new(),
         flag_uses: Vec::new(),
         class_heritage: Vec::new(),

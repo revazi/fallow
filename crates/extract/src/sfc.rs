@@ -551,14 +551,14 @@ fn is_sveltekit_route_data_component(path: &Path) -> bool {
 fn empty_sfc_module(file_id: FileId, source: &str, content_hash: u64) -> ModuleInfo {
     let parsed = crate::suppress::parse_suppressions_from_source(source);
 
-    crate::module_info::non_js_module_info(
+    crate::module_info::non_js_module_info(crate::module_info::NonJsModuleInfoInput {
         file_id,
         content_hash,
         source,
-        parsed,
-        Vec::new(),
-        Vec::new(),
-    )
+        parsed_suppressions: parsed,
+        imports: Vec::new(),
+        exports: Vec::new(),
+    })
 }
 
 struct SfcScriptMergeInput<'a> {
