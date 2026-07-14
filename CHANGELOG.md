@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-07-14
+
 ### Added
 
 - **The structured `--format json` error envelope is now part of the published
@@ -4649,7 +4651,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.4.2...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.5.0...HEAD
+[3.5.0]: https://github.com/fallow-rs/fallow/compare/v3.4.2...v3.5.0
 [3.4.2]: https://github.com/fallow-rs/fallow/compare/v3.3.0...v3.4.2
 [3.3.0]: https://github.com/fallow-rs/fallow/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/fallow-rs/fallow/compare/v3.1.0...v3.2.0
