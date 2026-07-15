@@ -738,7 +738,7 @@ fn reclaim_aged_cache_entry(
     }
 }
 
-fn canonical_root_hash(root: &Path) -> u64 {
+pub fn canonical_root_hash(root: &Path) -> u64 {
     let canonical_root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     xxh3_64(&path_identity_bytes(&canonical_root))
 }

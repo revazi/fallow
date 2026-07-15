@@ -1,5 +1,7 @@
 use super::*;
-use crate::base_worktree::{legacy_reusable_audit_worktree_path, remove_reusable_audit_caches};
+use crate::base_worktree::{
+    canonical_root_hash, legacy_reusable_audit_worktree_path, remove_reusable_audit_caches,
+};
 use std::{fs, process::Command};
 
 fn git(dir: &std::path::Path, args: &[&str]) {
@@ -534,13 +536,13 @@ fn reusable_cache_identity_is_canonical_root_owned_and_sha_independent() {
     let alias = first_root.join("../first");
 
     let first_path = reusable_audit_worktree_path(&first_root);
-    let canonical = first_root
-        .canonicalize()
-        .expect("analysis root should canonicalize");
-    let expected_hash = xxhash_rust::xxh3::xxh3_64(canonical.to_string_lossy().as_bytes());
-    let canonical_repo = repo.canonicalize().expect("repo root should canonicalize");
-    let expected_repo_hash =
-        xxhash_rust::xxh3::xxh3_64(canonical_repo.to_string_lossy().as_bytes());
+    // Reconstruct the expected identity through the SAME hashing helper the
+    // production path uses. Recomputing it here with `Path::canonicalize` +
+    // `to_string_lossy` bytes diverges on Windows, where std canonicalize keeps
+    // the `\\?\` verbatim prefix (production strips it via dunce) and the path
+    // identity is hashed as UTF-16LE bytes, not UTF-8.
+    let expected_hash = canonical_root_hash(&first_root);
+    let expected_repo_hash = canonical_root_hash(&repo);
     let expected_name =
         format!("fallow-audit-base-cache-{expected_repo_hash:016x}-root-{expected_hash:016x}");
     assert_eq!(
