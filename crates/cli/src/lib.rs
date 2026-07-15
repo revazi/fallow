@@ -27,6 +27,10 @@ mod audit_decision_surface;
 mod audit_focus;
 mod audit_walkthrough;
 mod base_worktree;
+/// Re-exported for integration tests so they hash reusable-cache roots through
+/// the exact production path (`dunce` canonicalization + platform path-identity
+/// bytes) rather than an approximation that diverges on Windows.
+pub use base_worktree::canonical_root_hash;
 mod walkthrough_state;
 use fallow_engine::baseline;
 mod cache_notice;

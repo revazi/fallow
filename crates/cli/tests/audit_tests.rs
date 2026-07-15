@@ -233,13 +233,19 @@ fn run_fallow_raw_with_env(
 }
 
 fn audit_cache_paths(root: &Path, base_sha: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-    let canonical_root = root.canonicalize().expect("root should canonicalize");
-    let root_hash = xxhash_rust::xxh3::xxh3_64(canonical_root.to_string_lossy().as_bytes());
+    // For a git-repo fixture root the requested root IS the repo toplevel, so a
+    // single canonical hash fills both the repo and root slots. Source it from
+    // the production helper (dunce canonicalization + platform path-identity
+    // bytes) so the fixtures land where the spawned binary enumerates them;
+    // recomputing via `Path::canonicalize` + UTF-8 bytes diverges on Windows,
+    // where std canonicalize keeps the `\\?\` verbatim prefix (production strips
+    // it via dunce) and the identity is hashed as UTF-16LE bytes.
+    let hash = fallow_cli::canonical_root_hash(root);
     let new_path = std::env::temp_dir().join(format!(
-        "fallow-audit-base-cache-{root_hash:016x}-root-{root_hash:016x}"
+        "fallow-audit-base-cache-{hash:016x}-root-{hash:016x}"
     ));
     let legacy_path = std::env::temp_dir().join(format!(
-        "fallow-audit-base-cache-{root_hash:016x}-{}",
+        "fallow-audit-base-cache-{hash:016x}-{}",
         &base_sha[..16]
     ));
     (new_path, legacy_path)
