@@ -975,6 +975,10 @@ fn ensure_cache_entry_is_owned(path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(not(unix))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "shared cross-platform signature; the Unix ownership check is fallible, non-Unix has no POSIX owner to verify"
+)]
 fn ensure_cache_entry_is_owned(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
