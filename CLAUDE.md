@@ -32,6 +32,7 @@ crates/
   lsp/      -- LSP server, split into modules
     main.rs, diagnostics/, code_actions/, code_lens.rs, hover.rs
   mcp/      -- MCP server for AI agent integration (stdio transport, API-backed analysis with CLI fallback)
+  multicall/ -- Packaged `fallow` binary bundling the CLI, LSP, and MCP servers into one engine (renamed to `fallow` at packaging time for npm platform packages and VS Code); publish = false, so `cargo install fallow-cli` stays the pure CLI
 editors/
   vscode/   -- VS Code extension (LSP client, tree views, status bar, auto-download)
 npm/
