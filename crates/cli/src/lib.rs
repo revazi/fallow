@@ -3759,7 +3759,11 @@ fn dispatch_audit_cache_command(
                             "skipped": report.skipped,
                             "complete": report.skipped == 0,
                         });
-                        let output_code = report::emit_json(&value, "audit cache removal");
+                        let output_code = report::emit_report_json(
+                            &value,
+                            "audit cache removal",
+                            dispatch.json_style,
+                        );
                         if output_code != ExitCode::SUCCESS {
                             return output_code;
                         }
