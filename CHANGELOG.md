@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.0] - 2026-07-20
+
 ### Added
 
 - **VS Code can set a changed-code baseline at HEAD in one command.** The new
@@ -17,6 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workspaces unchanged until per-root baseline semantics exist.
 
 ### Fixed
+
+- **`audit-cache remove --format json` is compact by default and honors
+  `--pretty`.** The command previously routed through an always-pretty JSON
+  path; it now uses the standard JSON emitter, matching every other
+  `--format json` command. Values, fields, and exit codes are unchanged.
+
+- **`audit-cache remove --dry-run` no longer leaves `.lock` sidecars behind.** A
+  preview acquired the per-entry lock before the dry-run guard, and lock
+  acquisition creates a `.lock` sidecar for entries without one, so a preview
+  left a permanent artifact despite documenting that it touches nothing.
+  Dry-run now skips locking entirely.
 
 - **Imported churn history is bounded and validated before analysis.** Churn
   files now enforce a serialized size limit, reject paths outside the project,
@@ -38,7 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drive taint-tracking memory up without bound, so `fallow dead-code` climbed
   to tens of GiB and produced no output on repos that ship them. Per-module
   taint recording is now capped, so these repos analyze in normal time and
-  memory. (#1843)
+  memory. (Closes [#1843](https://github.com/fallow-rs/fallow/issues/1843);
+  thanks [@zirodev23](https://github.com/zirodev23) for the report.)
 
 - **Analysis is more robust on large, generated, and minified codebases.** A
   follow-up hardening pass to the taint-memory fix bounds or linearizes several
@@ -4783,7 +4797,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.6.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.7.0...HEAD
+[3.7.0]: https://github.com/fallow-rs/fallow/compare/v3.6.0...v3.7.0
 [3.6.0]: https://github.com/fallow-rs/fallow/compare/v3.5.1...v3.6.0
 [3.5.1]: https://github.com/fallow-rs/fallow/compare/v3.5.0...v3.5.1
 [3.5.0]: https://github.com/fallow-rs/fallow/compare/v3.4.2...v3.5.0
