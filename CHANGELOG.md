@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.1] - 2026-07-20
+
+### Changed
+
+- **Faster star re-export analysis on wide barrel files.** Synthesizing star
+  re-exports scanned every source export once per re-exported name, which grew
+  quadratically on wide value-plus-type merge barrels. Each freshly synthesized
+  export is now located directly instead of by a repeated positional scan.
+  Analysis output is byte-identical. (Closes
+  [#1916](https://github.com/fallow-rs/fallow/issues/1916).)
+
+### Fixed
+
+- **`unused-class-members` no longer flags a method reached through an inherited
+  generic base-class property.** A derived client method called via a property
+  whose type is declared on a generic base class was reported as unused; those
+  calls are now credited, so the member is retained. (Closes
+  [#1910](https://github.com/fallow-rs/fallow/issues/1910); thanks
+  [@vethman](https://github.com/vethman) for the report.)
+
+- **`unlisted-dependencies` no longer reports a TypeScript `paths` alias as an
+  npm package.** With a `tsconfig.json` present, the TypeScript plugin now
+  activates so `paths` aliases resolve as internal imports instead of being
+  misread as missing dependencies. (Closes
+  [#1911](https://github.com/fallow-rs/fallow/issues/1911); thanks
+  [@vethman](https://github.com/vethman) for the report.)
+
 ## [3.7.0] - 2026-07-20
 
 ### Added
@@ -4797,7 +4824,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.7.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.7.1...HEAD
+[3.7.1]: https://github.com/fallow-rs/fallow/compare/v3.7.0...v3.7.1
 [3.7.0]: https://github.com/fallow-rs/fallow/compare/v3.6.0...v3.7.0
 [3.6.0]: https://github.com/fallow-rs/fallow/compare/v3.5.1...v3.6.0
 [3.5.1]: https://github.com/fallow-rs/fallow/compare/v3.5.0...v3.5.1
